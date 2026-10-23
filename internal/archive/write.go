@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"path"
 
 	"github.com/magicdrive/hephaestus/internal/manifest"
 )
@@ -35,16 +35,19 @@ func Write(root string, p *Plan) (manifest.Artifact, error) {
 	}
 	defer r.Close()
 
-	out := filepath.Join(root, filepath.FromSlash(p.Path))
-	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-		return manifest.Artifact{}, err
+	// Every write goes through r, so a dist directory that is (or is
+	// swapped for) a symbolic link out of the project root is an error and
+	// nothing is created outside the root.
+	if dir := path.Dir(p.Path); dir != "." {
+		if err := r.MkdirAll(dir, 0o755); err != nil {
+			return manifest.Artifact{}, err
+		}
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(out), ".tmp-"+p.Name+"-*")
+	tmp, tmpName, err := manifest.CreateTempIn(r, p.Path)
 	if err != nil {
 		return manifest.Artifact{}, err
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer r.Remove(tmpName) //nolint:errcheck // no-op after a successful rename
 
 	h := sha256.New()
 	counter := &countWriter{}
@@ -72,7 +75,7 @@ func Write(root string, p *Plan) (manifest.Artifact, error) {
 	if err != nil {
 		return manifest.Artifact{}, fmt.Errorf("write %s: %w", p.Name, err)
 	}
-	if err := os.Rename(tmpName, out); err != nil {
+	if err := r.Rename(tmpName, p.Path); err != nil {
 		return manifest.Artifact{}, err
 	}
 	return p.artifact(hex.EncodeToString(h.Sum(nil)), counter.n), nil

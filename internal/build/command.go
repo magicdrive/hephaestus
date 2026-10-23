@@ -26,6 +26,47 @@ const (
 	EnvOutput = "HEPHAESTUS_OUTPUT" // absolute path of the expected output
 )
 
+// DefaultScrubEnv lists credential variables never inherited by build
+// commands from Environ: the release and tap tokens Hephaestus itself uses,
+// the tokens of the gh CLI, and the GitHub Actions runtime and OIDC tokens.
+// A build step (go generate, an npm postinstall script, a cargo build.rs)
+// runs third-party code, which must not be able to publish releases or push
+// to the tap. A build that needs one sets it in its env explicitly.
+var DefaultScrubEnv = []string{
+	"GITHUB_TOKEN",
+	"HOMEBREW_TAP_GITHUB_TOKEN",
+	"GH_TOKEN",
+	"GITHUB_PAT",
+	"GH_ENTERPRISE_TOKEN",
+	"GITHUB_ENTERPRISE_TOKEN",
+	"ACTIONS_RUNTIME_TOKEN",
+	"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+	"ACTIONS_ID_TOKEN_REQUEST_URL",
+}
+
+// scrubEnv returns env without the variables named in DefaultScrubEnv and
+// extra. Names compare case-insensitively on Windows.
+func scrubEnv(env, extra []string) []string {
+	drop := map[string]bool{}
+	for _, k := range DefaultScrubEnv {
+		drop[envKey(k)] = true
+	}
+	for _, k := range extra {
+		if k != "" {
+			drop[envKey(k)] = true
+		}
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		if drop[envKey(k)] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // stderrTail is how much of a failed command's stderr is quoted in errors.
 const stderrTail = 4 << 10
 
@@ -149,7 +190,10 @@ func (s *stage) planCommand(b *config.Build, t config.Target, timeout time.Durat
 		if k == "" || strings.ContainsAny(k, "=\x00") {
 			return p, fmt.Errorf("env: invalid variable name %q", k)
 		}
-		v, err := tmpl.Render(b.Env[k], vars)
+		// build env is the explicit opt-in for passing a credential to a
+		// command, so it renders against the full environment, including
+		// the variables .Env hides elsewhere.
+		v, err := tmpl.Render(b.Env[k], vars.Secret())
 		if err != nil {
 			return p, fmt.Errorf("env.%s: %w", k, err)
 		}
@@ -180,7 +224,7 @@ func (s *stage) execute(ctx context.Context, b *config.Build, p PlannedCommand) 
 	if err := s.prepareOutput(p.Output); err != nil {
 		return manifest.Artifact{}, err
 	}
-	env := mergeEnv(s.in.Environ, p.Env)
+	env := mergeEnv(scrubEnv(s.in.Environ, s.in.ScrubEnv), p.Env)
 	prog, err := resolveProgram(p.Argv[0], p.Dir, env)
 	if err != nil {
 		return manifest.Artifact{}, err

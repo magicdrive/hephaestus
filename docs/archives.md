@@ -34,7 +34,7 @@ archives:
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `id` | string | `default` when there is one archive | Unique id, referenced by `brews[].ids` and `--ids`. |
+| `id` | string | `default` when there is one archive | Unique id, referenced by `brews[].ids`. |
 | `builds` | list of build ids | all builds | Which build binaries define the targets (and the default contents). |
 | `targets` | list of `{os, arch, arm}` | from the manifest | Explicit targets. Use when packaging without a build stage. |
 | `name` | template | `{{ .Project }}_{{ .Version }}_{{ .OS }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}` | File name without extension. The result may contain only `A-Z a-z 0-9 . _ -`, because GitHub silently renames assets with other characters. |
@@ -83,6 +83,12 @@ symbolic link or race can read outside it.
 **Absolute paths and `..`.** `src`, `dst`, `exclude` and the rendered `name`
 must be relative. Absolute paths (`/x`, `C:/x`, `\\host`), backslashes, `.`
 and `..` segments, empty segments, NUL and control characters are rejected.
+Archive paths additionally may not contain invisible Unicode formatting
+characters (category Cf: bidirectional overrides such as U+202E, zero-width
+characters, the byte order mark), which let a listing show a different name
+than the one extracted, nor a segment that is a Windows device name (`CON`,
+`PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, in any letter case and
+with any extension, e.g. `nul.txt`).
 Templated values are checked again after rendering, so `{{ .Env.X }}` cannot
 smuggle `../` in.
 
@@ -130,7 +136,13 @@ directory for another. The error names both sources and their entries.
 **Symbolic links.** With `symlinks: follow` (default), a link is stored as a
 regular file containing the target's bytes, and only if the target resolves
 inside the project root; a link that escapes the root, a broken link, and a
-link to a directory are errors. With `symlinks: reject`, any link is an error.
+link to a directory are errors. With `symlinks: reject`, any link is an error,
+including a link anywhere on the path: a literal `src` below a linked
+directory (`linkdir/file`) and a glob whose base is or passes through a link
+(`linkdir/**`) are rejected too. The sensitive-file rules (see Security) are
+applied to the path as written *and* to the path after every link is
+resolved inside the root, including each directory passed through, so
+`docs/notes.txt -> ../.env` or `share -> .git` with `share/**` is refused.
 Archives never contain link entries, so extraction cannot create links that
 point outside the extraction directory.
 
@@ -188,7 +200,10 @@ into place, so a failure never leaves a partial archive.
 | Archive entry injection / Zip Slip for users | Every entry name is validated: relative, no `..`, no backslash, no control characters, no Windows-reserved characters, no trailing dot or space, at most 1024 bytes. |
 | Unsafe permissions | Policy above; no setuid/setgid/sticky, no group/world write. |
 | Name collisions, including case-only | Error. |
-| Accidental secrets | Wildcards skip dot files. Files named like credentials (`.env*`, `*.pem`, `*.key`, `*.p12`, `id_rsa`, `.netrc`, `.npmrc`, `*.tfstate`, ...) or inside `.git`, `.ssh`, `.aws`, `.gnupg`, `.docker`, `.kube`, `.config`, and files containing a PEM private key block, are refused unless the entry sets `allow_sensitive: true`. |
+| Accidental secrets | Wildcards skip dot files. Files named like credentials (`.env*`, `.envrc`, `*.pem`, `*.key`, `*.p12`, `*.p8`, `*.ppk`, `id_rsa`, `.netrc`, `.npmrc`, `.pgpass`, `kubeconfig`, `*.tfstate`, ...) or inside `.git`, `.ssh`, `.aws`, `.gnupg`, `.docker`, `.kube`, `.config` — compared ignoring letter case, and checked both as written and after resolving symbolic links — and files containing a PEM private key block (also with JSON-escaped `\n` line breaks), an OpenPGP private key block, or a service account key (`"type": "service_account"` with a `"private_key"` field), are refused unless the entry sets `allow_sensitive: true`. Archives imported with `existing` (`kind: archive`) or `goreleaser` (`archives: true`) get the same member-name and content checks, with `allow_sensitive: true` on the import as the opt-out. These checks are a best-effort safety net, not a security boundary. |
+| Writing outside the project | Archives, the checksums file, formulas and the manifest are written through `os.Root`: temporary file, parent directories and the final rename all stay inside the project root. A `dist` that is (or is swapped for) a link leaving the root is an error, and nothing is created outside. |
+| Imported archives read differently by other tools | `archive.Inspect` rejects a tar.gz with any non-zero byte after the end-of-archive marker (members hidden from `archive/tar` but extracted by `tar --ignore-zeros`), more than 1 MiB of zero padding, or a further gzip member / trailing garbage. A zip must have local file headers that match the central directory (name, method, flags, CRC-32 and sizes, data descriptors), entries that tile the file without unlisted bytes or overlaps, exactly one end record ending the file (up to 64 KiB of zero padding allowed), and a consistent zip64 end record. Zip archives with data before the first entry — self-extracting stubs or other prefixes — are **rejected**: readers disagree on how to locate entries in them, and a release archive has no reason to carry one. |
+| Unicode look-alike names | Invisible formatting characters and Windows device names are rejected. **Known limitation:** names that differ only in Unicode normalization (NFC `é` versus NFD `e` + U+0301) are not detected as colliding, because Hephaestus has no normalization tables; on macOS such entries extract onto the same file. Keep source file names in NFC. |
 | Huge files / too many files | `limits.max_file_size` (default 2 GiB), `limits.max_total_size` (default 4 GiB per archive), `limits.max_files` (default 10000 entries, also bounding glob expansion). |
 | Unexpected glob matches | Globs are bounded (`**` at most 4 times, at most 64 brace alternatives), skip dot files and `dist`, and every included file is listed in the manifest. |
 

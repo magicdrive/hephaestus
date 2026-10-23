@@ -69,10 +69,15 @@ type Options struct {
 	// APIURL defaults to https://api.github.com. For GitHub Enterprise
 	// Server use https://HOST/api/v3.
 	APIURL string
-	// UploadURL defaults to https://uploads.github.com. For GitHub
-	// Enterprise Server use https://HOST/api/uploads. Assets are always
-	// uploaded here, never to a release's upload_url, so the token only goes
-	// to configured hosts.
+	// UploadURL defaults to https://uploads.github.com when APIURL is
+	// github.com's, to https://uploads.SUB.ghe.com for GHE.com
+	// (https://api.SUB.ghe.com), and otherwise to https://HOST/api/uploads
+	// on the API URL's host (GitHub Enterprise Server), so a GHES token is
+	// never sent to github.com. Assets are always uploaded here, never to a
+	// release's upload_url, so the token only goes to configured hosts.
+	//
+	// Both URLs must use https; plain http is accepted only for a loopback
+	// host (127.0.0.1, ::1, localhost), for local test servers.
 	UploadURL string
 	// HTTPClient is copied; its CheckRedirect is replaced because redirects
 	// are handled by this package.
@@ -121,7 +126,7 @@ func New(o Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	upload, err := parseBase(o.UploadURL, DefaultUploadURL, "upload URL")
+	upload, err := parseBase(o.UploadURL, defaultUploadURL(api), "upload URL")
 	if err != nil {
 		return nil, err
 	}
@@ -185,9 +190,38 @@ func parseBase(s, def, what string) (*url.URL, error) {
 	// The value is not echoed: it could carry credentials.
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" ||
 		u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return nil, fmt.Errorf("github: invalid %s: must be an absolute http(s) URL without credentials, query or fragment", what)
+		return nil, fmt.Errorf("github: invalid %s: must be an absolute https URL without credentials, query or fragment", what)
+	}
+	// The token is sent to this URL: plain http would expose it on the
+	// network. Local test servers are the only exception.
+	if u.Scheme == "http" && !isLoopback(u.Hostname()) {
+		return nil, fmt.Errorf("github: invalid %s: must use https (http is accepted only for a loopback host)", what)
 	}
 	return u, nil
+}
+
+// isLoopback reports whether host is localhost or a loopback IP address.
+func isLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// defaultUploadURL derives the upload URL from the API URL: github.com's
+// uploads host for api.github.com, uploads.SUB.ghe.com for GHE.com, and
+// SCHEME://HOST/api/uploads for GitHub Enterprise Server.
+func defaultUploadURL(api *url.URL) string {
+	host := strings.ToLower(api.Hostname())
+	switch {
+	case host == "api.github.com":
+		return DefaultUploadURL
+	case strings.HasPrefix(host, "api.") && strings.HasSuffix(host, ".ghe.com"):
+		return api.Scheme + "://uploads." + strings.TrimPrefix(strings.ToLower(api.Host), "api.")
+	default:
+		return (&url.URL{Scheme: api.Scheme, Host: api.Host, Path: "/api/uploads"}).String()
+	}
 }
 
 // String returns a pointer to s, for optional request fields.

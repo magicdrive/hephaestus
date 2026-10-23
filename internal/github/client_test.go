@@ -95,6 +95,65 @@ func TestNewRejectsBadURLsWithoutEchoingThem(t *testing.T) {
 	}
 }
 
+// TestNewRequiresHTTPSExceptLoopback is a regression test: the token used to
+// be sent over plain http to any host.
+func TestNewRequiresHTTPSExceptLoopback(t *testing.T) {
+	for _, u := range []string{"http://api.example.com", "http://ghes.example/api/v3", "http://10.0.0.1:8080", "http://localhost.example.com"} {
+		if _, err := New(Options{Token: testToken, APIURL: u}); err == nil || !strings.Contains(err.Error(), "https") {
+			t.Errorf("API URL %s: err = %v, want https error", u, err)
+		}
+		if _, err := New(Options{Token: testToken, UploadURL: u}); err == nil || !strings.Contains(err.Error(), "https") {
+			t.Errorf("upload URL %s: err = %v, want https error", u, err)
+		}
+	}
+	for _, u := range []string{"http://127.0.0.1:1234", "http://[::1]:1234", "http://localhost:1234", "https://ghes.example/api/v3"} {
+		if _, err := New(Options{Token: testToken, APIURL: u, UploadURL: u}); err != nil {
+			t.Errorf("%s: %v", u, err)
+		}
+	}
+}
+
+func TestDefaultUploadURL(t *testing.T) {
+	for _, tc := range []struct{ api, want string }{
+		{"", "https://uploads.github.com"},
+		{"https://api.github.com", "https://uploads.github.com"},
+		{"https://API.GitHub.com/", "https://uploads.github.com"},
+		{"https://ghes.example.com/api/v3", "https://ghes.example.com/api/uploads"},
+		{"https://ghes.example.com:8443/api/v3", "https://ghes.example.com:8443/api/uploads"},
+		{"https://api.octocorp.ghe.com", "https://uploads.octocorp.ghe.com"},
+		{"http://127.0.0.1:9/api/v3", "http://127.0.0.1:9/api/uploads"},
+	} {
+		c, err := New(Options{APIURL: tc.api})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.api, err)
+		}
+		if got := c.upload.String(); got != tc.want {
+			t.Errorf("API %q: upload URL %q, want %q", tc.api, got, tc.want)
+		}
+	}
+}
+
+// TestGHESUploadStaysOnHost is a regression test: with a GHES API URL and no
+// upload URL, assets (and the token) used to go to uploads.github.com.
+func TestGHESUploadStaysOnHost(t *testing.T) {
+	var path, auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, auth = r.URL.Path, r.Header.Get("Authorization")
+		writeJSON(w, 201, Asset{ID: 1, Name: "a", Size: 1, State: "uploaded"})
+	}))
+	defer srv.Close()
+	c, err := New(Options{Token: testToken, APIURL: srv.URL + "/api/v3", HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.UploadReleaseAsset(context.Background(), "o", "r", 7, "a", strings.NewReader("x"), 1, "application/octet-stream"); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/api/uploads/repos/o/r/releases/7/assets" || auth != "Bearer "+testToken {
+		t.Fatalf("upload went to %q (auth %q)", path, auth)
+	}
+}
+
 func TestRetryOn429WithRetryAfter(t *testing.T) {
 	var n atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

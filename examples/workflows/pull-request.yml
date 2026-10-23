@@ -1,0 +1,36 @@
+# Pull request CI: check the configuration and build a snapshot. No token is
+# passed and nothing is published. Never use pull_request_target here.
+name: Snapshot
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: magicdrive/hephaestus@<full-commit-sha>
+        with:
+          command: check
+          github-token: ""
+      - id: snapshot
+        uses: magicdrive/hephaestus@<full-commit-sha>
+        with:
+          command: run
+          stages: build,archive,checksum
+          snapshot: "true"
+          fresh: "true"
+          github-token: ""
+      - name: Show artifacts
+        env:
+          ARTIFACTS: ${{ steps.snapshot.outputs.artifacts }}
+        run: echo "$ARTIFACTS" | jq .

@@ -79,16 +79,35 @@ runs:
         go-version-file: ${{ github.action_path }}/go.mod
         cache: false
     - name: Build hephaestus
+      id: build
       shell: bash
+      # The caller's Go settings (earlier steps, workflow env, $GITHUB_ENV)
+      # must not change how the action itself is built: pin the module
+      # proxy and checksum database, disable go.work, the go env file and
+      # private/insecure module patterns, and drop GOFLAGS such as
+      # -toolexec or -mod=mod.
       env:
         ACTION_PATH: ${{ github.action_path }}
+        GOFLAGS: -mod=readonly
+        GOPROXY: https://proxy.golang.org,direct
+        GOSUMDB: sum.golang.org
+        GONOSUMDB: ""
+        GONOSUMCHECK: ""
+        GONOPROXY: ""
+        GOPRIVATE: ""
+        GOINSECURE: ""
+        GOWORK: "off"
+        GOENV: "off"
+        GOTOOLCHAIN: auto
+        GOEXPERIMENT: ""
+        CGO_ENABLED: "0"
       run: |
         set -euo pipefail
         cd "$ACTION_PATH"
         bin="$RUNNER_TEMP/hephaestus-bin/hephaestus"
         [[ "$RUNNER_OS" == "Windows" ]] && bin="$bin.exe"
-        CGO_ENABLED=0 go build -trimpath -mod=readonly -o "$bin" .
-        echo "HEPHAESTUS_BIN=$bin" >> "$GITHUB_ENV"
+        go build -trimpath -mod=readonly -o "$bin" .
+        echo "bin=$bin" >> "$GITHUB_OUTPUT"
     - name: Run hephaestus
       id: run
       shell: bash
@@ -101,12 +120,18 @@ runs:
         INPUT_SNAPSHOT: ${{ inputs.snapshot }}
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
         INPUT_FRESH: ${{ inputs.fresh }}
+        HEPHAESTUS_BIN: ${{ steps.build.outputs.bin }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         HOMEBREW_TAP_GITHUB_TOKEN: ${{ inputs.tap-token }}
       run: |
         set -euo pipefail
         case "$INPUT_COMMAND" in
-          run|check|build|archive|checksum|release|formula|tap) ;;
+          # Only these commands talk to GitHub. With run, the build stage
+          # still never sees the tokens: hephaestus removes them from the
+          # build commands' environment.
+          run|release|tap) ;;
+          check|build|archive|checksum|formula)
+            unset GITHUB_TOKEN HOMEBREW_TAP_GITHUB_TOKEN ;;
           *) echo "::error::invalid command input"; exit 2 ;;
         esac
         args=("$INPUT_COMMAND")

@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/magicdrive/hephaestus/internal/compat/goreleaser"
 	"github.com/magicdrive/hephaestus/internal/config"
+	"github.com/magicdrive/hephaestus/internal/manifest"
 	"github.com/magicdrive/hephaestus/internal/pipeline"
 )
 
@@ -38,7 +40,19 @@ Run "hephaestus <command> -h" for flags.
 `
 
 // Main runs the CLI and returns the process exit code.
+//
+// Everything it writes passes through a redactor that replaces the known
+// secrets (the tokens, a rendered repository.token, tokens written in the
+// configuration) with "***".
 func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	red := &redactor{}
+	ow, ew := red.writer(stdout), red.writer(stderr)
+	defer ow.Flush()
+	defer ew.Flush()
+	return mainCmd(ctx, args, ow, ew, red)
+}
+
+func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *redactor) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return 2
@@ -61,7 +75,7 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	opts := &Options{Stdout: stdout, Stderr: stderr}
+	opts := &Options{Stdout: stdout, Stderr: stderr, redact: red}
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&opts.ConfigPath, "config", "", "configuration file (default: hephaestus.yaml in the current directory)")
@@ -86,13 +100,16 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "hephaestus %s: unexpected argument %q\n", cmd, fs.Arg(0))
 		return 2
 	}
+	red.addEnviron(os.Environ(), opts.TokenEnv, opts.TapTokenEnv)
 
 	cfg, err := loadConfig(opts.ConfigPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	for _, w := range cfg.Warnings() {
+	tokenWarnings, literals := literalTokens(cfg)
+	red.add(literals...)
+	for _, w := range append(cfg.Warnings(), tokenWarnings...) {
 		fmt.Fprintf(stderr, "warning: %s\n", w)
 	}
 	if cmd == "check" {
@@ -123,7 +140,36 @@ func loadConfig(path string) (*config.Config, error) {
 			return nil, err
 		}
 	}
-	return config.LoadFile(filepath.Clean(path))
+	cfg, err := config.LoadFile(filepath.Clean(path))
+	if err != nil || cfg.BrewsFrom == "" {
+		return cfg, err
+	}
+	return cfg, loadBrewsFrom(cfg)
+}
+
+// loadBrewsFrom appends the brews of the GoReleaser configuration named by
+// brews_from, read through the project root.
+func loadBrewsFrom(cfg *config.Config) error {
+	f, err := manifest.OpenConfined(cfg.Root, cfg.BrewsFrom)
+	if err != nil {
+		return fmt.Errorf("brews_from: %w", err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, goreleaser.MaxConfigSize+1))
+	if err != nil {
+		return fmt.Errorf("brews_from: %w", err)
+	}
+	_, brews, warnings, err := goreleaser.Parse(data)
+	if err != nil {
+		return fmt.Errorf("brews_from %s: %w", cfg.BrewsFrom, err)
+	}
+	for i := range warnings {
+		warnings[i] = "brews_from " + cfg.BrewsFrom + ": " + warnings[i]
+	}
+	if err := cfg.AddBrews(brews, warnings); err != nil {
+		return fmt.Errorf("brews_from %s: %w", cfg.BrewsFrom, err)
+	}
+	return nil
 }
 
 // configuredStages returns the stages the configuration declares.

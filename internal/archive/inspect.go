@@ -34,6 +34,12 @@ type InspectLimits struct {
 	MaxFileSize int64
 	// MaxTotalSize bounds the sum of uncompressed member sizes.
 	MaxTotalSize int64
+	// ScanSecrets also scans the content of every file member, while it is
+	// hashed, for private keys (the same content rules as the archives
+	// stage: PEM and PGP private keys, also with escaped line breaks, and
+	// service account key files). A hit fails with an error wrapping
+	// ErrSensitiveContent.
+	ScanSecrets bool
 }
 
 func (l InspectLimits) withDefaults() InspectLimits {
@@ -54,6 +60,15 @@ func (l InspectLimits) withDefaults() InspectLimits {
 // malformed archive from a read error.
 var ErrUnsafeArchive = errors.New("unsafe or malformed archive")
 
+// ErrSensitiveContent is wrapped by the Inspect error for a member that
+// holds a private key (only with InspectLimits.ScanSecrets).
+var ErrSensitiveContent = errors.New("archive member contains a private key")
+
+// maxTarTrailer bounds the bytes read after a tar archive's end marker.
+// Writers pad to their record size (10 KiB for GNU tar and bsdtar by
+// default); anything beyond 1 MiB is not padding.
+const maxTarTrailer = 1 << 20
+
 // Inspect reads a tar.gz or zip archive and describes its members: path,
 // type ("file" or "dir"), permission mode, and for files the uncompressed
 // size and SHA-256 of the content. The result is sorted by path.
@@ -72,7 +87,17 @@ var ErrUnsafeArchive = errors.New("unsafe or malformed archive")
 //   - more than lim.MaxEntries members, a member larger than
 //     lim.MaxFileSize, or more than lim.MaxTotalSize bytes in total
 //     (decompression bombs). Sizes are checked against the declared header
-//     size before reading and against the actual bytes while reading.
+//     size before reading and against the actual bytes while reading;
+//   - anything another extractor could read differently. For tar.gz: any
+//     non-zero byte after the end-of-archive marker (hidden members that
+//     "tar --ignore-zeros" or concatenating readers would extract), more
+//     than 1 MiB of zero padding, a further gzip member or trailing
+//     garbage after the gzip stream. For zip: see checkZipLayout — the
+//     local file headers must match the central directory exactly, the
+//     entries must tile the file with nothing hidden between them, and
+//     data before the first entry (self-extracting or otherwise prefixed
+//     archives), after the end record, or a second end record is
+//     rejected.
 //
 // Parent directories without their own entry are allowed and are not
 // synthesized: the result lists exactly the members present. PAX global
@@ -186,18 +211,53 @@ func (ins *inspector) reserve(name string, declared int64) error {
 	return nil
 }
 
-// hash reads exactly declared bytes from r and fails when the content is
-// longer or shorter than declared.
-func hashExact(name string, r io.Reader, declared int64) (string, error) {
+// hashExact reads exactly declared bytes from r and fails when the content
+// is longer or shorter than declared, or (with ScanSecrets) holds a private
+// key.
+func (ins *inspector) hashExact(name string, r io.Reader, declared int64) (string, error) {
 	h := sha256.New()
-	n, err := io.Copy(h, io.LimitReader(r, declared+1))
+	var w io.Writer = h
+	var ks *keyScanner
+	if ins.lim.ScanSecrets {
+		ks = &keyScanner{}
+		w = io.MultiWriter(h, ks)
+	}
+	n, err := io.Copy(w, io.LimitReader(r, declared+1))
 	if err != nil {
 		return "", fmt.Errorf("entry %q: %w", name, err)
 	}
 	if n != declared {
 		return "", unsafeErr("entry %q holds %d bytes but its header declares %d", name, n, declared)
 	}
+	if ks != nil && ks.found != "" {
+		return "", fmt.Errorf("%w: entry %q contains %s", ErrSensitiveContent, name, ks.found)
+	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// checkTarTrailer reads what follows the end-of-archive marker and accepts
+// only bounded zero padding.
+func checkTarTrailer(r io.Reader) error {
+	buf := make([]byte, 32*1024)
+	var total int64
+	for {
+		n, err := r.Read(buf)
+		for _, b := range buf[:n] {
+			if b != 0 {
+				return unsafeErr("data after the tar end-of-archive marker (hidden members or a concatenated archive)")
+			}
+		}
+		total += int64(n)
+		if total > maxTarTrailer {
+			return unsafeErr("more than %d bytes of padding after the tar end-of-archive marker", maxTarTrailer)
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return unsafeErr("after the tar end-of-archive marker: %v", err)
+		}
+	}
 }
 
 func (ins *inspector) tarGz(r io.Reader) error {
@@ -210,7 +270,8 @@ func (ins *inspector) tarGz(r io.Reader) error {
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			// tar.Reader stops at the end marker; other readers may not.
+			return checkTarTrailer(gz)
 		}
 		if err != nil {
 			return unsafeErr("reading tar: %v", err)
@@ -259,7 +320,7 @@ func (ins *inspector) tarGz(r io.Reader) error {
 				return err
 			}
 			f.Type, f.Size = TypeFile, hdr.Size
-			if f.SHA256, err = hashExact(name, tr, hdr.Size); err != nil {
+			if f.SHA256, err = ins.hashExact(name, tr, hdr.Size); err != nil {
 				return err
 			}
 		}
@@ -278,6 +339,9 @@ func (ins *inspector) zip(r io.ReaderAt, size int64) error {
 	}
 	if len(zr.File) > ins.lim.MaxEntries {
 		return unsafeErr("archive has more than %d entries", ins.lim.MaxEntries)
+	}
+	if err := checkZipLayout(r, size, zr.File); err != nil {
+		return err
 	}
 	for _, zf := range zr.File {
 		if err := ins.count(); err != nil {
@@ -314,7 +378,7 @@ func (ins *inspector) zip(r io.ReaderAt, size int64) error {
 			if err != nil {
 				return unsafeErr("entry %q: %v", name, err)
 			}
-			sum, err := hashExact(name, rc, declared)
+			sum, err := ins.hashExact(name, rc, declared)
 			if err == nil {
 				// Drain to EOF so the zip reader verifies the CRC-32.
 				if _, cerr := io.Copy(io.Discard, rc); cerr != nil { //nolint:gosec // G110: hashExact already consumed exactly the declared (size-limited) bytes; archive/zip rejects data beyond the declared size

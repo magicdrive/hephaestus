@@ -32,7 +32,26 @@ var (
 
 // Warnings collects non-fatal findings (deprecated GoReleaser names and
 // accepted-but-ignored fields). Callers must surface them to the user.
-func (c *Config) Warnings() []string { return c.warnings }
+func (c *Config) Warnings() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, w := range c.warnings {
+		if !seen[w] {
+			seen[w] = true
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// AddBrews appends formulas loaded from another source (brews_from), then
+// re-applies defaults and validates the whole configuration again.
+func (c *Config) AddBrews(brews []Brew, warnings []string) error {
+	c.Brews = append(c.Brews, brews...)
+	c.warnings = append(c.warnings, warnings...)
+	c.ApplyDefaults()
+	return c.Validate()
+}
 
 // ApplyDefaults fills unset fields. It is idempotent.
 func (c *Config) ApplyDefaults() {
@@ -136,6 +155,11 @@ func (c *Config) Validate() error {
 	} else if !projectRe.MatchString(c.Project.Name) {
 		add("project.name", "%q must match %s", c.Project.Name, projectRe)
 	}
+	if c.BrewsFrom != "" {
+		if err := pathutil.ValidateRelative(c.BrewsFrom); err != nil {
+			add("brews_from", "%q: %v", c.BrewsFrom, err)
+		}
+	}
 	for _, p := range []struct{ path, v string }{{"dist", c.Dist}, {"manifest", c.Manifest}} {
 		if err := pathutil.ValidateRelative(p.v); err != nil {
 			add(p.path, "%q: %v", p.v, err)
@@ -215,6 +239,9 @@ func (c *Config) Validate() error {
 			default:
 				add(p+".existing.kind", "must be %q or %q", ExistingKindBinary, ExistingKindArchive)
 			}
+			if b.Existing.AllowSensitive && b.Existing.Kind == ExistingKindBinary {
+				add(p+".existing.allow_sensitive", "applies only to kind: %s", ExistingKindArchive)
+			}
 		case ProviderGoReleaser:
 			if b.Targets != nil || b.Matrix != nil {
 				add(p, "targets come from GoReleaser's artifacts.json; remove targets/matrix")
@@ -237,15 +264,15 @@ func (c *Config) Validate() error {
 					add(fmt.Sprintf("%s.goreleaser.ids[%d]", p, j), "must not be empty")
 				}
 			}
+			if b.GoReleaser.AllowSensitive && !b.GoReleaser.Archives {
+				add(p+".goreleaser.allow_sensitive", "applies only with archives: true")
+			}
 		}
 		if b.Provider() != ProviderGoReleaser {
 			if len(b.Targets) == 0 && b.Matrix == nil {
 				add(p, "declare targets or matrix")
 			}
 			c.validateTargets(p, b.Targets, b.Matrix, add)
-		}
-		if b.Binary != "" && (strings.Contains(b.Binary, "/") || pathutil.ValidateRelative(b.Binary) != nil) {
-			add(p+".binary", "%q must be a plain file name", b.Binary)
 		}
 	}
 
@@ -292,6 +319,18 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// brews[].ids select archives: those of the archives stage, or those a
+	// build imports (recorded under the build id).
+	brewIDs := map[string]bool{}
+	for id := range archiveIDs {
+		brewIDs[id] = true
+	}
+	for i := range c.Builds {
+		if c.Builds[i].ImportsArchives() {
+			brewIDs[c.Builds[i].ID] = true
+		}
+	}
+	archiveIDs = brewIDs
 	brewNames := map[string]bool{}
 	for i := range c.Brews {
 		c.validateBrew(i, archiveIDs, brewNames, add, checkTmpl)
@@ -528,7 +567,7 @@ func (c *Config) validateBrew(i int, archiveIDs, names map[string]bool, add func
 	names[b.Name] = true
 	for j, id := range b.IDs {
 		if !archiveIDs[id] {
-			add(fmt.Sprintf("%s.ids[%d]", p, j), "unknown archive id %q", id)
+			add(fmt.Sprintf("%s.ids[%d]", p, j), "unknown archive id %q (neither an archives[] id nor a build that imports archives)", id)
 		}
 	}
 	for _, f := range []struct{ path, v string }{

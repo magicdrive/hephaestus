@@ -23,8 +23,10 @@
 //     errors.
 //   - Symbolic links are followed (content stored as a regular file) only
 //     when the resolved target stays inside the project root; with
-//     symlinks: reject any link is an error. Directories reached through
-//     links are never walked.
+//     symlinks: reject any link is an error, including a linked parent
+//     directory of a literal src and a linked glob base. Wildcards never
+//     descend into linked directories. Sensitive-file rules apply to the
+//     path as written and to the path after resolving every link.
 package archive
 
 import (
@@ -375,6 +377,15 @@ func (r *resolver) addSpec(idx int, f *config.FileSpec) error {
 	if err != nil {
 		return err
 	}
+	if base := pat.Base(); base != "" && r.archive.Symlinks == config.SymlinksReject {
+		// fs.WalkDir follows a linked starting directory; refuse it (and
+		// any linked directory above it) before walking.
+		if _, _, linked, err := resolveInRoot(r.root, base); linked {
+			return fmt.Errorf("glob %q starts in %q, which is or passes through a symbolic link, and symlinks: reject is set", src, base)
+		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("glob %q: %w", src, err)
+		}
+	}
 	matches, err := glob.Walk(r.root.FS(), pat, r.cfg.Limits.MaxFiles+1)
 	if errors.Is(err, glob.ErrTooManyMatches) {
 		return fmt.Errorf("glob %q matches more than %d files (limits.max_files)", src, r.cfg.Limits.MaxFiles)
@@ -441,6 +452,14 @@ func (r *resolver) addFile(src, target string, mode *uint32, info *entryInfo, la
 	if err := pathutil.ValidateRelative(target); err != nil {
 		return fmt.Errorf("archive path %q for %s: %w", target, src, err)
 	}
+	// Resolve every link on the path inside the root. With symlinks: reject
+	// a link anywhere on the path (a linked parent directory included) is
+	// an error; with symlinks: follow the resolved path must pass the same
+	// sensitive-file rules as the path as written.
+	resolved, dirs, linked, rerr := resolveInRoot(r.root, src)
+	if linked && r.archive.Symlinks == config.SymlinksReject {
+		return fmt.Errorf("%q is or passes through a symbolic link and symlinks: reject is set", src)
+	}
 	if !allowSensitive {
 		if why := sensitivePath(src); why != "" {
 			return fmt.Errorf("refusing %q because %s; set allow_sensitive: true on the entry if this is intended", src, why)
@@ -451,12 +470,23 @@ func (r *resolver) addFile(src, target string, mode *uint32, info *entryInfo, la
 		return fmt.Errorf("%s: %w", src, err)
 	}
 	if lst.Mode()&fs.ModeSymlink != 0 {
-		if r.archive.Symlinks == config.SymlinksReject {
-			return fmt.Errorf("%q is a symbolic link and symlinks: reject is set", src)
-		}
 		// os.Root refuses links whose target leaves the root.
 		if _, err := r.root.Stat(src); err != nil {
 			return fmt.Errorf("symbolic link %q resolves outside the project root or is broken: %w", src, err)
+		}
+	}
+	if rerr != nil {
+		return fmt.Errorf("resolve %q: %w", src, rerr)
+	}
+	if !allowSensitive && linked {
+		why := sensitivePath(resolved)
+		for _, d := range dirs {
+			if why == "" {
+				why = sensitiveDir(d)
+			}
+		}
+		if why != "" {
+			return fmt.Errorf("refusing %q because it resolves to %q and %s; set allow_sensitive: true on the entry if this is intended", src, resolved, why)
 		}
 	}
 	file, err := r.root.Open(src)
@@ -487,8 +517,8 @@ func (r *resolver) addFile(src, target string, mode *uint32, info *entryInfo, la
 	if err != nil {
 		return fmt.Errorf("read %q: %w", src, err)
 	}
-	if keyFound && !allowSensitive {
-		return fmt.Errorf("refusing %q because it contains a PEM private key; set allow_sensitive: true on the entry if this is intended", src)
+	if keyFound != "" && !allowSensitive {
+		return fmt.Errorf("refusing %q because it contains %s; set allow_sensitive: true on the entry if this is intended", src, keyFound)
 	}
 
 	perm := uint32(0o644)
@@ -572,15 +602,17 @@ func (r *resolver) finish(wrap string) ([]Entry, error) {
 	return out, nil
 }
 
-func hashFile(r io.Reader, limit int64) (string, int64, bool, error) {
+// hashFile hashes at most limit bytes of r and reports what kind of private
+// key the content holds ("" for none).
+func hashFile(r io.Reader, limit int64) (string, int64, string, error) {
 	h := sha256.New()
 	ks := &keyScanner{}
 	n, err := io.Copy(io.MultiWriter(h, ks), io.LimitReader(r, limit+1))
 	if err != nil {
-		return "", 0, false, err
+		return "", 0, "", err
 	}
 	if n > limit {
-		return "", 0, false, fmt.Errorf("file grew beyond %d bytes while reading", limit)
+		return "", 0, "", fmt.Errorf("file grew beyond %d bytes while reading", limit)
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, ks.found, nil
 }

@@ -2,7 +2,7 @@
 // contract every Hephaestus stage reads and writes.
 //
 // Ownership: each stage only adds artifacts of its own kind, or fills fields
-// it owns on existing artifacts (see docs/architecture/manifest.md). No stage
+// it owns on existing artifacts (see the ownership table in docs/architecture/overview.md). No stage
 // invents data it did not observe: a checksum is present only when it was
 // computed from the bytes on disk or verified against them.
 package manifest
@@ -182,6 +182,9 @@ func (m *Manifest) Marshal() ([]byte, error) {
 
 // WriteFile writes the canonical serialization atomically (temp file and
 // rename in the same directory) so a crash never leaves a torn manifest.
+//
+// WriteFile follows symbolic links in path; to write under a project
+// directory that must confine the output, use WriteFileIn.
 func (m *Manifest) WriteFile(path string) error {
 	data, err := m.Marshal()
 	if err != nil {
@@ -190,7 +193,9 @@ func (m *Manifest) WriteFile(path string) error {
 	return WriteFileAtomic(path, data, 0o644)
 }
 
-// WriteFileAtomic writes data to path via a temporary file and rename.
+// WriteFileAtomic writes data to path via a temporary file and rename. It
+// follows symbolic links in path; use WriteFileAtomicIn to confine the write
+// to a root directory.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

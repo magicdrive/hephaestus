@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
+	"slices"
 	"strings"
 
 	"github.com/magicdrive/hephaestus/internal/archive"
@@ -39,17 +41,25 @@ type Options struct {
 	Stages      []pipeline.Stage
 	Stdout      io.Writer
 	Stderr      io.Writer
+
+	// redact replaces known secrets in messages, outputs and the summary.
+	redact *redactor
 }
 
 // SnapshotVersion is used with --snapshot.
 const SnapshotVersion = "0.0.0-SNAPSHOT"
 
 func run(ctx context.Context, cfg *config.Config, opts *Options) int {
-	rep := &report{Stages: opts.Stages, DryRun: opts.DryRun}
-	err := execute(ctx, cfg, opts, rep)
+	if opts.redact == nil {
+		opts.redact = &redactor{}
+		opts.redact.addEnviron(os.Environ(), opts.TokenEnv, opts.TapTokenEnv)
+	}
+	red := opts.redact
+	rep := &report{Stages: opts.Stages, DryRun: opts.DryRun, redact: red.redact}
+	err := safeExecute(ctx, cfg, opts, rep)
 	rep.Err = err
 	if err != nil {
-		fmt.Fprintf(opts.Stderr, "error: %v\n", err)
+		fmt.Fprintf(opts.Stderr, "error: %s\n", red.redact(err.Error()))
 	}
 	if rep.Manifest != nil {
 		for _, a := range rep.Manifest.Artifacts {
@@ -59,7 +69,7 @@ func run(ctx context.Context, cfg *config.Config, opts *Options) int {
 		}
 	}
 	for _, w := range rep.Warnings {
-		fmt.Fprintf(opts.Stderr, "warning: %s\n", w)
+		fmt.Fprintf(opts.Stderr, "warning: %s\n", red.redact(w))
 	}
 	fmt.Fprintf(opts.Stderr, "==> %s\n", rep.status())
 	if werr := rep.publish(); werr != nil {
@@ -70,6 +80,28 @@ func run(ctx context.Context, cfg *config.Config, opts *Options) int {
 	}
 	return 0
 }
+
+// safeExecute runs execute and turns a panic into an error, so that a bug in
+// a stage still ends in status "failed" with outputs and a summary instead
+// of a crash that leaves the workflow without them.
+func safeExecute(ctx context.Context, cfg *config.Config, opts *Options, rep *report) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(opts.Stderr, "panic: %v\n%s", r, debug.Stack())
+			if rep.Failed == "" && len(rep.Ran) > 0 {
+				rep.Failed = rep.Ran[len(rep.Ran)-1]
+			}
+			err = fmt.Errorf("internal error (please report it): %v", r)
+			if rep.Failed != "" {
+				err = fmt.Errorf("stage %s: %w", rep.Failed, err)
+			}
+		}
+	}()
+	return executeFn(ctx, cfg, opts, rep)
+}
+
+// executeFn is execute, replaceable in tests.
+var executeFn = execute
 
 func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report) error {
 	tag := opts.Tag
@@ -100,7 +132,7 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 	if commit == "" {
 		commit = os.Getenv("GITHUB_SHA")
 	}
-	vars := templateVars(cfg, info, commit)
+	vars := templateVars(cfg, info, commit, os.Environ(), opts.TokenEnv, opts.TapTokenEnv)
 
 	owner, repo, err := resolveRepo(cfg, opts.Repo)
 	if err != nil {
@@ -110,6 +142,7 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 	tapToken := os.Getenv(opts.TapTokenEnv)
 	ghaction.MaskValue(token)
 	ghaction.MaskValue(tapToken)
+	opts.redact.add(token, tapToken)
 
 	manifestPath := filepath.Join(cfg.Root, filepath.FromSlash(cfg.Manifest))
 	m, err := loadManifest(manifestPath, cfg, info, commit, opts.Fresh)
@@ -119,7 +152,7 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 	rep.Manifest = m
 
 	facts := pipeline.Facts{
-		Manifest: m, HasBuilds: len(cfg.Builds) > 0, HasArchives: len(cfg.Archives) > 0,
+		Manifest: m, HasBuilds: len(cfg.Builds) > 0, BuildsArchives: buildsImportArchives(cfg), HasArchives: len(cfg.Archives) > 0,
 		ArchivesSelfFed:  archivesSelfFed(cfg),
 		ChecksumDisabled: cfg.Checksum.Disable, HasGitHubRelease: cfg.Release.GitHub.IsEnabled(),
 		HasBrews: len(cfg.Brews) > 0, BrewsHaveURL: brewsHave(cfg, func(b config.Brew) bool { return b.URLTemplate != "" }),
@@ -135,17 +168,40 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 		return fmt.Errorf("cannot start:\n%w", err)
 	}
 
-	save := func() error { return m.WriteFile(manifestPath) }
-	var client *github.Client
-	newClient := func(tok string) *github.Client {
-		c, err := github.New(github.Options{Token: tok, APIURL: apiURL(cfg), UploadURL: uploadURL(cfg), UserAgent: "hephaestus/" + Version})
+	save := func() error {
+		root, err := os.OpenRoot(cfg.Root)
 		if err != nil {
+			return err
+		}
+		defer root.Close()
+		return m.WriteFileIn(root, cfg.Manifest)
+	}
+	newClient := func(tok string) (*github.Client, error) {
+		return github.New(github.Options{Token: tok, APIURL: apiURL(cfg), UploadURL: uploadURL(cfg), UserAgent: "hephaestus/" + Version})
+	}
+	// Validate the API and upload URLs before any stage runs when a stage
+	// talks to GitHub, so a bad URL is reported as such up front.
+	if slices.Contains(opts.Stages, pipeline.Release) || slices.Contains(opts.Stages, pipeline.Tap) {
+		if _, err := newClient(""); err != nil {
+			return err
+		}
+	}
+	var client *github.Client
+	if token != "" {
+		if client, err = newClient(token); err != nil {
+			return fmt.Errorf("%s: %w", opts.TokenEnv, err)
+		}
+	}
+	// clientFor builds a client for a rendered brews[].repository.token,
+	// which is then a known secret.
+	clientFor := func(tok string) *github.Client {
+		opts.redact.add(tok)
+		c, err := newClient(tok)
+		if err != nil {
+			fmt.Fprintf(opts.Stderr, "error: repository.token: %s\n", opts.redact.redact(err.Error()))
 			return nil
 		}
 		return c
-	}
-	if token != "" {
-		client = newClient(token)
 	}
 
 	for _, stage := range opts.Stages {
@@ -155,7 +211,7 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 		switch stage {
 		case pipeline.Build:
 			var res *build.Result
-			res, err = build.Run(ctx, build.Input{Config: cfg, Manifest: m, Vars: vars, Environ: os.Environ(), Stdout: opts.Stderr, Stderr: opts.Stderr})
+			res, err = build.Run(ctx, build.Input{Config: cfg, Manifest: m, Vars: vars, Environ: os.Environ(), ScrubEnv: []string{opts.TokenEnv, opts.TapTokenEnv}, Stdout: opts.Stderr, Stderr: opts.Stderr})
 			if res != nil {
 				rep.Build = res
 			}
@@ -184,11 +240,17 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 		case pipeline.Tap:
 			var tc *github.Client
 			if tapToken != "" {
-				tc = newClient(tapToken)
+				if tc, err = newClient(tapToken); err != nil {
+					err = fmt.Errorf("%s: %w", opts.TapTokenEnv, err)
+					break
+				}
 			}
 			var res []tap.Result
-			res, err = tap.Run(ctx, tap.Input{Config: cfg, Manifest: m, Vars: vars, Client: tc, ClientFor: newClient, DryRun: opts.DryRun, Log: opts.Stderr})
+			res, err = tap.Run(ctx, tap.Input{Config: cfg, Manifest: m, Vars: vars, Client: tc, ClientFor: clientFor, DryRun: opts.DryRun, Log: opts.Stderr})
 			rep.Tap = res
+			for _, t := range res {
+				rep.Warnings = append(rep.Warnings, t.Warnings...)
+			}
 		}
 		if serr := save(); serr != nil && err == nil {
 			err = fmt.Errorf("save manifest: %w", serr)
@@ -201,10 +263,26 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 	return nil
 }
 
-func templateVars(cfg *config.Config, info version.Info, commit string) tmpl.Vars {
-	env := map[string]string{}
-	for _, kv := range os.Environ() {
-		if k, v, ok := strings.Cut(kv, "="); ok {
+// templateVars builds the template variables. .Env is the process
+// environment without credentials: the variables named in hidden (the token
+// variables), build.DefaultScrubEnv, and any name tmpl.IsCredentialName
+// matches, because most rendered values (release notes, formulas, commit
+// messages) are published. Top-level env entries are always visible: writing
+// one is an explicit opt-in. The complete environment stays available to
+// the values meant to read a credential (tmpl.Vars.Secret).
+func templateVars(cfg *config.Config, info version.Info, commit string, environ []string, hidden ...string) tmpl.Vars {
+	hide := map[string]bool{}
+	for _, n := range append(append([]string(nil), build.DefaultScrubEnv...), hidden...) {
+		hide[strings.ToUpper(n)] = true
+	}
+	env, full := map[string]string{}, map[string]string{}
+	for _, kv := range environ {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		full[k] = v
+		if !hide[strings.ToUpper(k)] && !tmpl.IsCredentialName(k) {
 			env[k] = v
 		}
 	}
@@ -221,7 +299,7 @@ func templateVars(cfg *config.Config, info version.Info, commit string) tmpl.Var
 		Version: info.Version, Tag: info.Tag, RawVersion: info.Tag,
 		Major: info.Major, Minor: info.Minor, Patch: info.Patch, Prerelease: info.Prerelease,
 		Commit: commit, ShortCommit: short, Env: env,
-	}
+	}.WithSecretEnv(full)
 }
 
 func resolveRepo(cfg *config.Config, flagRepo string) (string, string, error) {
@@ -244,7 +322,12 @@ func resolveRepo(cfg *config.Config, flagRepo string) (string, string, error) {
 
 func loadManifest(path string, cfg *config.Config, info version.Info, commit string, fresh bool) (*manifest.Manifest, error) {
 	if !fresh {
-		m, err := manifest.ReadFile(path)
+		root, err := os.OpenRoot(cfg.Root)
+		if err != nil {
+			return nil, err
+		}
+		m, err := manifest.ReadFileIn(root, cfg.Manifest)
+		_ = root.Close()
 		switch {
 		case err == nil:
 			if m.Project != cfg.Project.Name || m.Version != info.Version {
@@ -256,6 +339,15 @@ func loadManifest(path string, cfg *config.Config, info version.Info, commit str
 		}
 	}
 	return manifest.New(cfg.Project.Name, info.Version, info.Tag, commit), nil
+}
+
+func buildsImportArchives(cfg *config.Config) bool {
+	for i := range cfg.Builds {
+		if cfg.Builds[i].ImportsArchives() {
+			return true
+		}
+	}
+	return false
 }
 
 func archivesSelfFed(cfg *config.Config) bool {

@@ -71,3 +71,14 @@ func TestCheckUsesManifest(t *testing.T) {
 		t.Errorf("dry run should not need a token: %v", err)
 	}
 }
+
+func TestCheckBuildThatImportsArchives(t *testing.T) {
+	f := full()
+	if err := Check([]Stage{Build, Formula}, f); err == nil {
+		t.Fatal("formula without archives accepted")
+	}
+	f.BuildsArchives = true
+	if err := Check([]Stage{Build, Formula}, f); err != nil {
+		t.Errorf("archives imported by the build were not counted: %v", err)
+	}
+}

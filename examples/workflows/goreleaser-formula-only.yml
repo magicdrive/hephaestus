@@ -1,0 +1,50 @@
+# GoReleaser builds, archives and publishes the GitHub Release as before.
+# Hephaestus then imports dist/artifacts.json and publishes only the Homebrew
+# formula (see examples/goreleaser-formula-only/hephaestus.yaml).
+name: Release (GoReleaser + Hephaestus formula)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Import GoReleaser archives
+        uses: magicdrive/hephaestus@<full-commit-sha>
+        with:
+          command: build
+          config: hephaestus.yaml
+          fresh: "true"
+          github-token: ""
+      - name: Formula and tap pull request
+        uses: magicdrive/hephaestus@<full-commit-sha>
+        with:
+          command: run
+          stages: formula,tap
+          github-token: ""
+          tap-token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

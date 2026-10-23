@@ -29,6 +29,7 @@ type fakeGitHub struct {
 	tokens  map[string]bool
 	repos   map[string]*fakeRepo
 	commits map[string]map[string]string // sha -> path -> content
+	parents map[string]string            // sha -> parent sha ("" for a root commit)
 	seq     int
 	pulls   []*fakePull
 	log     []string
@@ -52,7 +53,7 @@ type fakePull struct {
 }
 
 func newFake(t *testing.T, tokens ...string) *fakeGitHub {
-	f := &fakeGitHub{t: t, tokens: map[string]bool{}, repos: map[string]*fakeRepo{}, commits: map[string]map[string]string{}}
+	f := &fakeGitHub{t: t, tokens: map[string]bool{}, repos: map[string]*fakeRepo{}, commits: map[string]map[string]string{}, parents: map[string]string{}}
 	for _, tok := range tokens {
 		f.tokens[tok] = true
 	}
@@ -113,6 +114,7 @@ func (f *fakeGitHub) setFileLocked(full, branch, path, content string) string {
 	}
 	sha := f.nextSHA("commit")
 	f.commits[sha] = snap
+	f.parents[sha] = repo.branches[branch]
 	repo.branches[branch] = sha
 	return sha
 }
@@ -338,6 +340,27 @@ func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) 
 		repo.branches[branch] = req.SHA
 		reply(w, 201, map[string]any{"ref": req.Ref, "object": map[string]any{"sha": req.SHA, "type": "commit"}})
 
+	case r.Method == "GET" && len(rest) >= 2 && rest[0] == "compare":
+		baseRef, headSpec, ok := strings.Cut(strings.Join(rest[1:], "/"), "...")
+		if !ok {
+			notFound(w)
+			return
+		}
+		headRepo := repo
+		if o, b, ok := strings.Cut(headSpec, ":"); ok {
+			headRepo, headSpec = f.repos[o+"/"+parts[1]], b
+		}
+		baseSHA, ok1 := repo.branches[baseRef]
+		headSHA := ""
+		if headRepo != nil {
+			headSHA = headRepo.branches[headSpec]
+		}
+		if !ok1 || headSHA == "" {
+			notFound(w)
+			return
+		}
+		f.compareLocked(w, baseSHA, headSHA)
+
 	case len(rest) == 1 && rest[0] == "pulls" && r.Method == "GET":
 		q := r.URL.Query()
 		if q.Get("state") != "open" {
@@ -369,7 +392,7 @@ func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) 
 			}
 		}
 		for _, p := range f.pulls {
-			if p.BaseRepo == full && p.HeadLabel == label {
+			if p.BaseRepo == full && p.HeadLabel == label && p.Base == req.Base {
 				reply(w, 422, map[string]any{"message": "Validation Failed", "errors": []any{map[string]any{"resource": "PullRequest", "code": "custom", "message": "A pull request already exists for " + label + "."}}})
 				return
 			}
@@ -396,4 +419,55 @@ func (f *fakeGitHub) pullJSON(p *fakePull) map[string]any {
 // addPullLocked registers an open pull request (f.mu held).
 func (f *fakeGitHub) addPullLocked(baseRepo, label, headRef, base string) {
 	f.pulls = append(f.pulls, &fakePull{Number: len(f.pulls) + 1, BaseRepo: baseRepo, HeadLabel: label, HeadRef: headRef, Base: base})
+}
+
+// compareLocked answers a three-dot comparison (f.mu held).
+func (f *fakeGitHub) compareLocked(w http.ResponseWriter, baseSHA, headSHA string) {
+	ancestors := func(sha string) []string {
+		var out []string
+		for ; sha != ""; sha = f.parents[sha] {
+			out = append(out, sha)
+		}
+		return out
+	}
+	baseList, headList := ancestors(baseSHA), ancestors(headSHA)
+	baseIdx := map[string]int{}
+	for i, s := range baseList {
+		baseIdx[s] = i
+	}
+	mb, ahead, behind := "", 0, 0
+	for i, s := range headList {
+		if j, ok := baseIdx[s]; ok {
+			mb, ahead, behind = s, i, j
+			break
+		}
+	}
+	if mb == "" {
+		reply(w, 404, map[string]any{"message": "No common ancestor between the refs."})
+		return
+	}
+	status := "diverged"
+	switch {
+	case baseSHA == headSHA:
+		status = "identical"
+	case mb == baseSHA:
+		status = "ahead"
+	case mb == headSHA:
+		status = "behind"
+	}
+	files := []any{}
+	from, to := f.commits[mb], f.commits[headSHA]
+	for path, c := range to {
+		if old, ok := from[path]; !ok {
+			files = append(files, map[string]any{"filename": path, "status": "added"})
+		} else if old != c {
+			files = append(files, map[string]any{"filename": path, "status": "modified"})
+		}
+	}
+	for path := range from {
+		if _, ok := to[path]; !ok {
+			files = append(files, map[string]any{"filename": path, "status": "removed"})
+		}
+	}
+	reply(w, 200, map[string]any{"status": status, "ahead_by": ahead, "behind_by": behind, "total_commits": ahead, "files": files})
 }

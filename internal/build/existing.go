@@ -101,11 +101,24 @@ func (s *stage) importArchive(b *config.Build, provider, origin, rel, format str
 	}
 	defer v.file.Close()
 	lim := s.in.Config.Limits
+	allowSensitive := importAllowsSensitive(b)
 	files, err := archive.Inspect(io.NewSectionReader(v.file, 0, v.size), v.size, byName, archive.InspectLimits{
 		MaxEntries: lim.MaxFiles, MaxFileSize: int64(lim.MaxFileSize), MaxTotalSize: int64(lim.MaxTotalSize),
+		ScanSecrets: !allowSensitive,
 	})
+	if errors.Is(err, archive.ErrSensitiveContent) {
+		return manifest.Artifact{}, fmt.Errorf("archive %q: refusing it: %w; set allow_sensitive: true on the import if this is intended", rel, err)
+	}
 	if err != nil {
 		return manifest.Artifact{}, fmt.Errorf("archive %q: %w", rel, err)
+	}
+	if !allowSensitive {
+		// The same name rules as archives Hephaestus builds itself.
+		for _, f := range files {
+			if why := archive.SensitiveEntry(f.Path, f.Type == archive.TypeDir); why != "" {
+				return manifest.Artifact{}, fmt.Errorf("archive %q: refusing member %q because %s; set allow_sensitive: true on the import if this is intended", rel, f.Path, why)
+			}
+		}
 	}
 	// Inspect read through the same handle; make sure the file was not
 	// rewritten under us between hashing and inspection.
@@ -143,6 +156,18 @@ func (s *stage) importArchive(b *config.Build, provider, origin, rel, format str
 	}
 	sort.Strings(a.Executables)
 	return a, nil
+}
+
+// importAllowsSensitive reports whether the build's import opted out of the
+// sensitive-member checks.
+func importAllowsSensitive(b *config.Build) bool {
+	switch {
+	case b.Existing != nil:
+		return b.Existing.AllowSensitive
+	case b.GoReleaser != nil:
+		return b.GoReleaser.AllowSensitive
+	}
+	return false
 }
 
 func parseOctal(s string) (uint32, error) {

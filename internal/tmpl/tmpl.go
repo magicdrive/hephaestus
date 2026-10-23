@@ -39,7 +39,56 @@ type Vars struct {
 	ArtifactName string // file name, e.g. "mycli_1.2.3_darwin_arm64.tar.gz"
 	ArtifactPath string // project-relative path
 	ArtifactExt  string // extension including the dot, e.g. ".tar.gz"
-	Env          map[string]string
+	// Env is .Env in templates. Callers leave credentials out of it (see
+	// IsCredentialName) because most rendered values end up published.
+	Env map[string]string
+
+	// secretEnv is the complete environment, credentials included. It is
+	// unexported, so templates cannot reach it; Secret exposes it as .Env
+	// for the few values whose purpose is to read a credential.
+	secretEnv map[string]string
+}
+
+// WithSecretEnv returns a copy of v that carries env, the complete
+// environment including credentials, for Secret.
+func (v Vars) WithSecretEnv(env map[string]string) Vars {
+	v.secretEnv = env
+	return v
+}
+
+// Secret returns a copy of v whose Env is the complete environment set with
+// WithSecretEnv, overlaid with v.Env. Use it only to render values meant to
+// hold a credential (brews[].repository.token, builds[].env), never values
+// that are published.
+func (v Vars) Secret() Vars {
+	if v.secretEnv == nil {
+		return v
+	}
+	env := make(map[string]string, len(v.secretEnv)+len(v.Env))
+	for k, val := range v.secretEnv {
+		env[k] = val
+	}
+	for k, val := range v.Env {
+		env[k] = val
+	}
+	v.Env = env
+	return v
+}
+
+// credentialWords mark an environment variable name as a credential.
+var credentialWords = []string{"TOKEN", "SECRET", "PASSWORD", "PASSWD", "PRIVATE_KEY", "CREDENTIAL"}
+
+// IsCredentialName reports whether an environment variable name looks like
+// it holds a credential: it contains TOKEN, SECRET, PASSWORD, PASSWD,
+// PRIVATE_KEY or CREDENTIAL, ignoring case.
+func IsCredentialName(name string) bool {
+	u := strings.ToUpper(name)
+	for _, w := range credentialWords {
+		if strings.Contains(u, w) {
+			return true
+		}
+	}
+	return false
 }
 
 // FullCommit is an alias of Commit (GoReleaser compatibility). It is a method

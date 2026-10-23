@@ -28,10 +28,10 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/magicdrive/hephaestus/internal/config"
 	"github.com/magicdrive/hephaestus/internal/manifest"
@@ -128,36 +128,27 @@ func Run(in Input) ([]Formula, error) {
 	return fs, nil
 }
 
-// writeConfined writes rel under root, refusing to follow a symlinked parent
-// directory out of root.
+// writeConfined writes rel under root. Every step (creating parent
+// directories, the temporary file and the final rename) goes through an
+// os.Root, so a parent directory that is or becomes a symbolic link out of
+// root is an error and nothing is created outside root. An output that is
+// itself a symbolic link is refused rather than replaced.
 func writeConfined(root, rel string, data []byte) error {
 	if err := pathutil.ValidateRelative(rel); err != nil {
 		return fmt.Errorf("output path %q: %w", rel, err)
 	}
-	absRoot, err := filepath.Abs(root)
+	r, err := os.OpenRoot(root)
 	if err != nil {
 		return err
 	}
-	realRoot, err := filepath.EvalSymlinks(absRoot)
-	if err != nil {
-		return err
-	}
-	dest := filepath.Join(absRoot, filepath.FromSlash(rel))
-	dir := filepath.Dir(dest)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	realDir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return err
-	}
-	if r, err := filepath.Rel(realRoot, realDir); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("output directory %s resolves outside the project root", dir)
-	}
-	if fi, err := os.Lstat(dest); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+	defer r.Close()
+	if fi, err := r.Lstat(rel); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("output %s is a symbolic link", rel)
 	}
-	return manifest.WriteFileAtomic(dest, data, 0o644)
+	if err := manifest.WriteFileAtomicIn(r, rel, data, 0o644); err != nil {
+		return fmt.Errorf("output %s: cannot write it inside the project root (does a directory on its path link outside the project root?): %w", rel, err)
+	}
+	return nil
 }
 
 // platform is one selected archive with its resolved URL.
@@ -563,7 +554,11 @@ func (g *gen) urlStanza(b *config.Brew, vars tmpl.Vars, p *platform) error {
 	for _, o := range opts {
 		width = max(width, len(o.key))
 	}
-	s := "      url " + mustQuote(p.url)
+	qurl, err := RubyString(p.url)
+	if err != nil {
+		return fmt.Errorf("download URL: %w", err)
+	}
+	s := "      url " + qurl
 	for _, o := range opts {
 		s += ",\n          " + o.key + strings.Repeat(" ", width-len(o.key)+1) + o.val
 	}
@@ -718,6 +713,9 @@ func artifactExt(a manifest.Artifact) string {
 }
 
 func checkURL(s string) error {
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("download URL %q is not valid UTF-8", s)
+	}
 	for _, r := range s {
 		if r <= ' ' || r == 0x7f || needsUnicodeEscape(r) {
 			return fmt.Errorf("download URL %q contains whitespace or control characters", s)

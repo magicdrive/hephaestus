@@ -40,6 +40,8 @@ type fakeGitHub struct {
 	digests bool
 	// immutable makes releases immutable when published.
 	immutable bool
+	// tags are the git tags that exist (GET git/ref/tags/<tag>).
+	tags map[string]bool
 	// hook runs before the default handling; returning true means it wrote
 	// the response. It is called without f.mu held.
 	hook        func(w http.ResponseWriter, r *http.Request, body []byte) bool
@@ -259,6 +261,14 @@ func (f *fakeGitHub) serveAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) {
+	if t, ok := strings.CutPrefix(r.URL.Path, "/repos/"+fakeOwner+"/"+fakeRepo+"/git/ref/tags/"); ok && r.Method == "GET" {
+		if !f.tags[t] {
+			reply(w, 404, map[string]any{"message": "Not Found"})
+			return
+		}
+		reply(w, 200, map[string]any{"ref": "refs/tags/" + t, "object": map[string]any{"sha": strings.Repeat("a", 40), "type": "commit"}})
+		return
+	}
 	prefix := "/repos/" + fakeOwner + "/" + fakeRepo + "/releases"
 	p, ok := strings.CutPrefix(r.URL.Path, prefix)
 	if !ok {
@@ -327,6 +337,44 @@ func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) 
 		}
 		f.refreshURLs(rel)
 		reply(w, 200, f.view(rel))
+
+	case r.Method == "DELETE" && len(parts) == 1 && parts[0] != "":
+		id, _ := strconv.ParseInt(parts[0], 10, 64)
+		for i, rel := range f.releases {
+			if rel.ID == id {
+				f.releases = append(f.releases[:i], f.releases[i+1:]...)
+				w.WriteHeader(204)
+				return
+			}
+		}
+		reply(w, 404, map[string]any{"message": "Not Found"})
+
+	case r.Method == "PATCH" && len(parts) == 2 && parts[0] == "assets":
+		id, _ := strconv.ParseInt(parts[1], 10, 64)
+		rel, i := f.asset(id)
+		if rel == nil {
+			reply(w, 404, map[string]any{"message": "Not Found"})
+			return
+		}
+		if rel.Immutable {
+			reply(w, 422, map[string]any{"message": "Cannot update asset of an immutable release."})
+			return
+		}
+		var req struct {
+			Name string `json:"name"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if req.Name != "" {
+			for _, a := range rel.assets {
+				if a.Name == req.Name && a.ID != id {
+					validationFailed(w, "ReleaseAsset", "name", "already_exists")
+					return
+				}
+			}
+			rel.assets[i].Name = req.Name
+		}
+		f.refreshURLs(rel)
+		reply(w, 200, rel.assets[i].Asset)
 
 	case r.Method == "GET" && len(parts) == 2 && parts[1] == "assets":
 		id, _ := strconv.ParseInt(parts[0], 10, 64)

@@ -16,18 +16,21 @@ const CurrentVersion = 1
 
 // Config is the root of hephaestus.yaml.
 type Config struct {
-	Version  int        `yaml:"version"`
-	Project  Project    `yaml:"project"`
-	Dist     string     `yaml:"dist"`
-	Manifest string     `yaml:"manifest"`
-	Builds   []Build    `yaml:"builds"`
-	Archives []Archive  `yaml:"archives"`
-	Checksum Checksum   `yaml:"checksum"`
-	Release  Release    `yaml:"release"`
-	Brews    []Brew     `yaml:"brews"`
-	Homebrew *Brew      `yaml:"homebrew"`
-	Limits   Limits     `yaml:"limits"`
-	Env      []EnvEntry `yaml:"env"`
+	Version  int       `yaml:"version"`
+	Project  Project   `yaml:"project"`
+	Dist     string    `yaml:"dist"`
+	Manifest string    `yaml:"manifest"`
+	Builds   []Build   `yaml:"builds"`
+	Archives []Archive `yaml:"archives"`
+	Checksum Checksum  `yaml:"checksum"`
+	Release  Release   `yaml:"release"`
+	Brews    []Brew    `yaml:"brews"`
+	// BrewsFrom names a GoReleaser configuration whose brews entries are
+	// appended to Brews (see AddBrews).
+	BrewsFrom string     `yaml:"brews_from"`
+	Homebrew  *Brew      `yaml:"homebrew"`
+	Limits    Limits     `yaml:"limits"`
+	Env       []EnvEntry `yaml:"env"`
 
 	// Root is the directory containing the configuration file. All source
 	// paths are resolved against it. Not read from YAML.
@@ -84,9 +87,6 @@ type Build struct {
 	Timeout Duration          `yaml:"timeout"`
 	// Output is the path of the built executable for each target (template).
 	Output string `yaml:"output"`
-	// Binary is the executable's name as installed; defaults to Output's base
-	// name without a ".exe" suffix.
-	Binary string `yaml:"binary"`
 
 	// GoReleaser provider.
 	GoReleaser *GoReleaserImport `yaml:"goreleaser"`
@@ -101,6 +101,13 @@ const (
 	ProviderGoReleaser = "goreleaser"
 	ProviderExisting   = "existing"
 )
+
+// ImportsArchives reports whether the build imports prebuilt archives
+// (existing kind archive, or goreleaser with archives: true). Such archives
+// are recorded under the build's id and can be selected by brews[].ids.
+func (b *Build) ImportsArchives() bool {
+	return (b.Existing != nil && b.Existing.Kind == ExistingKindArchive) || (b.GoReleaser != nil && b.GoReleaser.Archives)
+}
 
 // Provider returns the provider this build uses.
 func (b *Build) Provider() string {
@@ -130,6 +137,10 @@ type GoReleaserImport struct {
 	// import when GoReleaser built several; defaults to v1. Artifacts of
 	// other levels are skipped because a target has no level dimension.
 	GoAMD64 string `yaml:"goamd64"`
+	// AllowSensitive accepts imported archives (archives: true) whose
+	// members look like credentials: sensitive names or directories, or
+	// content holding a private key. Off by default.
+	AllowSensitive bool `yaml:"allow_sensitive"`
 }
 
 // Existing import kinds.
@@ -145,6 +156,10 @@ type ExistingImport struct {
 	// Kind is "binary" (default: an executable) or "archive" (a .tar.gz,
 	// .tgz or .zip imported as a release-ready archive).
 	Kind string `yaml:"kind"`
+	// AllowSensitive accepts imported archives (kind: archive) whose
+	// members look like credentials: sensitive names or directories, or
+	// content holding a private key. Off by default.
+	AllowSensitive bool `yaml:"allow_sensitive"`
 }
 
 // Command is an argument vector. In YAML it is either a list (executed
@@ -286,6 +301,9 @@ type GitHubRelease struct {
 	MakeLatest string `yaml:"make_latest"`
 	Notes      string `yaml:"notes"`
 	NotesFile  string `yaml:"notes_file"`
+	// GenerateNotes lets GitHub generate the notes when the release is
+	// created and neither notes nor notes_file is set.
+	GenerateNotes bool `yaml:"generate_notes"`
 	// TargetCommitish is used only when the tag does not exist yet.
 	TargetCommitish string `yaml:"target_commitish"`
 	// ReplaceExistingAssets allows replacing a same-named asset whose

@@ -6,7 +6,8 @@ import (
 )
 
 func TestValidateRelative(t *testing.T) {
-	good := []string{"a", "a/b", "bin/mycli", "docs/man/mycli.1", "日本語/ファイル.txt", ".github/x"}
+	good := []string{"a", "a/b", "bin/mycli", "docs/man/mycli.1", "日本語/ファイル.txt", ".github/x",
+		"console", "con1", "com0", "com10", "lpt", "auxiliary/x", "nul_file", "x.con", "a/CONFIG.txt"}
 	for _, p := range good {
 		if err := ValidateRelative(p); err != nil {
 			t.Errorf("ValidateRelative(%q) = %v", p, err)
@@ -16,6 +17,10 @@ func TestValidateRelative(t *testing.T) {
 		"", "/etc/passwd", "../x", "a/../../x", "a/./b", ".", "..", "a//b", "a/",
 		`a\b`, `..\x`, "C:/x", "c:x", "a\x00b", "a\nb", "a\x7f", "a:b", "a/b?", "a*",
 		"con. ", "x/y.", "\xff", strings.Repeat("a", MaxPathLength+1), strings.Repeat("b", MaxSegmentLength+1),
+		// Unicode format characters (Cf): bidi overrides, zero-width, BOM.
+		"evil\u202Egpj.exe", "a/\u200Bb", "\u200Dx", "x\uFEFF", "\u2066a\u2069", "a\u00ADb",
+		// Windows reserved device names, any case, with or without extension.
+		"CON", "con", "prn.txt", "Aux.tar.gz", "docs/NUL", "nul.", "COM1", "com9.log", "LPT1", "lpt9/x", "con .txt",
 	}
 	for _, p := range bad {
 		if err := ValidateRelative(p); err == nil {

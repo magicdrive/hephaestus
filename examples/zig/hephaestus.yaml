@@ -1,0 +1,60 @@
+# A Zig CLI. Zig cross-compiles to every target from one host; build.zig must
+# use b.standardTargetOptions so that -Dtarget is honored.
+version: 1
+
+project:
+  name: mycli
+  description: Friendly tool for managing widgets
+  homepage: https://github.com/acme/mycli
+  license: MIT
+
+builds:
+  - id: mycli
+    matrix:
+      os: [darwin, linux, windows]
+      arch: [amd64, arm64]
+      exclude:
+        - {os: windows, arch: arm64}
+    command: |
+      set -eu
+      case "$HEPHAESTUS_OS/$HEPHAESTUS_ARCH" in
+        linux/amd64)   triple=x86_64-linux-musl ;;
+        linux/arm64)   triple=aarch64-linux-musl ;;
+        darwin/amd64)  triple=x86_64-macos ;;
+        darwin/arm64)  triple=aarch64-macos ;;
+        windows/amd64) triple=x86_64-windows-gnu ;;
+        *) echo "unsupported target" >&2; exit 1 ;;
+      esac
+      zig build -Dtarget="$triple" -Doptimize=ReleaseSafe --prefix "dist/zig/${HEPHAESTUS_OS}_${HEPHAESTUS_ARCH}"
+    output: "dist/zig/{{ .OS }}_{{ .Arch }}/bin/mycli{{ .Ext }}"
+
+archives:
+  - id: default
+    format_overrides:
+      - os: windows
+        format: zip
+    files:
+      - src: "dist/zig/{{ .OS }}_{{ .Arch }}/bin/mycli{{ .Ext }}"
+        dst: "bin/mycli{{ .Ext }}"
+        mode: "0755"
+      - LICENSE
+      - README.md
+
+checksum:
+  name: "{{ .Project }}_checksums.txt"
+
+release:
+  github:
+    owner: acme
+    name: mycli
+
+brews:
+  - name: mycli
+    directory: Formula
+    install: |
+      bin.install "bin/mycli"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/mycli --version")
+    repository:
+      owner: acme
+      name: homebrew-tap

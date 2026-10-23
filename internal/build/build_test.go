@@ -48,6 +48,15 @@ func helper(mode string) int {
 			os.Chmod(out, 0)
 		}
 		return 0
+	case "env":
+		// The output lists which credential variables the command saw.
+		var b strings.Builder
+		for _, k := range scrubProbe {
+			if v, ok := os.LookupEnv(k); ok {
+				fmt.Fprintf(&b, "%s=%s\n", k, v)
+			}
+		}
+		return exitOn(os.WriteFile(out, []byte(b.String()), 0o755))
 	case "empty":
 		return exitOn(os.WriteFile(out, nil, 0o755))
 	case "noop":
@@ -536,5 +545,72 @@ func TestTailBuffer(t *testing.T) {
 	tb.Write([]byte("0123456789"))
 	if string(tb.buf) != "23456789" || !tb.truncated {
 		t.Errorf("tail = %q", tb.buf)
+	}
+}
+
+// scrubProbe are the variables the "env" helper reports.
+var scrubProbe = []string{
+	"GITHUB_TOKEN", "HOMEBREW_TAP_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT",
+	"ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
+	"MY_RELEASE_TOKEN", "MY_TAP_TOKEN", "KEEP_ME",
+}
+
+// TestCommandEnvScrubsCredentials is a regression test: build commands used
+// to inherit the release and tap tokens, so any build-time code (go
+// generate, npm postinstall, build.rs) could publish releases or push to the
+// tap.
+func TestCommandEnvScrubsCredentials(t *testing.T) {
+	root := fixture(t, nil)
+	cfg := loadConfig(t, root, helperBuild(t, "env", ""))
+	in, _ := newInput(cfg)
+	for _, k := range scrubProbe {
+		in.Environ = append(in.Environ, k+"=secret-"+k)
+	}
+	in.ScrubEnv = []string{"MY_RELEASE_TOKEN", "MY_TAP_TOKEN", ""}
+	res := run(t, in)
+	data, err := os.ReadFile(filepath.Join(root, res.Binaries[0].Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); got != "KEEP_ME=secret-KEEP_ME\n" {
+		t.Fatalf("command saw:\n%s\nwant only KEEP_ME", got)
+	}
+}
+
+// TestCommandEnvOptInPassesCredential checks the explicit opt-in: a build's
+// env may pass a scrubbed credential, read through .Env even though .Env
+// hides credentials from other templates.
+func TestCommandEnvOptInPassesCredential(t *testing.T) {
+	root := fixture(t, nil)
+	cfg := loadConfig(t, root, fmt.Sprintf(`
+project: {name: app}
+builds:
+  - command: [%s]
+    targets: [{os: linux, arch: amd64}]
+    output: dist/app
+    env:
+      %s: env
+      GITHUB_TOKEN: "{{ .Env.GITHUB_TOKEN }}"
+`, self(t), helperEnv))
+	in, _ := newInput(cfg)
+	in.Environ = append(in.Environ, "GITHUB_TOKEN=ghs_optin", "GH_TOKEN=ghs_other")
+	// .Env (published values) hides the token; the full environment is
+	// available only through Secret.
+	in.Vars.Env = map[string]string{}
+	in.Vars = in.Vars.WithSecretEnv(map[string]string{"GITHUB_TOKEN": "ghs_optin"})
+	res := run(t, in)
+	data, err := os.ReadFile(filepath.Join(root, res.Binaries[0].Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); got != "GITHUB_TOKEN=ghs_optin\n" {
+		t.Fatalf("command saw:\n%s", got)
+	}
+}
+
+func TestScrubEnv(t *testing.T) {
+	got := scrubEnv([]string{"A=1", "GITHUB_TOKEN=x", "X_TOKEN=y", "B=2", "ACTIONS_RUNTIME_TOKEN=z"}, []string{"X_TOKEN"})
+	if strings.Join(got, ",") != "A=1,B=2" {
+		t.Fatalf("scrubEnv = %v", got)
 	}
 }

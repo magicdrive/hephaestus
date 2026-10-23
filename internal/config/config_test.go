@@ -187,3 +187,20 @@ func FuzzParse(f *testing.F) {
 		_ = cfg.Validate()
 	})
 }
+
+func TestBrewIDsMayNameImportingBuilds(t *testing.T) {
+	ok := `project: {name: x}
+builds: [{id: gr, goreleaser: {archives: true}}]
+brews: [{ids: [gr]}]
+`
+	if _, err := load(ok); err != nil {
+		t.Errorf("importing build id rejected: %v", err)
+	}
+	bad := `project: {name: x}
+builds: [{id: gr, goreleaser: {}}]
+brews: [{ids: [gr]}]
+`
+	if _, err := load(bad); err == nil {
+		t.Error("build that imports no archives accepted as a brew id")
+	}
+}

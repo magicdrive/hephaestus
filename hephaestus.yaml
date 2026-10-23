@@ -50,6 +50,7 @@ release:
   github:
     owner: magicdrive
     name: hephaestus
+    generate_notes: true
 
 brews:
   - name: hephaestus

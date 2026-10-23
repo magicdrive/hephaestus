@@ -10,19 +10,42 @@
 //     release becomes public, and therefore immutable, before its assets are
 //     complete. A failed or timed-out create is followed by a re-read, never
 //     by a blind second POST, so no duplicate release is created.
-//  3. Assets are processed one by one. An identical asset is left alone; an
+//     Right after a create, the release list is read again: when a
+//     concurrent run created a draft for the same tag first (lower id), or
+//     published one, the draft this run just created is deleted and the
+//     other one is used, so concurrent runs converge on one release. Only
+//     the draft created by this very call is ever deleted.
+//  3. An existing draft that is about to be published must not hold assets
+//     that are not in the manifest (left over from an older naming scheme,
+//     or placed by someone else): that is an error, and they are never
+//     deleted automatically. On a published release they are only reported.
+//  4. Assets are processed one by one. An identical asset is left alone; an
 //     incomplete one ("starter") is deleted and uploaded again; a different
 //     one is an error unless replace_existing_assets is set. Every upload is
 //     verified against the size and digest GitHub reports.
-//  4. Only when every asset is in place is the release published (unless
+//  5. Only when every asset is in place is the release published (unless
 //     draft: true). A failure leaves the release a draft and returns an
 //     error; the next run resumes where this one stopped.
 //
+// Replacing an asset of a published, mutable release
+// (replace_existing_assets) uploads the new content under a temporary name
+// (<name>.hephaestus-tmp) and verifies it, then deletes the old asset and
+// renames the new one. Known limitation: GitHub cannot swap two assets
+// atomically, so the asset is missing between the delete and the rename
+// (one API call). If the rename fails, the verified content stays on the
+// release under the temporary name and the error says so; re-running
+// uploads the asset again under its real name. On a draft the old asset is
+// simply deleted and the new one uploaded, since nobody downloads it yet.
+//
 // Tag handling: the tag must match the release's tag_name exactly. When the
 // git tag does not exist yet, GitHub creates it when the release is
-// published, from release.github.target_commitish, or from the default
-// branch when that is unset. Pushing the tag before releasing is
-// recommended; target_commitish is ignored by GitHub for an existing tag.
+// published, from target_commitish. Hephaestus sends
+// release.github.target_commitish when set, and otherwise the commit being
+// released (--commit / GITHUB_SHA, a full SHA), so the tag points at the
+// commit that was built. When neither is known and the tag does not exist,
+// a warning is logged: GitHub then tags the default branch's HEAD. GitHub
+// ignores target_commitish for an existing tag, so pushing the tag before
+// releasing remains the most reliable option.
 package release
 
 import (
@@ -54,7 +77,10 @@ const (
 	// MaxBodyLength is the longest release body, in characters.
 	MaxBodyLength = 125000
 
-	maxNotesFile   = 1 << 20
+	maxNotesFile = 1 << 20
+	// tmpSuffix names the temporary asset used while replacing an asset of
+	// a published release.
+	tmpSuffix      = ".hephaestus-tmp"
 	createAttempts = 3
 	uploadAttempts = 3
 )
@@ -71,6 +97,7 @@ const (
 var (
 	assetNameRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
 	repoNameRe  = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+	fullSHARe   = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 	semverRe    = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 )
 
@@ -120,23 +147,27 @@ type local struct {
 	idx         int // index in Manifest.Artifacts
 	kind        manifest.Kind
 	name        string
-	path        string
+	path        string // for messages
+	root, rel   string // where it is opened, confined to the project root
 	sha256      string
 	size        int64
 	contentType string
 }
 
 type runner struct {
-	in         Input
-	cfg        *config.GitHubRelease
-	c          *github.Client
-	log        io.Writer
-	owner      string
-	repo       string
-	tag        string
-	name       string
-	body       string
-	bodySet    bool
+	in      Input
+	cfg     *config.GitHubRelease
+	c       *github.Client
+	log     io.Writer
+	owner   string
+	repo    string
+	tag     string
+	name    string
+	body    string
+	bodySet bool
+	// target is the target_commitish sent to GitHub: the configured one,
+	// else the commit being released; empty when neither is known.
+	target     string
 	prerelease bool
 	assets     []*local
 	res        *Result
@@ -248,8 +279,7 @@ func (r *runner) prepareText() error {
 	}
 	switch {
 	case r.cfg.NotesFile != "":
-		p := filepath.Join(r.in.Config.Root, filepath.FromSlash(r.cfg.NotesFile))
-		data, err := readFileLimited(p, maxNotesFile)
+		data, err := readNotesFile(r.in.Config.Root, r.cfg.NotesFile, maxNotesFile)
 		if err != nil {
 			return fmt.Errorf("notes_file: %w", err)
 		}
@@ -267,6 +297,14 @@ func (r *runner) prepareText() error {
 	if n := utf8.RuneCountInString(r.body); n > MaxBodyLength {
 		return fmt.Errorf("release notes are %d characters; GitHub allows %d", n, MaxBodyLength)
 	}
+	r.target = r.cfg.TargetCommitish
+	if c := strings.ToLower(strings.TrimSpace(r.in.Vars.Commit)); r.target == "" && c != "" {
+		if fullSHARe.MatchString(c) {
+			r.target = c
+		} else {
+			r.logf("warning: commit %q is not a full SHA; it is not used as the release's target_commitish", r.in.Vars.Commit)
+		}
+	}
 	switch r.cfg.Prerelease {
 	case "true":
 		r.prerelease = true
@@ -278,18 +316,48 @@ func (r *runner) prepareText() error {
 	return nil
 }
 
-func readFileLimited(p string, limit int64) ([]byte, error) {
-	f, err := os.Open(p)
+// readNotesFile reads rel (slash-separated, relative to root) through an
+// os.Root, so neither ".." nor a symbolic link (of the file or of a parent
+// directory) can make it read a file outside the project: a release body is
+// public, and a link such as CHANGELOG.md -> /proc/self/environ would
+// otherwise publish the process environment, tokens included. Links that
+// stay inside root are followed. Only a regular file of at most limit bytes
+// is accepted.
+func readNotesFile(root, rel string, limit int64) ([]byte, error) {
+	if root == "" {
+		root = "."
+	}
+	rt, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer rt.Close()
+	name := filepath.FromSlash(rel)
+	// Stat before opening: opening a FIFO would block.
+	fi, err := rt.Stat(name)
+	if err != nil {
+		return nil, fmt.Errorf("%w (notes_file must be inside the project; symbolic links leading outside it are rejected)", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", rel)
+	}
+	f, err := rt.Open(name)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	if fi, err = f.Stat(); err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", rel)
+	}
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("%s exceeds %d bytes", p, limit)
+		return nil, fmt.Errorf("%s exceeds %d bytes", rel, limit)
 	}
 	return data, nil
 }
@@ -321,7 +389,7 @@ func (r *runner) prepareAssets() []error {
 			continue
 		}
 		seen[strings.ToLower(a.Name)] = a.Name
-		l := &local{idx: i, kind: a.Kind, name: a.Name, path: filepath.Join(r.in.Config.Root, filepath.FromSlash(a.Path)), contentType: contentType(a.Name)}
+		l := &local{idx: i, kind: a.Kind, name: a.Name, path: filepath.Join(r.in.Config.Root, filepath.FromSlash(a.Path)), root: r.in.Config.Root, rel: a.Path, contentType: contentType(a.Name)}
 		if err := verifyFile(l, a); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", where, err))
 			continue
@@ -352,7 +420,12 @@ func verifyFile(l *local, a manifest.Artifact) error {
 	if a.SHA256 == "" {
 		return errors.New("the manifest records no sha256; refusing to upload an unverified file")
 	}
-	fi, err := os.Stat(l.path)
+	f, err := manifest.OpenConfined(l.root, l.rel)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
 	if err != nil {
 		return err
 	}
@@ -362,7 +435,7 @@ func verifyFile(l *local, a manifest.Artifact) error {
 	if fi.Size() > MaxAssetSize {
 		return fmt.Errorf("%s is %d bytes; GitHub accepts assets below 2 GiB", l.path, fi.Size())
 	}
-	sum, n, err := hashFile(l.path)
+	sum, n, err := hashReader(f)
 	if err != nil {
 		return err
 	}
@@ -376,12 +449,7 @@ func verifyFile(l *local, a manifest.Artifact) error {
 	return nil
 }
 
-func hashFile(p string) (string, int64, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return "", 0, err
-	}
-	defer f.Close()
+func hashReader(f io.Reader) (string, int64, error) {
 	h := sha256.New()
 	n, err := io.Copy(h, f)
 	if err != nil {
@@ -428,6 +496,9 @@ func (r *runner) run(ctx context.Context) (*Result, error) {
 			return nil, fmt.Errorf("release: looking up %s %s: %w", repo, r.tag, err)
 		}
 	}
+	if rel == nil || rel.Draft {
+		r.checkTagTarget(ctx)
+	}
 	if rel == nil {
 		r.res.Created = true
 		if r.in.DryRun {
@@ -459,6 +530,9 @@ func (r *runner) run(ctx context.Context) (*Result, error) {
 	byName := map[string]github.Asset{}
 	for _, a := range remote {
 		byName[a.Name] = a
+	}
+	if err := r.checkUnexpectedAssets(rel, remote); err != nil {
+		return r.res, err
 	}
 	var failed []error
 	for _, l := range r.assets {
@@ -536,13 +610,15 @@ func (r *runner) findRelease(ctx context.Context) (*github.Release, error) {
 func (r *runner) createDraft(ctx context.Context) (*github.Release, error) {
 	req := github.ReleaseRequest{
 		TagName:         r.tag,
-		TargetCommitish: r.cfg.TargetCommitish,
+		TargetCommitish: r.target,
 		Name:            github.String(r.name),
 		Draft:           github.Bool(true),
 		Prerelease:      github.Bool(r.prerelease),
 	}
 	if r.bodySet {
 		req.Body = github.String(r.body)
+	} else if r.in.Config.Release.GitHub.GenerateNotes {
+		req.GenerateReleaseNotes = true
 	}
 	var lastErr error
 	for attempt := 0; attempt < createAttempts; attempt++ {
@@ -565,7 +641,7 @@ func (r *runner) createDraft(ctx context.Context) (*github.Release, error) {
 		rel, err := r.c.CreateRelease(ctx, r.owner, r.repo, req)
 		if err == nil {
 			r.logf("created draft release %d", rel.ID)
-			return rel, nil
+			return r.settleConcurrent(ctx, rel), nil
 		}
 		lastErr = err
 		if github.IsAlreadyExists(err) {
@@ -618,6 +694,14 @@ func (r *runner) processAsset(ctx context.Context, rel *github.Release, byName m
 				ar.Status = StatusPlanned
 				return ar
 			}
+			if !rel.Draft {
+				a, err := r.replacePublished(ctx, rel, byName, e, l, desc)
+				if err != nil {
+					return fail(err)
+				}
+				ar.Status, ar.URL = StatusReplaced, a.BrowserDownloadURL
+				return ar
+			}
 			r.action("delete %s (%s) to replace it", l.name, desc)
 		} else {
 			if immutable {
@@ -647,6 +731,124 @@ func (r *runner) processAsset(ctx context.Context, rel *github.Release, byName m
 	}
 	ar.Status, ar.URL = status, a.BrowserDownloadURL
 	return ar
+}
+
+// replacePublished replaces asset e of a published, mutable release with l
+// while keeping the time without an asset of that name as short as GitHub
+// allows: the new content is uploaded and verified under a temporary name
+// first, then the old asset is deleted and the new one renamed (see the
+// package documentation for the remaining gap).
+func (r *runner) replacePublished(ctx context.Context, rel *github.Release, byName map[string]github.Asset, e github.Asset, l *local, desc string) (*github.Asset, error) {
+	tmp := *l
+	tmp.name = l.name + tmpSuffix
+	if old, ok := byName[tmp.name]; ok {
+		r.action("delete %s left by an earlier replacement", tmp.name)
+		if err := r.deleteAsset(ctx, old.ID); err != nil {
+			return nil, fmt.Errorf("deleting the leftover %s: %w", tmp.name, err)
+		}
+	}
+	a, err := r.upload(ctx, rel.ID, &tmp)
+	if err != nil {
+		return nil, fmt.Errorf("uploading the replacement as %s (the published %s is untouched): %w", tmp.name, l.name, err)
+	}
+	r.action("delete %s (%s) to replace it with %s", l.name, desc, tmp.name)
+	if err := r.deleteAsset(ctx, e.ID); err != nil {
+		return nil, fmt.Errorf("deleting the previous %s (the verified replacement is on the release as %s): %w", l.name, tmp.name, err)
+	}
+	r.action("rename %s to %s", tmp.name, l.name)
+	r.writes++
+	renamed, err := r.c.RenameReleaseAsset(ctx, r.owner, r.repo, a.ID, l.name)
+	if err != nil {
+		return nil, fmt.Errorf("%s is missing from the published release: renaming the verified replacement %s failed (re-run, or rename it on GitHub): %w", l.name, tmp.name, err)
+	}
+	if renamed.Name != l.name {
+		return nil, fmt.Errorf("renaming %s: GitHub stored the asset as %q", tmp.name, renamed.Name)
+	}
+	return renamed, nil
+}
+
+// settleConcurrent is called right after this run created draft mine. When
+// another run created a draft for the same tag concurrently (GitHub accepts
+// several drafts with one tag_name), the one with the lowest id wins, and a
+// published release for the tag wins over any draft. A losing mine, which
+// this call has just created and which holds no assets, is deleted; nothing
+// else is ever deleted. Errors only produce warnings: mine stays usable.
+func (r *runner) settleConcurrent(ctx context.Context, mine *github.Release) *github.Release {
+	all, err := r.c.ListReleases(ctx, r.owner, r.repo)
+	if err != nil {
+		r.logf("warning: could not re-read the releases to check for a concurrent run: %v", err)
+		return mine
+	}
+	var keep *github.Release
+	for i := range all {
+		x := &all[i]
+		if x.TagName != r.tag || x.ID == mine.ID {
+			continue
+		}
+		switch {
+		case !x.Draft:
+			if keep == nil || keep.Draft {
+				keep = x
+			}
+		case x.ID < mine.ID && (keep == nil || (keep.Draft && x.ID < keep.ID)):
+			keep = x
+		}
+	}
+	if keep == nil || !mine.Draft {
+		return mine
+	}
+	r.action("delete draft release %d just created: release %d for %s was created concurrently", mine.ID, keep.ID, r.tag)
+	r.writes++
+	if err := r.c.DeleteRelease(ctx, r.owner, r.repo, mine.ID); err != nil && !errors.Is(err, github.ErrNotFound) {
+		r.logf("warning: deleting the duplicate draft release %d failed (delete it manually): %v", mine.ID, err)
+	}
+	r.res.Created = false
+	r.logf("using release %d created by a concurrent run", keep.ID)
+	return keep
+}
+
+// checkUnexpectedAssets refuses to publish a draft that holds assets which
+// are not in the manifest; on a release that stays a draft or is already
+// published it only warns.
+func (r *runner) checkUnexpectedAssets(rel *github.Release, remote []github.Asset) error {
+	want := map[string]bool{}
+	for _, l := range r.assets {
+		want[l.name] = true
+	}
+	var extra []string
+	for _, a := range remote {
+		if !want[a.Name] {
+			extra = append(extra, a.Name)
+		}
+	}
+	if len(extra) == 0 {
+		return nil
+	}
+	sort.Strings(extra)
+	list := strings.Join(extra, ", ")
+	if rel.Draft && !r.cfg.Draft {
+		return fmt.Errorf("release: draft release %d for %s has assets that are not in the manifest: %s; check them and delete them from the draft, then re-run (they would be published with the release)", rel.ID, r.tag, list)
+	}
+	r.logf("warning: release %d for %s has assets that are not in the manifest: %s", rel.ID, r.tag, list)
+	return nil
+}
+
+// checkTagTarget warns when GitHub would create the tag at the default
+// branch's HEAD: no target_commitish, no known commit, and no tag yet.
+func (r *runner) checkTagTarget(ctx context.Context) {
+	if r.target != "" {
+		return
+	}
+	if r.c != nil {
+		_, err := r.c.GetRef(ctx, r.owner, r.repo, "tags/"+r.tag)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, github.ErrNotFound) {
+			r.logf("warning: could not check whether tag %s exists: %v", r.tag, err)
+		}
+	}
+	r.logf("warning: tag %s does not exist (or could not be checked) and neither release.github.target_commitish nor the commit (--commit / GITHUB_SHA) is set: GitHub will create the tag at the HEAD of the default branch when the release is published, which may not be the commit that was built; push the tag first or pass --commit", r.tag)
 }
 
 func (r *runner) deleteAsset(ctx context.Context, id int64) error {
@@ -758,7 +960,7 @@ func (e verifyError) Error() string { return e.msg }
 // uploadOnce streams the file while hashing it and verifies GitHub's view of
 // the result.
 func (r *runner) uploadOnce(ctx context.Context, releaseID int64, l *local) (*github.Asset, error) {
-	f, err := os.Open(l.path)
+	f, err := manifest.OpenConfined(l.root, l.rel)
 	if err != nil {
 		return nil, verifyError{err.Error()}
 	}
@@ -824,8 +1026,8 @@ func (r *runner) finalize(ctx context.Context, rel *github.Release) (*github.Rel
 		if r.cfg.MakeLatest != "" && !r.prerelease {
 			req.MakeLatest = r.cfg.MakeLatest
 		}
-		if r.cfg.TargetCommitish != "" && rel.TargetCommitish != r.cfg.TargetCommitish {
-			req.TargetCommitish = r.cfg.TargetCommitish
+		if r.target != "" && rel.TargetCommitish != r.target {
+			req.TargetCommitish = r.target
 		}
 	}
 	if !rel.Draft && r.cfg.Draft {

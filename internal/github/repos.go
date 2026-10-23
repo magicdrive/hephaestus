@@ -283,3 +283,51 @@ func (c *Client) CreatePull(ctx context.Context, owner, repo string, p NewPullRe
 	}
 	return &r, nil
 }
+
+// CommitFile is one file changed in a comparison.
+type CommitFile struct {
+	Filename         string `json:"filename"`
+	PreviousFilename string `json:"previous_filename"`
+	Status           string `json:"status"`
+}
+
+// Comparison statuses.
+const (
+	CompareIdentical = "identical"
+	CompareAhead     = "ahead"
+	CompareBehind    = "behind"
+	CompareDiverged  = "diverged"
+)
+
+// Comparison is the result of CompareCommits.
+type Comparison struct {
+	// Status is identical, ahead (head has commits base lacks), behind
+	// (head is an ancestor of base) or diverged.
+	Status       string `json:"status"`
+	AheadBy      int    `json:"ahead_by"`
+	BehindBy     int    `json:"behind_by"`
+	TotalCommits int    `json:"total_commits"`
+	// Files are the changes from the merge base to head. GitHub lists at
+	// most 300 files.
+	Files []CommitFile `json:"files"`
+}
+
+// CompareCommits compares base...head (three-dot: changes on head since the
+// merge base). head may be "owner:branch" for a fork of the repository.
+func (c *Client) CompareCommits(ctx context.Context, owner, repo, base, head string) (*Comparison, error) {
+	if err := checkRepo(owner, repo); err != nil {
+		return nil, err
+	}
+	if base == "" || head == "" || strings.Contains(base, "..") || strings.Contains(head, "..") { // git ref names cannot contain ".."
+		return nil, fmt.Errorf("github: invalid comparison %q...%q", base, head)
+	}
+	segs, err := splitPath("comparison", base+"..."+head)
+	if err != nil {
+		return nil, err
+	}
+	var r Comparison
+	if err := c.doJSON(ctx, http.MethodGet, repoURL(c.api, owner, repo, nil, append([]string{"compare"}, segs...)...), nil, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}

@@ -63,6 +63,11 @@ type Input struct {
 	// Environ is the base environment for commands, typically os.Environ().
 	// Nothing else from the parent process environment is inherited.
 	Environ []string
+	// ScrubEnv names variables removed from Environ before a command runs,
+	// in addition to DefaultScrubEnv: typically the variables holding the
+	// release and tap tokens. A build that really needs one opts in by
+	// setting it in the build's env (e.g. GITHUB_TOKEN: "{{ .Env.GITHUB_TOKEN }}").
+	ScrubEnv []string
 	// Stdout and Stderr receive the commands' output; nil discards it.
 	Stdout, Stderr io.Writer
 	// DryRun plans command builds without running them and leaves the

@@ -29,6 +29,10 @@ type report struct {
 	Tap      []tap.Result
 	Warnings []string
 	Err      error
+
+	// redact replaces known secrets in outputs and the summary; nil leaves
+	// them unchanged.
+	redact func(string) string
 }
 
 func (r *report) status() string {
@@ -164,9 +168,9 @@ func (r *report) summary() string {
 		b.WriteString("### Tap publication\n\n")
 		var rows [][]string
 		for _, t := range r.Tap {
-			rows = append(rows, []string{t.Formula, t.Mode, t.Status, t.PullRequestURL + t.CommitSHA})
+			rows = append(rows, []string{t.Formula, t.Mode, t.Status, t.PullRequestURL + t.CommitSHA, t.Reason})
 		}
-		b.WriteString(ghaction.Table([]string{"Formula", "Mode", "Status", "PR / Commit"}, rows))
+		b.WriteString(ghaction.Table([]string{"Formula", "Mode", "Status", "PR / Commit", "Note"}, rows))
 		b.WriteString("\n")
 	}
 	if len(r.Warnings) > 0 {
@@ -180,8 +184,16 @@ func (r *report) summary() string {
 }
 
 func (r *report) publish() error {
-	if err := ghaction.WriteOutputs(r.outputs()); err != nil {
+	redact := r.redact
+	if redact == nil {
+		redact = func(s string) string { return s }
+	}
+	out := r.outputs()
+	for k, v := range out {
+		out[k] = redact(v)
+	}
+	if err := ghaction.WriteOutputs(out); err != nil {
 		return err
 	}
-	return ghaction.AppendSummary(r.summary())
+	return ghaction.AppendSummary(redact(r.summary()))
 }

@@ -154,6 +154,14 @@ func LoadBrews(path string) (projectName string, brews []config.Brew, warnings [
 	return projectName, brews, warnings, nil
 }
 
+// Parse is LoadBrews for configuration bytes already read by the caller.
+func Parse(data []byte) (projectName string, brews []config.Brew, warnings []string, err error) {
+	if len(data) > MaxConfigSize {
+		return "", nil, nil, fmt.Errorf("exceeds %d bytes", MaxConfigSize)
+	}
+	return parse(data)
+}
+
 func parse(data []byte) (string, []config.Brew, []string, error) {
 	var doc yaml.Node
 	dec := yaml.NewDecoder(bytes.NewReader(data))

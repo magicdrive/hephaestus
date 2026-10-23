@@ -180,3 +180,38 @@ func TestResolveRepo(t *testing.T) {
 		}
 	}
 }
+
+func TestBrewsFromGoReleaser(t *testing.T) {
+	root := project(t, "brews_from: .goreleaser.yaml\n")
+	gr := `version: 2
+project_name: tool
+brews:
+  - name: tool
+    description: Example tool for tests
+    homepage: https://example.com
+    install: |
+      bin.install "bin/tool"
+    repository:
+      owner: o
+      name: homebrew-tap
+`
+	if err := os.WriteFile(filepath.Join(root, ".goreleaser.yaml"), []byte(gr), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errs := runCLI(t, "check", "--config", filepath.Join(root, "hephaestus.yaml"))
+	if code != 0 || !strings.Contains(out, "formula tool → o/homebrew-tap") {
+		t.Fatalf("check: %d\n%s\n%s", code, out, errs)
+	}
+	if !strings.Contains(errs, "brews_from .goreleaser.yaml:") {
+		t.Errorf("GoReleaser deprecation warning not surfaced:\n%s", errs)
+	}
+
+	os.WriteFile(filepath.Join(root, ".goreleaser.yaml"), []byte(gr+"    alternative_names: [x]\n"), 0o644)
+	if code, _, errs := runCLI(t, "check", "--config", filepath.Join(root, "hephaestus.yaml")); code != 1 || !strings.Contains(errs, "alternative_names") {
+		t.Errorf("Pro field accepted: %d %s", code, errs)
+	}
+	os.WriteFile(filepath.Join(root, "x.yaml"), []byte("project: {name: tool}\nbrews_from: ../outside.yaml\n"), 0o644)
+	if code, _, _ := runCLI(t, "check", "--config", filepath.Join(root, "x.yaml")); code != 1 {
+		t.Error("brews_from outside the root accepted")
+	}
+}

@@ -1,0 +1,82 @@
+# Build natively on several runners (useful when cross-compiling is hard,
+# e.g. C/C++ or cgo), then package, checksum, release and publish the formula
+# in one job. The publish job imports the binaries with the "existing"
+# provider (see examples/existing-artifacts/hephaestus.yaml).
+name: Release (matrix)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux_amd64
+          - runner: ubuntu-24.04-arm
+            target: linux_arm64
+          - runner: macos-latest
+            target: darwin_arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build for this runner
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          make release-binary
+          mkdir -p "prebuilt/$TARGET"
+          cp build/mycli "prebuilt/$TARGET/mycli"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bin-${{ matrix.target }}
+          path: prebuilt/
+          if-no-files-found: error
+
+  publish:
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bin-*
+          path: prebuilt/
+          merge-multiple: true
+      - name: Import, archive, checksum
+        uses: magicdrive/hephaestus@<full-commit-sha>
+        with:
+          command: run
+          stages: build,archive,checksum
+          fresh: "true"
+          github-token: ""
+      - name: Publish the GitHub Release
+        uses: magicdrive/hephaestus@<full-commit-sha>
+        with:
+          command: release
+      - name: Formula and tap pull request
+        uses: magicdrive/hephaestus@<full-commit-sha>
+        with:
+          command: run
+          stages: formula,tap
+          github-token: ""
+          tap-token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

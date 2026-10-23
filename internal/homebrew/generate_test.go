@@ -411,6 +411,27 @@ func TestGenerateURLs(t *testing.T) {
 	}
 }
 
+// TestGenerateURLInvalidUTF8 is a regression test: a url_template value that
+// renders to invalid UTF-8 used to panic in the Ruby quoting.
+func TestGenerateURLInvalidUTF8(t *testing.T) {
+	b := baseBrew()
+	b.URLTemplate = "https://example.com/{{ .Env.DL_SEG }}/{{ .ArtifactName }}"
+	in := input(b, fourPlatforms(false)...)
+	in.Vars.Env = map[string]string{"DL_SEG": "a\xffb"}
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("Generate panicked: %v", r)
+			}
+		}()
+		_, err = Generate(in)
+	}()
+	if err == nil || !strings.Contains(err.Error(), "UTF-8") {
+		t.Errorf("err = %v, want an invalid UTF-8 error", err)
+	}
+}
+
 func TestSelectArchives(t *testing.T) {
 	// Duplicate OS/arch.
 	dup := fourPlatforms(false)[0]

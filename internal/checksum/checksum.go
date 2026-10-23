@@ -1,5 +1,5 @@
 // Package checksum implements the checksum stage: a sha256sum-compatible file
-// listing every archive (and optionally binary) in the manifest.
+// listing every archive in the manifest.
 package checksum
 
 import (
@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -39,6 +38,11 @@ func Run(in Input) (*manifest.Artifact, error) {
 	if strings.Contains(name, "/") || pathutil.ValidateRelative(name) != nil {
 		return nil, fmt.Errorf("checksum.name %q must be a plain file name", name)
 	}
+	root, err := os.OpenRoot(in.Config.Root)
+	if err != nil {
+		return nil, fmt.Errorf("open project root: %w", err)
+	}
+	defer root.Close()
 	covered := in.Manifest.Filter(manifest.KindArchive)
 	if len(covered) == 0 {
 		return nil, fmt.Errorf("no archives in the manifest to checksum; run the archives stage or import archives first")
@@ -50,7 +54,7 @@ func Run(in Input) (*manifest.Artifact, error) {
 			return nil, fmt.Errorf("two artifacts are named %q", a.Name)
 		}
 		seen[a.Name] = true
-		sum, err := FileSHA256(filepath.Join(in.Config.Root, filepath.FromSlash(a.Path)))
+		sum, err := FileSHA256In(root, a.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -63,7 +67,7 @@ func Run(in Input) (*manifest.Artifact, error) {
 	content := []byte(strings.Join(lines, ""))
 
 	rel := pathutil.Join(in.Config.Dist, name)
-	if err := manifest.WriteFileAtomic(filepath.Join(in.Config.Root, filepath.FromSlash(rel)), content, 0o644); err != nil {
+	if err := manifest.WriteFileAtomicIn(root, rel, content, 0o644); err != nil {
 		return nil, err
 	}
 	sum := sha256.Sum256(content)
@@ -77,7 +81,26 @@ func Run(in Input) (*manifest.Artifact, error) {
 	return &art, in.Manifest.Validate()
 }
 
-// FileSHA256 hashes a file.
+// FileSHA256In hashes the file at rel inside root; symbolic links are
+// followed only while they stay inside root.
+func FileSHA256In(root *os.Root, rel string) (string, error) {
+	if err := pathutil.ValidateRelative(rel); err != nil {
+		return "", fmt.Errorf("path %q: %w", rel, err)
+	}
+	f, err := root.Open(rel)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("read %s: %w", rel, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// FileSHA256 hashes a file. It follows symbolic links anywhere; prefer
+// FileSHA256In for paths under the project root.
 func FileSHA256(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {

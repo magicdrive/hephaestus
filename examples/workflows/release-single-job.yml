@@ -1,0 +1,60 @@
+# Release on a version tag: build, archive and checksum, publish the GitHub
+# Release, then open a pull request on the Homebrew tap. Each publishing token
+# is given only to the step that needs it.
+#
+# Replace <full-commit-sha> with the commit of magicdrive/hephaestus you have
+# reviewed. Create an environment named "release" holding the
+# HOMEBREW_TAP_GITHUB_TOKEN secret (fine-grained PAT or GitHub App token with
+# contents and pull-requests write access to the tap only).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build, archive, checksum
+        uses: magicdrive/hephaestus@<full-commit-sha>
+        with:
+          command: run
+          stages: build,archive,checksum
+          github-token: ""
+      - name: Publish the GitHub Release
+        id: release
+        uses: magicdrive/hephaestus@<full-commit-sha>
+        with:
+          command: release
+      - name: Formula and tap pull request
+        id: brew
+        uses: magicdrive/hephaestus@<full-commit-sha>
+        with:
+          command: run
+          stages: formula,tap
+          github-token: ""
+          tap-token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+      - name: Report
+        env:
+          RELEASE_URL: ${{ steps.release.outputs.release-url }}
+          PR_URL: ${{ steps.brew.outputs.pull-request-url }}
+        run: |
+          echo "release: $RELEASE_URL"
+          echo "tap pull request: $PR_URL"

@@ -966,3 +966,28 @@ func TestContextCancelled(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestGenerateNotesOnlyWithoutExplicitNotes(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		f := newFakeGitHub(t)
+		fx := newFixture(t)
+		fx.gh().GenerateNotes = true
+		if explicit {
+			fx.gh().Notes = "hand written"
+		}
+		var createBody map[string]any
+		f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+			if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/releases") {
+				_ = json.Unmarshal(body, &createBody)
+			}
+			return false
+		}
+		if _, err := Run(context.Background(), fx.input(f.client(t))); err != nil {
+			t.Fatal(err)
+		}
+		_, generated := createBody["generate_release_notes"]
+		if generated == explicit {
+			t.Errorf("explicit notes %v: generate_release_notes sent = %v", explicit, generated)
+		}
+	}
+}

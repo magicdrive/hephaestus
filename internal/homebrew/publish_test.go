@@ -31,6 +31,23 @@ func TestResolvePublishDefaults(t *testing.T) {
 	}
 }
 
+// TestTokenReadsHiddenCredentials checks that repository.token, unlike
+// other templates, reads credentials that .Env hides.
+func TestTokenReadsHiddenCredentials(t *testing.T) {
+	v := testVars()
+	v.Env = map[string]string{"PLAIN": "x"}
+	v = v.WithSecretEnv(map[string]string{"HOMEBREW_TAP_GITHUB_TOKEN": " ghp_hidden "})
+	p := Publish{TokenTemplate: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"}
+	tok, err := p.Token(v)
+	if err != nil || tok != "ghp_hidden" {
+		t.Fatalf("Token = %q, %v", tok, err)
+	}
+	// Other values cannot read it.
+	if _, err := ResolvePublish(&config.Brew{Name: "x", CommitMsg: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"}, v); err == nil {
+		t.Fatal("commit_msg_template read a hidden credential")
+	}
+}
+
 func TestResolvePublishDirect(t *testing.T) {
 	b := baseBrew()
 	b.Directory = "Formula"

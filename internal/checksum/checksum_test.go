@@ -71,3 +71,53 @@ func TestDisabledAndEmpty(t *testing.T) {
 		t.Error("expected error with no archives")
 	}
 }
+
+// F7: when dist is a link out of the project root, the stage neither reads
+// archives nor writes the checksums file there.
+func TestDistLinkOutsideRoot(t *testing.T) {
+	in, root := setup(t)
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.Rename(filepath.Join(root, "dist"), outside); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "dist")); err != nil {
+		t.Skip(err)
+	}
+	if _, err := Run(in); err == nil {
+		t.Fatal("checksum stage worked through a dist link that leaves the root")
+	}
+	entries, _ := os.ReadDir(outside)
+	if len(entries) != 2 {
+		t.Errorf("outside directory changed: %v", entries)
+	}
+	// Only the checksums file location escaping is also refused.
+	in2, root2 := setup(t)
+	out2 := t.TempDir()
+	in2.Config.Checksum.Name = "sums.txt"
+	if err := os.Symlink(filepath.Join(out2, "sums.txt"), filepath.Join(root2, "dist", "sums.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(in2); err != nil {
+		t.Fatal(err) // the link itself is replaced, never written through
+	}
+	if entries, _ := os.ReadDir(out2); len(entries) != 0 {
+		t.Errorf("wrote through the link: %v", entries)
+	}
+}
+
+func TestFileSHA256In(t *testing.T) {
+	_, root := setup(t)
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := FileSHA256In(r, "dist/p_linux.tar.gz"); err != nil {
+		t.Error(err)
+	}
+	for _, bad := range []string{"../x", "/etc/passwd"} {
+		if _, err := FileSHA256In(r, bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

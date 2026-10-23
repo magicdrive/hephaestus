@@ -83,6 +83,7 @@ type Facts struct {
 	Manifest *manifest.Manifest // loaded from disk; may be empty
 
 	HasBuilds        bool
+	BuildsArchives   bool // some build imports prebuilt archives
 	HasArchives      bool
 	ArchivesSelfFed  bool // every archive declares targets and files
 	ChecksumDisabled bool
@@ -114,7 +115,7 @@ func Check(stages []Stage, f Facts) error {
 		errs = append(errs, fmt.Errorf("stage %s: %s", s, fmt.Sprintf(format, args...)))
 	}
 	binaries := have(manifest.KindBinary) || run[Build]
-	archives := have(manifest.KindArchive) || run[Archive]
+	archives := have(manifest.KindArchive) || run[Archive] || (run[Build] && f.BuildsArchives)
 	checksums := have(manifest.KindChecksum) || (run[Checksum] && !f.ChecksumDisabled)
 	formulas := have(manifest.KindFormula) || run[Formula]
 	urls := run[Release]

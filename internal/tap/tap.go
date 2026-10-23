@@ -7,7 +7,12 @@
 //     branch (default "{{ .ProjectName }}-{{ .Version }}", as GoReleaser) that
 //     is created from the base branch when missing, and a pull request is
 //     opened against the base (which may be another repository, e.g. the
-//     upstream of a fork). An open pull request for the same head is reused.
+//     upstream of a fork). An existing head branch is reused only when the
+//     compare API shows that its changes since the merge base with the base
+//     branch touch nothing but the formula file (a branch that merely fell
+//     behind a base that moved on is fine); otherwise the run fails and
+//     asks for the branch to be deleted or another one to be configured. An open pull request is reused only when both its head
+//     (owner:branch) and its base branch match.
 //   - Direct mode (repository.pull_request.enabled: false). The formula is
 //     committed to repository.branch, or the default branch.
 //
@@ -16,6 +21,15 @@
 // API with the current blob SHA as an optimistic lock; a conflict is
 // re-read and retried a limited number of times. References are only ever
 // created, never moved: there is no force update anywhere in this package.
+//
+// Downgrades: before writing, the version of the formula already in the tap
+// (its version line, else a semantic version found as a path segment of its
+// url) is compared with the one being published. When the tap's is newer
+// (e.g. an older tag's workflow was re-run) nothing is written and the
+// result is skipped, with the reason, unless brews[].allow_downgrade is
+// set. Versions that are not semantic versions cannot be compared: the
+// formula is then updated with a warning. This applies to both modes (in
+// pull request mode the base branch is compared).
 //
 // Commit author: when commit_author is unset the commit is attributed to the
 // token's identity (GitHub's default for API commits). Unlike GoReleaser,
@@ -32,8 +46,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/magicdrive/hephaestus/internal/config"
@@ -55,7 +70,7 @@ const (
 	StatusUpdated   = "updated"   // the formula was changed
 	StatusUnchanged = "unchanged" // already up to date; nothing written
 	StatusPlanned   = "planned"   // dry run: would be created or updated
-	StatusSkipped   = "skipped"   // skip_upload
+	StatusSkipped   = "skipped"   // skip_upload, or the tap has a newer version
 	StatusFailed    = "failed"
 )
 
@@ -92,6 +107,11 @@ type Result struct {
 	CommitSHA      string
 	// NoOp reports that nothing was (dry run: would be) written.
 	NoOp bool
+	// Reason explains a skipped status.
+	Reason string
+	// Warnings are non-fatal problems worth surfacing (e.g. versions that
+	// could not be compared, or a downgrade forced by allow_downgrade).
+	Warnings []string
 	// Err is set when Status is failed.
 	Err error `json:"-"`
 }
@@ -163,7 +183,7 @@ func (p *publisher) run(ctx context.Context) Result {
 	}
 	p.res.Branch = pub.Branch
 	if pub.Skip {
-		p.res.Status, p.res.NoOp = StatusSkipped, true
+		p.res.Status, p.res.NoOp, p.res.Reason = StatusSkipped, true, pub.SkipReason
 		p.logf("skipped: %s", pub.SkipReason)
 		return p.res
 	}
@@ -205,8 +225,7 @@ func (p *publisher) readFormula() ([]byte, error) {
 	if art.SHA256 == "" {
 		return nil, errors.New("the manifest records no sha256 for the formula")
 	}
-	path := filepath.Join(p.in.Config.Root, filepath.FromSlash(art.Path))
-	f, err := os.Open(path)
+	f, err := manifest.OpenConfined(p.in.Config.Root, art.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -216,11 +235,11 @@ func (p *publisher) readFormula() ([]byte, error) {
 		return nil, err
 	}
 	if len(data) > maxFormulaSize {
-		return nil, fmt.Errorf("%s exceeds %d bytes", path, maxFormulaSize)
+		return nil, fmt.Errorf("%s exceeds %d bytes", art.Path, maxFormulaSize)
 	}
 	sum := sha256.Sum256(data)
 	if got := hex.EncodeToString(sum[:]); got != art.SHA256 || int64(len(data)) != art.Size {
-		return nil, fmt.Errorf("%s does not match the manifest (sha256 %s, %d bytes; manifest %s, %d bytes): modified after it was generated?", path, got, len(data), art.SHA256, art.Size)
+		return nil, fmt.Errorf("%s does not match the manifest (sha256 %s, %d bytes; manifest %s, %d bytes): modified after it was generated?", art.Path, got, len(data), art.SHA256, art.Size)
 	}
 	return data, nil
 }
@@ -302,7 +321,10 @@ func (e *ConflictError) Error() string {
 // returns whether a commit was made and whether the file existed before.
 // A 409/422 from the optimistic lock is resolved by re-reading: identical
 // content means someone (possibly a lost earlier attempt) already wrote it.
-func (p *publisher) commit(ctx context.Context, owner, repo, branch string) (wrote, existed bool, err error) {
+//
+// With guard set, a formula on branch whose version is newer than the one
+// being published is left alone and errDowngrade is returned.
+func (p *publisher) commit(ctx context.Context, owner, repo, branch string, guard bool) (wrote, existed bool, err error) {
 	full := owner + "/" + repo
 	for attempt := 0; attempt < commitAttempts; attempt++ {
 		cur, err := p.current(ctx, owner, repo, branch)
@@ -317,6 +339,9 @@ func (p *publisher) commit(ctx context.Context, owner, repo, branch string) (wro
 				p.logf("%s@%s already has the formula (written concurrently)", full, branch)
 			}
 			return attempt > 0, existed, nil
+		}
+		if guard && cur != nil && p.downgrade(cur.Content) {
+			return false, existed, errDowngrade
 		}
 		if p.in.DryRun {
 			p.logf("would commit %s to %s@%s", p.p.Path, full, branch)
@@ -359,7 +384,11 @@ func (p *publisher) direct(ctx context.Context) error {
 		}
 	}
 	p.res.Branch = branch
-	wrote, existed, err := p.commit(ctx, owner, repo, branch)
+	wrote, existed, err := p.commit(ctx, owner, repo, branch, true)
+	if errors.Is(err, errDowngrade) {
+		p.skipDowngrade()
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -404,6 +433,10 @@ func (p *publisher) pullRequest(ctx context.Context) error {
 		p.logf("%s@%s is up to date", baseFull, base)
 		return nil
 	}
+	if onBase != nil && p.downgrade(onBase.Content) {
+		p.skipDowngrade()
+		return nil
+	}
 	existedOnBase := onBase != nil
 
 	// 2. The head branch, created from the base branch's HEAD if missing.
@@ -411,6 +444,11 @@ func (p *publisher) pullRequest(ctx context.Context) error {
 	branchExists := err == nil
 	if err != nil && !errors.Is(err, github.ErrNotFound) {
 		return hint(fmt.Errorf("reading branch %s@%s: %w", headFull, head, err), headFull)
+	}
+	if branchExists {
+		if err := p.verifyHeadBranch(ctx, baseOwner, baseRepo, base, headOwner, head, cross); err != nil {
+			return err
+		}
 	}
 	planned := false
 	if !branchExists {
@@ -426,7 +464,7 @@ func (p *publisher) pullRequest(ctx context.Context) error {
 	// 3. The commit on the head branch.
 	wrote := false
 	if !planned {
-		if wrote, _, err = p.commit(ctx, headOwner, headRepo, head); err != nil {
+		if wrote, _, err = p.commit(ctx, headOwner, headRepo, head, false); err != nil {
 			return err
 		}
 		planned = p.in.DryRun && wrote
@@ -496,12 +534,205 @@ func (p *publisher) findPull(ctx context.Context, baseOwner, baseRepo, headOwner
 		return nil, hint(fmt.Errorf("listing pull requests of %s/%s: %w", baseOwner, baseRepo, err), baseOwner+"/"+baseRepo)
 	}
 	for i := range prs {
-		// Guard against servers ignoring the head filter.
-		if prs[i].Head.Ref == head || prs[i].Head.Label == headOwner+":"+head {
+		// Do not rely on the server-side filters: reuse only a pull request
+		// whose head is exactly owner:branch and whose base is base.
+		if strings.EqualFold(prs[i].Head.Label, headOwner+":"+head) && prs[i].Base.Ref == base {
 			return &prs[i], nil
 		}
 	}
 	return nil, nil
+}
+
+// verifyHeadBranch checks an existing head branch before it is reused: its
+// changes since the merge base with the base branch (three-dot comparison)
+// must touch nothing but the formula. Anything else may be someone else's
+// work, or a leftover, that would be proposed under an automatic "formula
+// update" title. A diverged branch is accepted on the same condition: the
+// base merely moved on after the branch was created. A branch with no
+// changes of its own (identical, or behind: e.g. its pull request was
+// merged) is reused too; the formula is then committed to it as usual.
+func (p *publisher) verifyHeadBranch(ctx context.Context, baseOwner, baseRepo, base, headOwner, head string, cross bool) error {
+	spec := head
+	if cross {
+		spec = headOwner + ":" + head
+	}
+	baseFull := baseOwner + "/" + baseRepo
+	where := fmt.Sprintf("branch %s/%s@%s", headOwner, p.p.Name, head)
+	cmp, err := p.c.CompareCommits(ctx, baseOwner, baseRepo, base, spec)
+	if err != nil {
+		return hint(fmt.Errorf("comparing the existing %s with %s@%s: %w", where, baseFull, base, err), baseFull)
+	}
+	advice := "delete the branch or set repository.branch to another branch"
+	switch cmp.Status {
+	case github.CompareIdentical, github.CompareBehind, github.CompareAhead, github.CompareDiverged:
+	default:
+		return fmt.Errorf("the existing %s: unexpected comparison status %q with %s@%s", where, cmp.Status, baseFull, base)
+	}
+	var other []string
+	for _, f := range cmp.Files {
+		for _, name := range []string{f.Filename, f.PreviousFilename} {
+			if name != "" && name != p.p.Path {
+				other = append(other, name)
+			}
+		}
+	}
+	if len(other) > 0 {
+		if len(other) > 5 {
+			other = append(other[:5], fmt.Sprintf("and %d more", len(other)-5))
+		}
+		return fmt.Errorf("the existing %s has changes other than %s (%s); %s", where, p.p.Path, strings.Join(other, ", "), advice)
+	}
+	return nil
+}
+
+// errDowngrade is returned by commit when the formula on the branch is newer.
+var errDowngrade = errors.New("the tap has a newer formula")
+
+var (
+	versionLineRe = regexp.MustCompile(`(?m)^[ \t]*version[ \t]+["']([^"'\n]+)["']`)
+	urlLineRe     = regexp.MustCompile(`(?m)^[ \t]*url[ \t]+["']([^"'\n]+)["']`)
+	semverRe      = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
+)
+
+// formulaVersion returns the version a formula declares: its version line,
+// else the first path segment of its url that is a semantic version (the
+// tag in a GitHub release download URL). It returns "" when there is none.
+func formulaVersion(content []byte) string {
+	if m := versionLineRe.FindSubmatch(content); m != nil {
+		return strings.TrimSpace(string(m[1]))
+	}
+	m := urlLineRe.FindSubmatch(content)
+	if m == nil {
+		return ""
+	}
+	u, err := url.Parse(string(m[1]))
+	if err != nil {
+		return ""
+	}
+	for _, seg := range strings.Split(u.Path, "/") {
+		if semverRe.MatchString(seg) {
+			return strings.TrimPrefix(seg, "v")
+		}
+	}
+	return ""
+}
+
+type semver struct {
+	core [3]uint64
+	pre  []string
+}
+
+func parseSemver(s string) (semver, bool) {
+	m := semverRe.FindStringSubmatch(s)
+	if m == nil {
+		return semver{}, false
+	}
+	var v semver
+	for i := 0; i < 3; i++ {
+		n, err := strconv.ParseUint(m[i+1], 10, 64)
+		if err != nil {
+			return semver{}, false
+		}
+		v.core[i] = n
+	}
+	if m[4] != "" {
+		v.pre = strings.Split(m[4], ".")
+	}
+	return v, true
+}
+
+// compareSemver orders a and b by semantic version precedence (build
+// metadata is ignored).
+func compareSemver(a, b semver) int {
+	for i := range a.core {
+		if a.core[i] != b.core[i] {
+			if a.core[i] < b.core[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	switch {
+	case len(a.pre) == 0 && len(b.pre) == 0:
+		return 0
+	case len(a.pre) == 0:
+		return 1
+	case len(b.pre) == 0:
+		return -1
+	}
+	for i := 0; i < len(a.pre) && i < len(b.pre); i++ {
+		x, y := a.pre[i], b.pre[i]
+		xn, xerr := strconv.ParseUint(x, 10, 64)
+		yn, yerr := strconv.ParseUint(y, 10, 64)
+		switch {
+		case xerr == nil && yerr == nil:
+			if xn != yn {
+				if xn < yn {
+					return -1
+				}
+				return 1
+			}
+		case xerr == nil:
+			return -1
+		case yerr == nil:
+			return 1
+		default:
+			if c := strings.Compare(x, y); c != 0 {
+				return c
+			}
+		}
+	}
+	switch {
+	case len(a.pre) < len(b.pre):
+		return -1
+	case len(a.pre) > len(b.pre):
+		return 1
+	}
+	return 0
+}
+
+func (p *publisher) warn(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	for _, w := range p.res.Warnings {
+		if w == msg {
+			return
+		}
+	}
+	p.res.Warnings = append(p.res.Warnings, msg)
+	p.logf("warning: %s", msg)
+}
+
+// downgrade reports whether publishing would replace existing (the formula
+// in the tap) with an older version, in which case Reason is set. Versions
+// that cannot be compared, and allow_downgrade, produce warnings instead.
+func (p *publisher) downgrade(existing []byte) bool {
+	oldV, newV := formulaVersion(existing), formulaVersion(p.content)
+	if newV == "" {
+		newV = p.in.Vars.Version
+	}
+	if oldV == "" || newV == "" || oldV == newV {
+		return false
+	}
+	o, ok1 := parseSemver(oldV)
+	n, ok2 := parseSemver(newV)
+	if !ok1 || !ok2 {
+		p.warn("cannot tell whether %s in the tap (version %q) is newer than version %q (not semantic versions); updating it", p.p.Path, oldV, newV)
+		return false
+	}
+	if compareSemver(o, n) <= 0 {
+		return false
+	}
+	if p.b.AllowDowngrade {
+		p.warn("downgrading %s from %s to %s (allow_downgrade is set)", p.p.Path, oldV, newV)
+		return false
+	}
+	p.res.Reason = fmt.Sprintf("the tap already has version %s of %s, newer than %s; not downgrading it (set brews[].allow_downgrade: true to force)", oldV, p.p.Path, newV)
+	return true
+}
+
+func (p *publisher) skipDowngrade() {
+	p.res.Status, p.res.NoOp = StatusSkipped, true
+	p.logf("skipped: %s", p.res.Reason)
 }
 
 // openPull creates the pull request. CreatePull is never retried blindly: a

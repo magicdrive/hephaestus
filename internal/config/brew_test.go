@@ -51,3 +51,16 @@ func TestValidateBrewNameStartsWithLetter(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestBrewAllowDowngrade(t *testing.T) {
+	cfg, err := Parse([]byte("project: {name: mycli}\nbrews:\n  - name: a\n    allow_downgrade: true\n  - name: b\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Brews[0].AllowDowngrade || cfg.Brews[1].AllowDowngrade {
+		t.Fatalf("allow_downgrade = %t, %t", cfg.Brews[0].AllowDowngrade, cfg.Brews[1].AllowDowngrade)
+	}
+	if _, err := Parse([]byte("brews:\n  - allow_downgrade: maybe\n")); err == nil {
+		t.Fatal("non-boolean allow_downgrade accepted")
+	}
+}

@@ -55,6 +55,10 @@ type Brew struct {
 	// bin.install/man.install/... call exists in every archive.
 	// Default true.
 	Verify *bool `yaml:"verify"`
+	// AllowDowngrade lets the tap stage replace a formula whose version is
+	// newer than the one being published (e.g. when re-running an older
+	// tag). By default such a formula is left alone. Default false.
+	AllowDowngrade bool `yaml:"allow_downgrade"`
 }
 
 // VerifyEnabled applies the default.
