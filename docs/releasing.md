@@ -29,12 +29,17 @@ tags, pushes or publishes.
 3. `.github/workflows/release.yml` runs:
    1. **ci** — the complete CI (`ci.yml`) at the tagged commit; nothing is
       published unless `ci-gate` passes.
-   2. **release** (environment `release`):
+   2. **build** (`contents: read` only — no token that can write and no
+      OIDC token):
       - `make build` — build Hephaestus from the tagged source;
       - `hephaestus run --stages build,archive,checksum --fresh` — all six
         targets, archives and `hephaestus_checksums.txt`;
       - `scripts/verify-dist.sh dist` — every archive's contents and modes,
         the checksums, and the host binary runs;
+      - upload `dist/` as the workflow artifact `dist`.
+   3. **release** (environment `release`; runs no project build command):
+      - `make build` — build Hephaestus itself to publish with;
+      - download `dist/` and run `scripts/verify-dist.sh dist` again;
       - `actions/attest-build-provenance` — provenance for the archives and
         the checksum file;
       - `hephaestus run --stages release` with `GITHUB_TOKEN` — draft,

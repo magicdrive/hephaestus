@@ -111,7 +111,7 @@ golden files under `internal/homebrew/testdata/*.golden`.
 | --- | --- | --- |
 | `ci.yml` | push to `main`, pull requests, manual, `workflow_call` | `lint` (gofmt, vet incl. Windows, `go mod tidy -diff`, golangci-lint, govulncheck, shellcheck) · `test` (ubuntu, macOS, Windows, coverage) · `race` (go.mod and stable Go) · `fuzz-smoke` · `snapshot` (self-package and verify) · `homebrew-e2e` (macOS, Linux) · `action-smoke` (runs `uses: ./`) · `ci-gate` |
 | `ci-extended.yml` | weekly, manual, `ci-extended` label | shuffled tests on four platforms incl. arm64, repeated process tests, 60 s per fuzz target |
-| `release.yml` | `v*` tag | `ci` (the whole CI at the tag) → `release` (environment `release`): build Hephaestus, build/archive/checksum, `verify-dist.sh`, attest provenance, publish the release, generate the formula, open a tap pull request |
+| `release.yml` | `v*` tag | `ci` (the whole CI at the tag) → `build` (`contents: read`): build Hephaestus, build/archive/checksum, `verify-dist.sh`, upload `dist/` → `release` (environment `release`): download and re-verify `dist/`, attest provenance, publish the release, generate the formula, open a tap pull request |
 
 ## 7. Test strategy
 

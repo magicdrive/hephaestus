@@ -53,6 +53,10 @@ build tool; compromised Hephaestus distribution.
   environment; no binary is downloaded (`action.yml`). Hephaestus's own
   releases are gated on the full CI, verified by `scripts/verify-dist.sh`,
   and carry build provenance attestations (`.github/workflows/release.yml`).
+  That workflow builds in a job with `contents: read` only and publishes
+  from a separate job that runs no project build command, so build code
+  never holds the release token, the tap token or an OIDC token (which
+  could sign provenance for other files); `repo_test.go` enforces it.
 - One direct dependency (`gopkg.in/yaml.v3`); CI runs govulncheck.
 - Recommended: build and publish in separate jobs
   ([github-action.md](../github-action.md)).

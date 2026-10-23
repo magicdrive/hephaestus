@@ -16,8 +16,40 @@ jobs:
     # The full CI, at the tagged commit, is the release gate.
     uses: ./.github/workflows/ci.yml
 
-  release:
+  build:
+    # Builds, packages and verifies the release with read-only permissions.
+    # Build steps run code from the module graph; they get no token that
+    # can write to the repository or request an OIDC token (which could sign
+    # provenance for other files). Only the verified dist/ moves on.
     needs: [ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build hephaestus from the tagged source
+        run: make build
+      - name: Build, archive and checksum
+        run: ./build/hephaestus run --stages build,archive,checksum --fresh
+      - name: Verify dist
+        run: scripts/verify-dist.sh dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    # Publishes the verified dist/ from the build job. No project build
+    # command runs here: only Hephaestus itself is compiled, from the
+    # tagged source, to publish.
+    needs: [ci, build]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -31,11 +63,14 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: false
       - name: Build hephaestus from the tagged source
         run: make build
-      - name: Build, archive and checksum
-        run: ./build/hephaestus run --stages build,archive,checksum --fresh
-      - name: Verify dist before publishing anything
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Verify dist again before publishing anything
         run: scripts/verify-dist.sh dist
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

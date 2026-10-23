@@ -141,6 +141,33 @@ func TestReleaseWorkflow_PublishesOnlyAfterEveryGate(t *testing.T) {
 	}
 }
 
+// TestReleaseWorkflow_BuildsWithoutWriteTokens keeps the build/publish
+// boundary: a job that runs project build commands holds only read access,
+// so build code can neither write to the repository nor request an OIDC
+// token to sign provenance.
+func TestReleaseWorkflow_BuildsWithoutWriteTokens(t *testing.T) {
+	rel := readWorkflow(t, ".github/workflows/release.yml")
+	builds := 0
+	for name, j := range rel.Jobs {
+		runsBuild := false
+		for _, s := range j.Steps {
+			if strings.Contains(s.Run, "--stages build") || strings.Contains(s.Run, "make snapshot") {
+				runsBuild = true
+			}
+		}
+		if !runsBuild {
+			continue
+		}
+		builds++
+		if len(j.Permissions) != 1 || j.Permissions["contents"] != "read" {
+			t.Errorf("job %q runs build commands with permissions %v, want only contents: read", name, j.Permissions)
+		}
+	}
+	if builds == 0 {
+		t.Error("no release job runs the build stage")
+	}
+}
+
 func nodeString(n *yaml.Node) string {
 	out, _ := yaml.Marshal(n)
 	return string(out)
