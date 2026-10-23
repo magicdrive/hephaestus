@@ -331,3 +331,29 @@ func (c *Client) CompareCommits(ctx context.Context, owner, repo, base, head str
 	}
 	return &r, nil
 }
+
+// Tag is an annotated tag object.
+type Tag struct {
+	SHA    string `json:"sha"`
+	Tag    string `json:"tag"`
+	Object struct {
+		SHA  string `json:"sha"`
+		Type string `json:"type"`
+	} `json:"object"`
+}
+
+// GetTag returns the annotated tag object sha (GET git/tags/{sha}); use it
+// to peel a tag reference whose object type is "tag".
+func (c *Client) GetTag(ctx context.Context, owner, repo, sha string) (*Tag, error) {
+	if err := checkRepo(owner, repo); err != nil {
+		return nil, err
+	}
+	if sha == "" || strings.ContainsAny(sha, "/?#%") {
+		return nil, fmt.Errorf("github: invalid tag object %q", sha)
+	}
+	var t Tag
+	if err := c.doJSON(ctx, http.MethodGet, repoURL(c.api, owner, repo, nil, "git", "tags", sha), nil, &t); err != nil {
+		return nil, err
+	}
+	return &t, nil
+}

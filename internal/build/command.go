@@ -26,12 +26,20 @@ const (
 	EnvOutput = "HEPHAESTUS_OUTPUT" // absolute path of the expected output
 )
 
-// DefaultScrubEnv lists credential variables never inherited by build
-// commands from Environ: the release and tap tokens Hephaestus itself uses,
-// the tokens of the gh CLI, and the GitHub Actions runtime and OIDC tokens.
-// A build step (go generate, an npm postinstall script, a cargo build.rs)
-// runs third-party code, which must not be able to publish releases or push
-// to the tap. A build that needs one sets it in its env explicitly.
+// DefaultScrubEnv lists credential variables removed from the environment
+// build commands receive (Environ): the release and tap tokens Hephaestus
+// itself uses, the tokens of the gh CLI, and the GitHub Actions runtime and
+// OIDC tokens. Variables whose name looks like a credential
+// (tmpl.IsCredentialName) are removed too. A build step (go generate, an npm
+// postinstall script, a cargo build.rs) runs third-party code, which should
+// not be handed credentials to publish releases or push to the tap. A build
+// that needs one sets it in its env explicitly.
+//
+// This only controls the child's environment block. Code running as the
+// same user can still read the environment of the Hephaestus process and its
+// ancestors on some systems (ps -E on macOS, /proc/PID/environ on Linux
+// unless the process is non-dumpable); run builds in a job that holds no
+// publishing credentials when that matters.
 var DefaultScrubEnv = []string{
 	"GITHUB_TOKEN",
 	"HOMEBREW_TAP_GITHUB_TOKEN",
@@ -45,7 +53,8 @@ var DefaultScrubEnv = []string{
 }
 
 // scrubEnv returns env without the variables named in DefaultScrubEnv and
-// extra. Names compare case-insensitively on Windows.
+// extra, and without those whose name looks like a credential. Names compare
+// case-insensitively on Windows.
 func scrubEnv(env, extra []string) []string {
 	drop := map[string]bool{}
 	for _, k := range DefaultScrubEnv {
@@ -59,7 +68,7 @@ func scrubEnv(env, extra []string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
 		k, _, _ := strings.Cut(kv, "=")
-		if drop[envKey(k)] {
+		if drop[envKey(k)] || tmpl.IsCredentialName(k) {
 			continue
 		}
 		out = append(out, kv)
@@ -193,7 +202,7 @@ func (s *stage) planCommand(b *config.Build, t config.Target, timeout time.Durat
 		// build env is the explicit opt-in for passing a credential to a
 		// command, so it renders against the full environment, including
 		// the variables .Env hides elsewhere.
-		v, err := tmpl.Render(b.Env[k], vars.Secret())
+		v, err := tmpl.RenderSecret(b.Env[k], vars)
 		if err != nil {
 			return p, fmt.Errorf("env.%s: %w", k, err)
 		}

@@ -10,6 +10,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/magicdrive/hephaestus/internal/github"
 )
 
 // logBuf collects the log (and still shows it in the test output).
@@ -377,9 +380,6 @@ func TestTargetCommitishDefaultsToCommit(t *testing.T) {
 	if strings.Contains(lb.String(), "default branch") {
 		t.Fatal("warned although the commit is known")
 	}
-	if f.count("GET /repos/acme/tool/git/ref/") != 0 {
-		t.Fatal("tag looked up although the commit is known")
-	}
 }
 
 func TestTargetCommitishConfiguredWins(t *testing.T) {
@@ -438,7 +438,9 @@ func TestUnknownCommitWarnsOnlyWhenTagIsMissing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeGitHub(t)
-			f.tags = map[string]bool{tag: tc.tagExists}
+			if tc.tagExists {
+				f.tags = map[string]string{tag: strings.Repeat("a", 40)}
+			}
 			fx := newFixture(t)
 			var createBody map[string]any
 			f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
@@ -459,6 +461,141 @@ func TestUnknownCommitWarnsOnlyWhenTagIsMissing(t *testing.T) {
 			}
 			if _, got := createBody["target_commitish"]; got != tc.wantTarget {
 				t.Fatalf("create body %v", createBody)
+			}
+		})
+	}
+}
+
+// --- N11: an existing tag must point to the built commit ---
+
+func TestExistingTagMustPointToBuiltCommit(t *testing.T) {
+	const other = "ffffffffffffffffffffffffffffffffffffffff"
+	const annotated = "1111111111111111111111111111111111111111"
+	for _, tc := range []struct {
+		name      string
+		tags      map[string]string
+		objects   map[string]string
+		commit    string
+		published bool
+		wantErr   bool
+		wantWarn  string
+	}{
+		{"lightweight tag matches", map[string]string{tag: fullSHA}, nil, fullSHA, false, false, ""},
+		{"lightweight tag differs", map[string]string{tag: other}, nil, fullSHA, false, true, ""},
+		{"annotated tag matches", map[string]string{tag: annotated}, map[string]string{annotated: fullSHA}, fullSHA, false, false, ""},
+		{"annotated tag differs", map[string]string{tag: annotated}, map[string]string{annotated: other}, fullSHA, false, true, ""},
+		{"published release, tag differs", map[string]string{tag: other}, nil, fullSHA, true, true, ""},
+		{"commit unknown: warning only", map[string]string{tag: other}, nil, "", false, false, "was not verified"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeGitHub(t)
+			f.tags, f.tagObjects = tc.tags, tc.objects
+			if tc.published {
+				f.addRelease(tag, false, false, nil)
+			}
+			fx := newFixture(t)
+			lb := &logBuf{t: t}
+			in := fx.input(f.client(t))
+			in.Vars.Commit = tc.commit
+			in.Log = lb
+			_, err := Run(context.Background(), in)
+			if tc.wantErr {
+				want := "tag " + tag + " points to " + other + ", but the artifacts were built from " + fullSHA
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("err = %v", err)
+				}
+				if w := f.writes(); len(w) != 0 {
+					t.Fatalf("wrote before failing: %v", w)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantWarn != "" && !strings.Contains(lb.String(), tc.wantWarn) {
+				t.Fatal("no warning")
+			}
+		})
+	}
+}
+
+// --- N12: concurrent drafts' notes and uploads in progress ---
+
+func TestSwitchedDraftGetsThisRunsNotes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		setup    func(fx *fixture)
+		wantBody string
+	}{
+		{"notes", func(fx *fixture) { fx.gh().Notes = "ours" }, "ours"},
+		{"generate_notes", func(fx *fixture) { fx.gh().GenerateNotes = true }, "generated notes for " + tag},
+		{"nothing configured keeps the body", func(fx *fixture) {}, "theirs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeGitHub(t)
+			fx := newFixture(t)
+			tc.setup(fx)
+			var other *fakeRelease
+			f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+				if r.Method == "POST" && r.URL.Path == "/repos/acme/tool/releases" && other == nil {
+					other = f.addRelease(tag, true, false, nil)
+					f.mu.Lock()
+					other.Body = "theirs"
+					f.route(w, r, body)
+					f.mu.Unlock()
+					return true
+				}
+				return false
+			}
+			res, err := Run(context.Background(), fx.input(f.client(t)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rels := f.byTag(tag)
+			if len(rels) != 1 || rels[0].ID != other.ID || res.ReleaseID != other.ID {
+				t.Fatalf("releases %d, result %+v", len(rels), res)
+			}
+			if rels[0].Body != tc.wantBody {
+				t.Fatalf("body %q, want %q", rels[0].Body, tc.wantBody)
+			}
+		})
+	}
+}
+
+func TestRecentStarterAssetIsNotDeleted(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		age     time.Duration
+		wantErr bool
+	}{
+		{"recent: upload may be in progress", 2 * time.Minute, true},
+		{"old: leftover is deleted", time.Hour, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeGitHub(t)
+			fx := newFixture(t)
+			rel := f.addRelease(tag, true, false, nil)
+			f.mu.Lock()
+			st := f.addAssetLocked(rel, darwinName, nil, github.AssetStateStarter)
+			st.CreatedAt = time.Now().Add(-tc.age - time.Minute)
+			st.UpdatedAt = time.Now().Add(-tc.age)
+			f.mu.Unlock()
+			res, err := Run(context.Background(), fx.input(f.client(t)))
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantStatuses(t, res, all(StatusUploaded))
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "another upload may be in progress") {
+				t.Fatalf("err = %v", err)
+			}
+			if f.count("DELETE ") != 0 || res.Published {
+				t.Fatalf("deleted or published: %v", f.writes())
+			}
+			if statuses(res)[darwinName] != StatusFailed {
+				t.Fatalf("statuses %v", statuses(res))
 			}
 		})
 	}

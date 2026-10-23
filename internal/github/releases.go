@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 // Release is a GitHub release.
@@ -46,6 +47,10 @@ type Asset struct {
 	Digest             *string `json:"digest"`
 	BrowserDownloadURL string  `json:"browser_download_url"`
 	URL                string  `json:"url"`
+	// CreatedAt and UpdatedAt tell an upload in progress (recent) from a
+	// leftover of a failed one.
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ReleaseRequest is the body of create and update calls. Nil pointers and

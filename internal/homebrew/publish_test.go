@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/magicdrive/hephaestus/internal/config"
+	"github.com/magicdrive/hephaestus/internal/tmpl"
 )
 
 func boolp(b bool) *bool { return &b }
@@ -36,7 +37,7 @@ func TestResolvePublishDefaults(t *testing.T) {
 func TestTokenReadsHiddenCredentials(t *testing.T) {
 	v := testVars()
 	v.Env = map[string]string{"PLAIN": "x"}
-	v = v.WithSecretEnv(map[string]string{"HOMEBREW_TAP_GITHUB_TOKEN": " ghp_hidden "})
+	v = tmpl.WithSecretEnv(v, map[string]string{"HOMEBREW_TAP_GITHUB_TOKEN": " ghp_hidden "})
 	p := Publish{TokenTemplate: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"}
 	tok, err := p.Token(v)
 	if err != nil || tok != "ghp_hidden" {

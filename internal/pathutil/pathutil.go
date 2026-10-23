@@ -30,8 +30,10 @@ var ErrEmpty = errors.New("path is empty")
 // Rejected: empty paths, absolute paths (Unix "/x", Windows "C:\x", "\\host"),
 // backslashes, "." or ".." segments, empty segments ("a//b"), trailing
 // slashes, NUL and other control characters, Unicode format characters
-// (category Cf: bidirectional overrides, zero-width characters and the like,
-// which let a listing show a name other than the one extracted), invalid
+// (category Cf: bidirectional controls, zero-width space, word joiner, byte
+// order mark and the like, which let a listing show a name other than the one
+// extracted; the zero-width non-joiner U+200C and joiner U+200D are allowed
+// because emoji, Persian and Indic names need them), invalid
 // UTF-8, Windows reserved characters, and Windows reserved device names
 // (CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9, in any letter case and with any
 // extension) that would make the entry unextractable on Windows.
@@ -61,7 +63,7 @@ func ValidateRelative(p string) error {
 			return errors.New(`path must use "/" as separator, not "\"`)
 		case unicode.IsControl(r):
 			return fmt.Errorf("path contains control character %U", r)
-		case unicode.Is(unicode.Cf, r):
+		case unicode.Is(unicode.Cf, r) && r != zwnj && r != zwj:
 			return fmt.Errorf("path contains invisible formatting character %U", r)
 		case r == ':' || r == '<' || r == '>' || r == '"' || r == '|' || r == '?' || r == '*':
 			return fmt.Errorf("path contains character %q, which is not portable", r)
@@ -81,11 +83,18 @@ func ValidateRelative(p string) error {
 			return fmt.Errorf("path segment %q ends with a space or dot, which is not portable", seg)
 		}
 		if isWindowsReserved(seg) {
-			return fmt.Errorf("path segment %q is a reserved device name on Windows", seg)
+			return fmt.Errorf("path segment %q is a reserved device name on Windows (CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9, with any extension): Windows cannot create such a file, so it is rejected to keep archives extractable everywhere", seg)
 		}
 	}
 	return nil
 }
+
+// Zero-width non-joiner and joiner are format characters, but emoji
+// sequences, Persian and Indic scripts need them in ordinary names.
+const (
+	zwnj = '\u200C'
+	zwj  = '\u200D'
+)
 
 // isWindowsReserved reports whether a path segment names a Windows device.
 // Windows ignores everything from the first dot (and trailing spaces before

@@ -39,10 +39,16 @@ Each entry: **asset · attacker**, defenses with their location, residual risk.
 **Assets:** published archives, tap. **Attacker:** compromised dependency or
 build tool; compromised Hephaestus distribution.
 
-- Build commands do not inherit the release or tap tokens, nor the runner's
-  `ACTIONS_*_TOKEN` variables, unless a build names them in its `env`
-  (`internal/build`). The action exports tokens only for `release`, `tap` and
-  `run` (`action.yml`).
+- The release and tap tokens, the variables `brews[].repository.token` reads,
+  the runner's `ACTIONS_*` tokens and credential-looking variables are
+  removed from build commands' environment unless a build names them in its
+  `env` (`internal/build`, `cmd/hephaestus`). On Linux Hephaestus marks
+  itself non-dumpable, so same-user processes cannot read its
+  `/proc/PID/environ`. The action runs local stages (`build`, `archive`,
+  `checksum`, and the local phase of `run`) in a step whose environment holds
+  no token, and the publish phase in a later step (`action.yml`).
+- The action's self-build uses a new, empty `GOCACHE` and `GOMODCACHE`, so a
+  cache restored by an earlier step cannot alter Hephaestus.
 - The action builds Hephaestus from its own pinned source with a fixed Go
   environment; no binary is downloaded (`action.yml`). Hephaestus's own
   releases are gated on the full CI, verified by `scripts/verify-dist.sh`,
@@ -52,8 +58,14 @@ build tool; compromised Hephaestus distribution.
   ([github-action.md](../github-action.md)).
 
 **Residual:** a compromised build can still produce malicious binaries; that
-is outside what a packaging tool can detect. A build running in the same job
-as publishing steps shares the runner (file system, later steps).
+is outside what a packaging tool can detect. Removing tokens from the build
+environment is not isolation: build code runs as the same user, can read the
+environment of Hephaestus's ancestors (the step's shell; on macOS also
+Hephaestus itself, with `ps -E`), and a process that escapes the step can
+wait for a later step of the same job and read its environment. A build
+running in the same job as publishing therefore shares its credentials;
+only separate jobs isolate them. When one process runs both build and
+publishing stages with a token set, Hephaestus warns.
 
 ### Artifact tampering
 
@@ -204,19 +216,29 @@ text, build code, configuration.
 
 - Tokens are read from the environment, masked with `::add-mask::`, and
   replaced by `***` in errors, the step summary and outputs.
-- `.Env` hides variables whose name contains `TOKEN`, `SECRET`, `PASSWORD`,
-  `PRIVATE_KEY` or `CREDENTIAL` unless declared in top-level `env`, so a
-  formula, release body, commit message or pull request title cannot quote
-  them by accident. Only `builds[].env` values (the explicit opt-in for
-  passing a credential to a build) and `brews[].repository.token` see the
-  complete environment.
+- `.Env` hides the token variables, the variables `repository.token` reads
+  and every variable whose name contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`,
+  `CREDENTIAL`, `PRIVATE_KEY`, `API_KEY`, `APIKEY` or `ACCESS_KEY`, or has a
+  `_`-separated segment `PAT`, `AUTH`, `KEY`, `PASS` or `PWD` (ignoring case),
+  unless declared in top-level `env` (`internal/tmpl`). Only `builds[].env`
+  values (the explicit opt-in for passing a credential to a build) and
+  `brews[].repository.token` are rendered against the complete environment,
+  through a function templates cannot call.
+- Every token value (and each rendered `repository.token`) is registered:
+  a rendered template value that contains one is an error, so a formula,
+  release body, commit message or pull request title cannot carry it.
+- Redaction also covers base64 (including `x-access-token:<token>`),
+  URL-encoded and quoted forms. Known tokens are redacted whatever their
+  length; values of variables recognized only by name, from 8 characters.
 - The GitHub client never puts the token in an error message.
-- Build commands do not receive the tokens.
+- Build commands do not receive the tokens in their environment (see
+  supply chain attack for what that does not prevent).
 - Tokens are sent only over https (http only to loopback).
 
-**Residual:** values derived from a secret (encoded, split) are not
-recognized. A maintainer can deliberately declare a secret in top-level
-`env` and print it.
+**Residual:** a credential under a name the heuristic misses is visible to
+`.Env`; transformed values other than the encodings above (split, hashed,
+re-encoded) are not recognized. A maintainer can deliberately declare a
+secret in top-level `env` and print it.
 
 ### Malicious redirect
 

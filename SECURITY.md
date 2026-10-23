@@ -40,10 +40,17 @@ What Hephaestus trusts:
 What Hephaestus does not trust, and how it defends itself:
 
 - **Build commands and the code they run** (compilers, dependencies, code
-  generators). Build commands do not inherit the release or tap tokens (or
-  the runner's `ACTIONS_*_TOKEN` variables) unless a build names them in its
-  `env`. Their outputs are verified inside the project root and hashed from
-  the bytes on disk.
+  generators). The release and tap tokens, the variables read by
+  `brews[].repository.token`, the runner's `ACTIONS_*` tokens and every
+  variable whose name looks like a credential are removed from the
+  environment build commands receive, unless a build names them in its
+  `env`. This is defense in depth, not isolation: build code runs as the
+  same user and may read the environment of Hephaestus or its parent
+  processes (`ps -E` on macOS; `/proc/PID/environ` on Linux, where
+  Hephaestus makes itself non-dumpable but its parent shell is not). The
+  GitHub Action runs local stages in a step without tokens; for publishing,
+  build and publish in separate jobs. Build outputs are verified inside the
+  project root and hashed from the bytes on disk.
 - **Project files selected by archives.** Reads go through `os.Root`, so no
   path, symbolic link or race reads outside the project root. Archives never
   contain link entries; unsafe modes, path traversal, case-only collisions
@@ -57,8 +64,11 @@ What Hephaestus does not trust, and how it defends itself:
   verified, never copied.
 - **Template values.** Values substituted into Ruby code must come from a
   safe alphabet; data values are escaped Ruby literals. `.Env` does not
-  expose variables whose name looks like a credential unless they are
-  declared in the configuration's top-level `env`.
+  expose variables whose name looks like a credential, or that
+  `repository.token` reads, unless they are declared in the configuration's
+  top-level `env`, and a rendered value that contains a known token is an
+  error. Name detection is a heuristic: a credential under an unusual name
+  is visible.
 - **Network responses.** Tokens are sent only to their own origin over https
   (plain http only to a loopback address); redirects to other hosts drop the
   token; https-to-http redirects are refused; response sizes are bounded.
@@ -106,6 +116,9 @@ attestations (`gh attestation verify`).
 
 - Credential detection in archives is a best-effort safety net based on file
   names and private-key markers, not a guarantee. Review what you package.
+- Build code in the same job as publishing can obtain the tokens (from a
+  parent process's environment, or by outliving its step and reading a later
+  one). Only separate jobs isolate build from publish credentials.
 - Unicode normalization (NFC/NFD) collisions in archive paths are not
   detected.
 - A build job that is compromised can write a consistent but malicious

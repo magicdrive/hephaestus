@@ -100,6 +100,14 @@ func MaskValue(v string) {
 	}
 }
 
+// Warning emits a warning annotation in GitHub Actions, shown on the
+// workflow run page. It is a no-op outside GitHub Actions.
+func Warning(msg string) {
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		fmt.Fprintf(os.Stdout, "::warning::%s\n", Escape(msg))
+	}
+}
+
 // Escape escapes a workflow command value.
 func Escape(s string) string {
 	return strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A").Replace(s)

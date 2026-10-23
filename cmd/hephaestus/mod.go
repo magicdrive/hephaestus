@@ -9,6 +9,7 @@ import (
 
 // Execute runs the command line with os.Args and exits the process.
 func Execute(version string) {
+	disableDumpable() // first: before anything reads the tokens
 	Version = version
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := Main(ctx, os.Args[1:], os.Stdout, os.Stderr)

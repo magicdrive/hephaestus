@@ -2,7 +2,10 @@
 
 `action.yml` at the repository root is a composite action. It builds
 Hephaestus from the action's own source (the exact commit you reference),
-then runs one `hephaestus` command in your workspace. It does not check out
+then runs the `hephaestus` command in your workspace: the local stages
+(`build`, `archive`, `checksum`) in a step without tokens, then the
+publishing stages (`release`, `formula`, `tap`) in a step with them. It does
+not check out
 your repository and does not install your build toolchain: add
 `actions/checkout` and, for example, `actions/setup-go` before it.
 
@@ -17,8 +20,9 @@ Pin the action to a full commit SHA. Because the action compiles Hephaestus
 from that commit, the code that runs is exactly the code you pinned; there is
 no downloaded binary to trust. The self-build runs with a fixed Go
 environment (`GOFLAGS`, `GOPROXY`, `GOSUMDB`, `GOPRIVATE`, `GONOSUMDB`,
-`GOINSECURE` are reset), so variables set by earlier steps cannot change how
-Hephaestus itself is built.
+`GOINSECURE`, `GOWORK`, `GOENV` are reset) and a new, empty `GOCACHE` and
+`GOMODCACHE` under `$RUNNER_TEMP`, so variables set and caches restored by
+earlier steps cannot change how Hephaestus itself is built.
 
 ## Inputs
 
@@ -32,8 +36,8 @@ Hephaestus itself is built.
 | `dry-run` | `"false"` | `"true"` plans release and tap writes without performing them (reads still use the tokens when given). |
 | `fresh` | `"false"` | `"true"` ignores an existing manifest instead of continuing from it. |
 | `working-directory` | `.` | Directory to run in (the project root when the configuration is there). |
-| `github-token` | `${{ github.token }}` | Token for the release repository, exported as `GITHUB_TOKEN`. Needs `contents: write` to publish. Passed to Hephaestus only for `release`, `tap` and `run`. |
-| `tap-token` | `""` | Token for the Homebrew tap, exported as `HOMEBREW_TAP_GITHUB_TOKEN`. `contents: write` (and `pull-requests: write` for pull request mode) on the tap. `GITHUB_TOKEN` cannot write to another repository. Passed only for `release`, `tap` and `run`. |
+| `github-token` | `${{ github.token }}` | Token for the release repository, exported as `GITHUB_TOKEN`. Needs `contents: write` to publish. Set only in the publishing step (`release`, `formula`, `tap`, and the publish phase of `run`). |
+| `tap-token` | `""` | Token for the Homebrew tap, exported as `HOMEBREW_TAP_GITHUB_TOKEN`. `contents: write` (and `pull-requests: write` for pull request mode) on the tap. `GITHUB_TOKEN` cannot write to another repository. Set only in the publishing step, like `github-token`. |
 
 `tag`, `snapshot`, `dry-run`, `fresh` and `stages` are not passed to
 `command: check`. Inputs reach the script through environment variables, never
@@ -86,20 +90,54 @@ Declare `permissions: contents: read` at the top of the workflow and grant
 - **Store it in an environment** (for example `release`) with protection
   rules (required reviewers, tag-only deployment), not as a plain
   repository secret.
-- **Give each step only what it needs.** The action exports tokens only for
-  `release`, `tap` and `run`. Build commands never inherit them: Hephaestus
-  removes `GITHUB_TOKEN`, `HOMEBREW_TAP_GITHUB_TOKEN` and the runner's
-  `ACTIONS_*_TOKEN` variables from the build environment unless a build
-  names them in its `env`. Still prefer separate steps — or separate jobs —
-  for building and publishing.
-- **Templates cannot read tokens.** `{{ .Env.NAME }}` hides variables whose
-  name contains `TOKEN`, `SECRET`, `PASSWORD`, `PRIVATE_KEY` or `CREDENTIAL`
-  unless they are declared in the configuration's top-level `env`, so a
-  formula, release note or commit message cannot quote a token by accident.
-  Only `builds[].env` values and `brews[].repository.token` see the complete
-  environment.
+- **Give each step only what it needs.** The action runs `check`, `build`,
+  `archive`, `checksum` and the local phase of `run` (`--phase local`) in a
+  step whose environment has no token at all, and `release`, `formula`,
+  `tap` and the publish phase of `run` (`--phase publish`) in a separate
+  step that gets them. Hephaestus also removes the tokens, the variables
+  `repository.token` reads, the runner's `ACTIONS_*` tokens and
+  credential-looking variables from the environment of build commands unless
+  a build names them in its `env`.
+- **That is not isolation.** Build code runs as the same user as everything
+  else in the job. It can read the environment of the processes around it
+  (`ps -E` on macOS, `/proc/PID/environ` of the step's shell on Linux;
+  Hephaestus itself is non-dumpable on Linux), and a process left running by
+  a build step can wait for the publishing step and read its environment.
+  When you publish, **build and publish in separate jobs** (see below).
+- **Templates do not expose tokens.** `{{ .Env.NAME }}` hides the token
+  variables, the variables `repository.token` reads, and variables whose
+  name contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`,
+  `CREDENTIAL`, `PRIVATE_KEY`, `API_KEY`, `APIKEY` or `ACCESS_KEY`, or has a
+  `_`-separated segment `PAT`, `AUTH`, `KEY`, `PASS` or `PWD`, unless they
+  are declared in the configuration's top-level `env`. A rendered value that
+  contains a token is an error. Only `builds[].env` values and
+  `brews[].repository.token` see the complete environment. Name detection
+  is a heuristic: keep credentials under recognizable names.
 - Set `github-token: ""` on steps that do not publish (pull request CI,
   snapshot builds).
+
+## Separate build and publish jobs
+
+For anything you publish, run the build in a job that holds no write token
+and no tap token, and publish from another job:
+
+1. **Build job** — `permissions: contents: read`, no `environment`, no
+   secrets. Run `command: run` with `stages: build,archive,checksum` and
+   `github-token: ""`, then upload `dist/` (including
+   `dist/hephaestus-manifest.json`) with `actions/upload-artifact`.
+2. **Publish job** — `needs: build`, `permissions: contents: write`,
+   `environment: release`. Download the artifact into `dist/` and run
+   `command: run` with `stages: release,formula,tap` and the tokens.
+
+Jobs run on separate runners, so nothing the build started can observe the
+publishing job. A complete file is
+[release-split-jobs.yml](../examples/workflows/release-split-jobs.yml).
+
+A single job (the example below) is simpler and still keeps tokens out of
+the build step's environment, but it does not isolate them: code from the
+build step that keeps running (a daemon started by a build script, for
+example) can read a later step's environment. Hephaestus warns when one
+process runs build and publishing stages with a token set.
 
 ## Untrusted pull requests
 

@@ -40,34 +40,34 @@ inputs:
 outputs:
   status:
     description: "published, no-op, dry-run or failed."
-    value: ${{ steps.run.outputs.status }}
+    value: ${{ steps.publish.outputs.status || steps.local.outputs.status }}
   no-op:
     description: '"true" when nothing changed on GitHub.'
-    value: ${{ steps.run.outputs.no-op }}
+    value: ${{ steps.publish.outputs.no-op || steps.local.outputs.no-op }}
   version:
     description: Version being released.
-    value: ${{ steps.run.outputs.version }}
+    value: ${{ steps.publish.outputs.version || steps.local.outputs.version }}
   artifacts:
     description: JSON list of archives and checksum files (name, path, sha256, url).
-    value: ${{ steps.run.outputs.artifacts }}
+    value: ${{ steps.publish.outputs.artifacts || steps.local.outputs.artifacts }}
   release-url:
     description: URL of the GitHub Release.
-    value: ${{ steps.run.outputs.release-url }}
+    value: ${{ steps.publish.outputs.release-url || steps.local.outputs.release-url }}
   release-id:
     description: ID of the GitHub Release.
-    value: ${{ steps.run.outputs.release-id }}
+    value: ${{ steps.publish.outputs.release-id || steps.local.outputs.release-id }}
   uploaded-assets:
     description: JSON list of asset names uploaded or replaced in this run.
-    value: ${{ steps.run.outputs.uploaded-assets }}
+    value: ${{ steps.publish.outputs.uploaded-assets || steps.local.outputs.uploaded-assets }}
   formula-paths:
     description: Newline-separated paths of generated formulas.
-    value: ${{ steps.run.outputs.formula-paths }}
+    value: ${{ steps.publish.outputs.formula-paths || steps.local.outputs.formula-paths }}
   formula-commit-sha:
     description: Newline-separated tap commit SHAs.
-    value: ${{ steps.run.outputs.formula-commit-sha }}
+    value: ${{ steps.publish.outputs.formula-commit-sha || steps.local.outputs.formula-commit-sha }}
   pull-request-url:
     description: Newline-separated tap pull request URLs.
-    value: ${{ steps.run.outputs.pull-request-url }}
+    value: ${{ steps.publish.outputs.pull-request-url || steps.local.outputs.pull-request-url }}
 
 runs:
   using: composite
@@ -85,7 +85,9 @@ runs:
       # must not change how the action itself is built: pin the module
       # proxy and checksum database, disable go.work, the go env file and
       # private/insecure module patterns, and drop GOFLAGS such as
-      # -toolexec or -mod=mod.
+      # -toolexec or -mod=mod. GOCACHE and GOMODCACHE are set in the script
+      # to a new directory, so a build or module cache restored by an
+      # earlier step (setup-go with cache: true, actions/cache) is not used.
       env:
         ACTION_PATH: ${{ github.action_path }}
         GOFLAGS: -mod=readonly
@@ -103,13 +105,22 @@ runs:
         CGO_ENABLED: "0"
       run: |
         set -euo pipefail
+        gotmp="$(mktemp -d "$RUNNER_TEMP/hephaestus-go.XXXXXXXX")"
+        export GOCACHE="$gotmp/cache" GOMODCACHE="$gotmp/mod"
         cd "$ACTION_PATH"
         bin="$RUNNER_TEMP/hephaestus-bin/hephaestus"
         [[ "$RUNNER_OS" == "Windows" ]] && bin="$bin.exe"
         go build -trimpath -mod=readonly -o "$bin" .
+        chmod -R u+w "$gotmp" && rm -rf "$gotmp"
         echo "bin=$bin" >> "$GITHUB_OUTPUT"
-    - name: Run hephaestus
-      id: run
+    # Local stages (build, archive, checksum) run in a step whose environment
+    # holds no token at all: build commands run third-party code, which could
+    # otherwise read the tokens from this step's processes. With command
+    # run, the local phase runs here and the publish phase in the next step,
+    # continuing from the manifest in dist/.
+    - name: Run hephaestus (local stages)
+      id: local
+      if: inputs.command != 'release' && inputs.command != 'formula' && inputs.command != 'tap'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -121,17 +132,10 @@ runs:
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
         INPUT_FRESH: ${{ inputs.fresh }}
         HEPHAESTUS_BIN: ${{ steps.build.outputs.bin }}
-        GITHUB_TOKEN: ${{ inputs.github-token }}
-        HOMEBREW_TAP_GITHUB_TOKEN: ${{ inputs.tap-token }}
       run: |
         set -euo pipefail
         case "$INPUT_COMMAND" in
-          # Only these commands talk to GitHub. With run, the build stage
-          # still never sees the tokens: hephaestus removes them from the
-          # build commands' environment.
-          run|release|tap) ;;
-          check|build|archive|checksum|formula)
-            unset GITHUB_TOKEN HOMEBREW_TAP_GITHUB_TOKEN ;;
+          run|check|build|archive|checksum) ;;
           *) echo "::error::invalid command input"; exit 2 ;;
         esac
         args=("$INPUT_COMMAND")
@@ -141,6 +145,46 @@ runs:
           [[ "$INPUT_SNAPSHOT" == true ]] && args+=(--snapshot)
           [[ "$INPUT_DRY_RUN" == true ]] && args+=(--dry-run)
           [[ "$INPUT_FRESH" == true ]] && args+=(--fresh)
-          [[ "$INPUT_COMMAND" == run && -n "$INPUT_STAGES" ]] && args+=(--stages "$INPUT_STAGES")
+        fi
+        if [[ "$INPUT_COMMAND" == run ]]; then
+          [[ -n "$INPUT_STAGES" ]] && args+=(--stages "$INPUT_STAGES")
+          args+=(--phase local)
+        fi
+        "$HEPHAESTUS_BIN" "${args[@]}"
+    # Publishing stages (release, formula, tap) get the tokens. With command
+    # run, this is the publish phase; it is skipped when the local step
+    # failed.
+    - name: Run hephaestus (publish stages)
+      id: publish
+      if: inputs.command == 'run' || inputs.command == 'release' || inputs.command == 'formula' || inputs.command == 'tap'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_STAGES: ${{ inputs.stages }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_SNAPSHOT: ${{ inputs.snapshot }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_FRESH: ${{ inputs.fresh }}
+        LOCAL_STATUS: ${{ steps.local.outputs.status }}
+        HEPHAESTUS_BIN: ${{ steps.build.outputs.bin }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        HOMEBREW_TAP_GITHUB_TOKEN: ${{ inputs.tap-token }}
+      run: |
+        set -euo pipefail
+        args=("$INPUT_COMMAND")
+        [[ -n "$INPUT_CONFIG" ]] && args+=(--config "$INPUT_CONFIG")
+        [[ -n "$INPUT_TAG" ]] && args+=(--tag "$INPUT_TAG")
+        [[ "$INPUT_SNAPSHOT" == true ]] && args+=(--snapshot)
+        [[ "$INPUT_DRY_RUN" == true ]] && args+=(--dry-run)
+        # With run, the local step already applied --fresh (when it ran any
+        # stage); the publish phase continues from its manifest.
+        if [[ "$INPUT_FRESH" == true && ( "$INPUT_COMMAND" != run || -z "$LOCAL_STATUS" ) ]]; then
+          args+=(--fresh)
+        fi
+        if [[ "$INPUT_COMMAND" == run ]]; then
+          [[ -n "$INPUT_STAGES" ]] && args+=(--stages "$INPUT_STAGES")
+          args+=(--phase publish)
         fi
         "$HEPHAESTUS_BIN" "${args[@]}"

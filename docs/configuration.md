@@ -148,15 +148,20 @@ Behavior:
   top-level `env`, then the build's `env` (sorted by name), then the
   `HEPHAESTUS_*` variables; a later value for the same name wins. Removed
   from the inherited environment: `GITHUB_TOKEN`, `HOMEBREW_TAP_GITHUB_TOKEN`,
-  the variables named by `--token-env` / `--tap-token-env`, `GH_TOKEN`,
-  `GITHUB_PAT`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`,
-  `ACTIONS_RUNTIME_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_TOKEN` and
-  `ACTIONS_ID_TOKEN_REQUEST_URL`. A build that really needs one opts in
+  the variables named by `--token-env` / `--tap-token-env`, the variables
+  `brews[].repository.token` reads, `GH_TOKEN`, `GITHUB_PAT`,
+  `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `ACTIONS_RUNTIME_TOKEN`,
+  `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_URL`, and every
+  variable whose name looks like a credential (as for `.Env` in
+  [Templates](#variables)). A build that really needs one opts in
   through its `env`, e.g. `GITHUB_TOKEN: "{{ .Env.GITHUB_TOKEN }}"` (build
   `env` values are the one place besides `repository.token` where `.Env`
   sees credential variables). Build commands run third-party code
   (compilers, dependencies, code generators), so they should not hold
-  publishing credentials.
+  publishing credentials. This only controls the commands' environment:
+  code running as the same user may still read the environment of the
+  processes around it, so build and publish in separate jobs when it
+  matters ([github-action.md](github-action.md#separate-build-and-publish-jobs)).
 - A program name without a path separator is looked up in the `PATH` of the
   command's own environment; relative `PATH` entries are ignored.
 - Every target is planned (templates rendered, paths validated) before any
@@ -410,7 +415,7 @@ used as is.
 | `.Arm` | the ARM version, if any |
 | `.Ext` | `.exe` when the OS is `windows`, else empty |
 | `.ArtifactName`, `.ArtifactPath`, `.ArtifactExt` | the archive a value is rendered for (`brews[].url_template`, `install`, `extra_install`); empty elsewhere |
-| `.Env.NAME` | the process environment, overridden by top-level `env`. Variables whose name looks like a credential (contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PRIVATE_KEY` or `CREDENTIAL`, ignoring case) are not visible unless they are declared in top-level `env` — except in `builds[].env` values and `brews[].repository.token`, which see the complete environment. |
+| `.Env.NAME` | the process environment, overridden by top-level `env`. The token variables, the variables `brews[].repository.token` reads, and variables whose name looks like a credential (contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL`, `PRIVATE_KEY`, `API_KEY`, `APIKEY` or `ACCESS_KEY`, or has a `_`-separated segment `PAT`, `AUTH`, `KEY`, `PASS` or `PWD`, ignoring case) are not visible unless they are declared in top-level `env` — except in `builds[].env` values and `brews[].repository.token`, which see the complete environment. A rendered value that contains a token is an error. |
 
 Per-target variables are set in `builds` (`command`, `output`, `dir`, `env`,
 `existing.path`), in `archives` and in the formula fields rendered per

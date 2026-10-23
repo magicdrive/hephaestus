@@ -17,6 +17,14 @@ import (
 // The sensitive-file checks are a best-effort safety net against publishing
 // credentials by accident. They are not a security boundary: a determined
 // author can always package a secret under an innocuous name and encoding.
+// Known gaps include:
+//
+//   - hard links: a regular file with a link count above one may be another
+//     name for a sensitive file (ln .env docs/readme.txt). Finding the other
+//     names of an inode means walking the whole tree, so only the name used
+//     and the content scan apply;
+//   - encodings other than ASCII/UTF-8 and UTF-16 (compressed, encrypted,
+//     base64-wrapped or otherwise transformed key material).
 
 // sensitiveNames are base-name patterns of files that usually hold
 // credentials, written in lower case: names are compared case-insensitively
@@ -168,6 +176,11 @@ var privateKeyRe = regexp.MustCompile(`-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----`
 var pgpPrivateKeyRe = regexp.MustCompile(`-----BEGIN PGP PRIVATE KEY BLOCK-----` + nl +
 	`(?:[A-Za-z][A-Za-z-]*: [^\n\\]*` + nl + `)*` + nl + `[A-Za-z0-9+/=]{40,}`)
 
+// utf16Marker is "PRIVATE" in UTF-16 (little or big endian, any byte
+// alignment), used to decide whether to look at the content with its zero
+// bytes removed, which turns UTF-16 encoded ASCII into plain ASCII.
+var utf16Marker = []byte("P\x00R\x00I\x00V\x00A\x00T\x00E")
+
 // serviceAccountRe and privateKeyFieldRe together identify a cloud service
 // account key file even when the key itself is too short or oddly encoded
 // for privateKeyRe.
@@ -199,6 +212,11 @@ func (k *keyScanner) Write(p []byte) (int, error) {
 		k.found = "a PEM private key"
 	case bytes.Contains(buf, []byte("PGP PRIVATE KEY BLOCK")) && pgpPrivateKeyRe.Match(buf):
 		k.found = "a PGP private key"
+	case bytes.Contains(buf, utf16Marker):
+		narrow := bytes.ReplaceAll(buf, []byte{0}, nil)
+		if privateKeyRe.Match(narrow) || pgpPrivateKeyRe.Match(narrow) {
+			k.found = "a UTF-16 encoded private key"
+		}
 	}
 	if !k.serviceAccount && bytes.Contains(buf, []byte("service_account")) {
 		k.serviceAccount = serviceAccountRe.Match(buf)

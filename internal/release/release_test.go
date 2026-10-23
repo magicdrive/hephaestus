@@ -765,7 +765,8 @@ func TestDryRun(t *testing.T) {
 		fx := newFixture(t)
 		f.addRelease(tag, true, false, map[string]string{linuxName: defaultFiles[linuxName], darwinName: "different"})
 		f.mu.Lock()
-		f.addAssetLocked(f.byTagLocked(tag), checksumName, nil, github.AssetStateStarter)
+		st := f.addAssetLocked(f.byTagLocked(tag), checksumName, nil, github.AssetStateStarter)
+		st.CreatedAt, st.UpdatedAt = time.Now().Add(-time.Hour), time.Now().Add(-time.Hour) // a leftover
 		f.mu.Unlock()
 		fx.gh().ReplaceExistingAssets = true
 		in := fx.input(f.client(t))

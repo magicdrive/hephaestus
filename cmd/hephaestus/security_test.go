@@ -3,6 +3,10 @@ package hephaestus
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/magicdrive/hephaestus/internal/config"
+	"github.com/magicdrive/hephaestus/internal/pipeline"
 	"github.com/magicdrive/hephaestus/internal/tmpl"
 	"github.com/magicdrive/hephaestus/internal/version"
 )
@@ -130,9 +135,9 @@ func TestTemplateEnvHidesCredentials(t *testing.T) {
 		}
 	}
 	// The credential-reading path (repository.token, build env) sees all.
-	s := v.Secret()
-	if s.Env["GITHUB_TOKEN"] != secretRelease || s.Env["RELEASE_KEY_VAR"] != "custom" || s.Env["DEPLOY_TOKEN"] != "declared" {
-		t.Errorf("Secret env = %v", s.Env)
+	got, err := tmpl.RenderSecret("{{ .Env.GITHUB_TOKEN }} {{ .Env.RELEASE_KEY_VAR }} {{ .Env.DEPLOY_TOKEN }}", v)
+	if err != nil || got != secretRelease+" custom declared" {
+		t.Errorf("RenderSecret = %q, %v", got, err)
 	}
 }
 
@@ -221,12 +226,14 @@ func TestBadAPIURLReported(t *testing.T) {
 
 func TestRedactor(t *testing.T) {
 	r := &redactor{}
-	r.add("", "abc", "  sekret-value  ", "sekret-value-longer")
+	r.add("", "  sekret-value  ", "sekret-value-longer")
 	if got := r.redact("x sekret-value-longer y sekret-value abc"); got != "x *** y *** abc" {
 		t.Errorf("redact = %q", got)
 	}
-	r.addEnviron([]string{"MY_TOK=custom-tok", "NPM_TOKEN=short", "OTHER_SECRET=long-enough-secret", "HOME=/home/u", "GH_TOKEN=ghtoken1"}, "MY_TOK")
-	if got := r.redact("custom-tok short long-enough-secret /home/u ghtoken1"); got != "*** short *** /home/u ***" {
+	// A known token is redacted whatever its length; a variable that only
+	// looks like a credential by name needs 8 characters.
+	r.addEnviron([]string{"MY_TOK=ct1", "NPM_TOKEN=short", "OTHER_SECRET=long-enough-secret", "HOME=/home/u", "GH_TOKEN=gh1"}, "MY_TOK")
+	if got := r.redact("<ct1> short long-enough-secret /home/u <gh1>"); got != "<***> short *** /home/u <***>" {
 		t.Errorf("redact env = %q", got)
 	}
 
@@ -254,5 +261,216 @@ func TestRedactor(t *testing.T) {
 	w.Flush()
 	if strings.Contains(buf.String(), "sekret") || !strings.Contains(buf.String(), "a***b") || buf.Len() != len(long)-len("sekret-value-longer")+3 {
 		t.Errorf("long line not redacted (len %d)", buf.Len())
+	}
+}
+
+// TestRedactorEncodedForms is a regression test for N5 (secreview p13):
+// base64 (also as x-access-token:<token> basic credentials), URL-encoded and
+// %q-escaped forms of a secret used to pass through.
+func TestRedactorEncodedForms(t *testing.T) {
+	const tok = "ghs_SECRET/VALUE+123\"x"
+	r := &redactor{}
+	r.add(tok)
+	forms := map[string]string{
+		"b64":         base64.StdEncoding.EncodeToString([]byte(tok)),
+		"b64url":      base64.URLEncoding.EncodeToString([]byte(tok)),
+		"b64raw":      base64.RawStdEncoding.EncodeToString([]byte(tok)),
+		"basic":       base64.StdEncoding.EncodeToString([]byte("x-access-token:" + tok)),
+		"basicurl":    base64.RawURLEncoding.EncodeToString([]byte("x-access-token:" + tok)),
+		"query":       url.QueryEscape(tok),
+		"percent-all": "ghs%5FSECRET%2FVALUE%2B123%22x",
+		"path":        url.PathEscape(tok),
+		"quoted":      fmt.Sprintf("%q", tok),
+		"json":        string(must(json.Marshal(tok))),
+		"header line": "Authorization: basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+tok)),
+	}
+	for name, f := range forms {
+		got := r.redact("[" + f + "]")
+		if strings.Contains(got, strings.Trim(f, `"`)) || !strings.Contains(got, "***") {
+			t.Errorf("%s: %q -> %q", name, f, got)
+		}
+	}
+}
+
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// TestEncodedSecretsRedactedFromSummary checks, end to end, that the stderr
+// tail quoted in a build failure (stderr, step summary, outputs) has the
+// token and its encoded forms redacted, for a short token too.
+func TestEncodedSecretsRedactedFromSummary(t *testing.T) {
+	clearGitHubEnv(t)
+	const tok = "tok_42"
+	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + tok))
+	root := commandProject(t, `
+project: {name: tool}
+builds:
+  - id: b
+    targets: [{os: linux, arch: amd64}]
+    command: 'printf "raw=%s\nb64=%s\nurl=%s\n" "$T" "$(printf x-access-token:%s "$T" | base64)" "tok%5F42" >&2; exit 1'
+    output: dist/bin/tool
+    env:
+      T: "{{ .Env.GITHUB_TOKEN }}"
+`)
+	t.Setenv("GITHUB_TOKEN", tok)
+	code, _, errs := runCLI(t, "build", "--config", filepath.Join(root, "hephaestus.yaml"), "--snapshot")
+	if code != 1 {
+		t.Fatalf("build should fail: %s", errs)
+	}
+	out, sum := readOutputs(t)
+	for name, s := range map[string]string{"stderr": errs, "outputs": out, "summary": sum} {
+		for _, f := range []string{tok, basic, "tok%5F42"} {
+			if strings.Contains(s, f) {
+				t.Errorf("%s contains %q:\n%s", name, f, s)
+			}
+		}
+	}
+	if !strings.Contains(sum, "raw=***") || !strings.Contains(sum, "b64=***") || !strings.Contains(sum, "url=***") {
+		t.Errorf("summary:\n%s", sum)
+	}
+}
+
+// TestBuildDoesNotInheritCredentialVariables is a regression test for N2
+// (secreview p10): a variable read by repository.token, or named like a
+// credential, used to reach build commands.
+func TestBuildDoesNotInheritCredentialVariables(t *testing.T) {
+	clearGitHubEnv(t)
+	root := commandProject(t, `
+project: {name: tool}
+builds:
+  - id: b
+    targets: [{os: linux, arch: amd64}]
+    command: 'env > leaked.txt; echo x > "$HEPHAESTUS_OUTPUT"'
+    output: dist/bin/tool
+    env:
+      OPTED_IN: "{{ .Env.NPM_AUTH }}"
+brews:
+  - repository: {owner: o, name: homebrew-tap, token: "{{ .Env.TAP_WRITE }}"}
+    url_template: "https://example.com/{{ .ArtifactName }}"
+`)
+	t.Setenv("TAP_WRITE", "tap_write_SECRET3")
+	t.Setenv("TAP_PAT", "tap_pat_SECRET4")
+	t.Setenv("SENTRY_API_KEY", "sentry_SECRET5")
+	t.Setenv("NPM_AUTH", "npm_SECRET6")
+	code, _, errs := runCLI(t, "build", "--config", filepath.Join(root, "hephaestus.yaml"), "--snapshot")
+	if code != 0 {
+		t.Fatalf("build: %s", errs)
+	}
+	leaked := string(must(os.ReadFile(filepath.Join(root, "leaked.txt"))))
+	for _, s := range []string{"TAP_WRITE=", "TAP_PAT=", "SENTRY_API_KEY=", "NPM_AUTH="} {
+		if strings.Contains(leaked, s) {
+			t.Errorf("build command saw %s", s)
+		}
+	}
+	if !strings.Contains(leaked, "OPTED_IN=npm_SECRET6") {
+		t.Error("a credential named in the build's env must be passed (opt-in)")
+	}
+}
+
+// formulaProject is project() with a formula that renders desc.
+func formulaProject(t *testing.T, desc string) string {
+	return project(t, `brews:
+  - repository: {owner: o, name: homebrew-tap}
+    url_template: "https://example.com/{{ .ArtifactName }}"
+    description: "`+desc+`"
+`)
+}
+
+// TestPublishedValuesCannotReadSecrets is a regression test for N3 and N6
+// (secreview p11): .Secret.Env.NAME was callable from any template, and
+// TAP_PAT-style names were not hidden from .Env.
+func TestPublishedValuesCannotReadSecrets(t *testing.T) {
+	clearGitHubEnv(t)
+	t.Setenv("HOMEBREW_TAP_GITHUB_TOKEN", secretTap)
+	t.Setenv("TAP_PAT", "tap_pat_SECRET4")
+	t.Setenv("SENTRY_API_KEY", "sentry_SECRET5")
+	for _, desc := range []string{
+		"via-method={{ .Secret.Env.HOMEBREW_TAP_GITHUB_TOKEN }}",
+		"{{ .Env.TAP_PAT }}",
+		"{{ .Env.SENTRY_API_KEY }}",
+	} {
+		root := formulaProject(t, desc)
+		code, _, errs := runCLI(t, "run", "--config", filepath.Join(root, "hephaestus.yaml"), "--tag", "v1.0.0", "--stages", "build,archive,checksum,formula")
+		if code == 0 || !(strings.Contains(errs, "can't evaluate field Secret") || strings.Contains(errs, "no entry for key")) {
+			t.Errorf("%s: code %d, want a template error:\n%s", desc, code, errs)
+		}
+		formula, _ := os.ReadFile(filepath.Join(root, "dist", "homebrew", "tool.rb"))
+		for _, s := range []string{secretTap, "tap_pat_SECRET4", "sentry_SECRET5"} {
+			if strings.Contains(string(formula)+errs, s) {
+				t.Errorf("%s: leaked %s", desc, s)
+			}
+		}
+	}
+}
+
+// TestPublishedValuesRefuseTokenValues covers the N3 defense in depth: a
+// token reaching a published value under another name is refused.
+func TestPublishedValuesRefuseTokenValues(t *testing.T) {
+	clearGitHubEnv(t)
+	t.Setenv("HOMEBREW_TAP_GITHUB_TOKEN", secretTap)
+	t.Setenv("INNOCENT_LOOKING", "x"+secretTap)
+	root := formulaProject(t, "{{ .Env.INNOCENT_LOOKING }}")
+	code, _, errs := runCLI(t, "run", "--config", filepath.Join(root, "hephaestus.yaml"), "--tag", "v1.0.0", "--stages", "build,archive,checksum,formula")
+	if code != 1 || !strings.Contains(errs, "template output contains a credential") || strings.Contains(errs, secretTap) {
+		t.Fatalf("code %d:\n%s", code, errs)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dist", "homebrew", "tool.rb")); err == nil {
+		t.Error("formula written")
+	}
+}
+
+func TestPhase(t *testing.T) {
+	clearGitHubEnv(t)
+	root := project(t, `brews:
+  - repository: {owner: o, name: homebrew-tap}
+    url_template: "https://example.com/{{ .ArtifactName }}"
+    skip_upload: "true"
+`)
+	cfg := filepath.Join(root, "hephaestus.yaml")
+	code, _, errs := runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0", "--phase", "local")
+	if code != 0 || !strings.Contains(errs, "==> checksum") || strings.Contains(errs, "==> formula") {
+		t.Fatalf("local: %d\n%s", code, errs)
+	}
+	code, _, errs = runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0", "--phase", "publish")
+	if code != 0 || !strings.Contains(errs, "==> formula") || strings.Contains(errs, "==> build") {
+		t.Fatalf("publish: %d\n%s", code, errs)
+	}
+	// Explicit stages are intersected with the phase; an empty phase does
+	// nothing and writes no outputs (the action then uses the other step's).
+	os.Remove(os.Getenv("GITHUB_OUTPUT"))
+	code, _, errs = runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0", "--stages", "build,archive", "--phase", "publish")
+	if code != 0 || !strings.Contains(errs, "no stages to run") {
+		t.Fatalf("empty phase: %d\n%s", code, errs)
+	}
+	if _, err := os.Stat(os.Getenv("GITHUB_OUTPUT")); err == nil {
+		t.Error("an empty phase wrote outputs")
+	}
+	if code, _, _ := runCLI(t, "run", "--config", cfg, "--phase", "deploy"); code != 2 {
+		t.Errorf("invalid phase: %d", code)
+	}
+	if got := inPhase([]pipeline.Stage{pipeline.Tap, pipeline.Build, pipeline.Formula, pipeline.Checksum}, phaseLocal); len(got) != 2 || got[0] != pipeline.Build {
+		t.Errorf("inPhase = %v", got)
+	}
+}
+
+// TestWarnsWhenBuildAndPublishShareCredentials covers N1: one process that
+// builds and publishes with a token in its environment is warned about.
+func TestWarnsWhenBuildAndPublishShareCredentials(t *testing.T) {
+	clearGitHubEnv(t)
+	t.Setenv("GITHUB_TOKEN", secretRelease)
+	t.Setenv("GITHUB_API_URL", "http://127.0.0.1:1") // never reached successfully
+	root := project(t, "release:\n  github: {owner: o, name: r}\n")
+	cfg := filepath.Join(root, "hephaestus.yaml")
+	_, _, errs := runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0")
+	if !strings.Contains(errs, "run build and publish in separate jobs") {
+		t.Errorf("no warning:\n%s", errs)
+	}
+	_, _, errs = runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0", "--phase", "publish")
+	if strings.Contains(errs, "separate jobs") {
+		t.Errorf("publish phase warned:\n%s", errs)
 	}
 }

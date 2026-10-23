@@ -40,8 +40,11 @@ type fakeGitHub struct {
 	digests bool
 	// immutable makes releases immutable when published.
 	immutable bool
-	// tags are the git tags that exist (GET git/ref/tags/<tag>).
-	tags map[string]bool
+	// tags maps the git tags that exist to the object their ref points to
+	// (GET git/ref/tags/<tag>): a commit, or an annotated tag in tagObjects.
+	tags map[string]string
+	// tagObjects maps annotated tag object SHAs to the object they tag.
+	tagObjects map[string]string
 	// hook runs before the default handling; returning true means it wrote
 	// the response. It is called without f.mu held.
 	hook        func(w http.ResponseWriter, r *http.Request, body []byte) bool
@@ -132,7 +135,8 @@ func (f *fakeGitHub) addRelease(tag string, draft, immutable bool, assets map[st
 }
 
 func (f *fakeGitHub) addAssetLocked(rel *fakeRelease, name string, data []byte, state string) *fakeAsset {
-	a := &fakeAsset{Asset: github.Asset{ID: f.id(), Name: name, Size: int64(len(data)), State: state, ContentType: "application/octet-stream"}, data: data}
+	now := time.Now().UTC()
+	a := &fakeAsset{Asset: github.Asset{ID: f.id(), Name: name, Size: int64(len(data)), State: state, ContentType: "application/octet-stream", CreatedAt: now, UpdatedAt: now}, data: data}
 	if f.digests && state == github.AssetStateUploaded {
 		s := sha256.Sum256(data)
 		d := "sha256:" + hex.EncodeToString(s[:])
@@ -262,11 +266,29 @@ func (f *fakeGitHub) serveAPI(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) {
 	if t, ok := strings.CutPrefix(r.URL.Path, "/repos/"+fakeOwner+"/"+fakeRepo+"/git/ref/tags/"); ok && r.Method == "GET" {
-		if !f.tags[t] {
+		sha, ok := f.tags[t]
+		if !ok {
 			reply(w, 404, map[string]any{"message": "Not Found"})
 			return
 		}
-		reply(w, 200, map[string]any{"ref": "refs/tags/" + t, "object": map[string]any{"sha": strings.Repeat("a", 40), "type": "commit"}})
+		typ := "commit"
+		if _, annotated := f.tagObjects[sha]; annotated {
+			typ = "tag"
+		}
+		reply(w, 200, map[string]any{"ref": "refs/tags/" + t, "object": map[string]any{"sha": sha, "type": typ}})
+		return
+	}
+	if sha, ok := strings.CutPrefix(r.URL.Path, "/repos/"+fakeOwner+"/"+fakeRepo+"/git/tags/"); ok && r.Method == "GET" {
+		target, ok := f.tagObjects[sha]
+		if !ok {
+			reply(w, 404, map[string]any{"message": "Not Found"})
+			return
+		}
+		typ := "commit"
+		if _, annotated := f.tagObjects[target]; annotated {
+			typ = "tag"
+		}
+		reply(w, 200, map[string]any{"sha": sha, "object": map[string]any{"sha": target, "type": typ}})
 		return
 	}
 	prefix := "/repos/" + fakeOwner + "/" + fakeRepo + "/releases"
@@ -307,6 +329,9 @@ func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) 
 		}
 		rel := &fakeRelease{Release: github.Release{ID: f.id(), TagName: req.TagName, TargetCommitish: req.TargetCommitish}}
 		applyRelease(&rel.Release, req)
+		if req.GenerateReleaseNotes && req.Body == nil {
+			rel.Body = "generated notes for " + req.TagName
+		}
 		if !rel.Draft {
 			rel.Immutable = f.immutable
 		}

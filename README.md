@@ -43,7 +43,7 @@ Hephaestus's answers:
 | Irreproducible bytes | Sorted entries, fixed timestamps (`SOURCE_DATE_EPOCH`), normalized modes and ownership, fixed compression headers |
 | Half-published releases | Draft first, upload and verify every asset, publish last; a re-run resumes and identical assets are no-ops |
 | Wrong formula data | URLs and checksums come from the Artifact Manifest; `install` paths are verified against each archive's recorded contents |
-| Over-shared tokens | Release and tap tokens are separate; build commands never inherit them |
+| Over-shared tokens | Release and tap tokens are separate; they are removed from build commands' environment, and the action builds in a step without tokens |
 
 ## Philosophy
 
@@ -192,6 +192,7 @@ hephaestus version
 | `--tag TAG` | Release tag (default: `$GITHUB_REF_NAME` on tag pushes). Required unless `--snapshot`. |
 | `--snapshot` | Version `0.0.0-SNAPSHOT`, no tag; the release and tap stages refuse to run. |
 | `--stages LIST` | `run` only: comma-separated stages or `all`. |
+| `--phase local\|publish` | `run` only: run just the selected stages of one phase, `local` (build, archive, checksum) or `publish` (release, formula, tap), so building and publishing can run in separate processes (the action does this). |
 | `--dry-run` | Plan release and tap writes without performing them. |
 | `--fresh` | Start a new manifest instead of continuing the existing one. |
 | `--commit SHA` | Commit (default: `$GITHUB_SHA`). |
@@ -335,10 +336,14 @@ Permissions, token design, untrusted pull requests and complete workflows
 - Sources are read through `os.Root`: no path, symbolic link or race can read
   outside the project root. Archives never contain link entries; unsafe
   modes, case-only collisions and credential-looking files are refused.
-- Publishing tokens are never passed to build commands, never interpolated
-  into templates by accident (credential-like `.Env` names are hidden), sent
-  only to their own origin over https, and replaced by `***` in errors,
-  summaries and outputs.
+- Publishing tokens are removed from build commands' environment, hidden
+  from templates (credential-like `.Env` names are hidden, and a rendered
+  value containing a token is an error), sent only to their own origin over
+  https, and replaced by `***` (also base64, URL-encoded and quoted forms) in
+  errors, summaries and outputs. Build code runs as the same user and may
+  still read the environment of the processes around it, so **build and
+  publish in separate jobs** when you publish
+  ([docs/github-action.md](docs/github-action.md#separate-build-and-publish-jobs)).
 - Releases are draft-first and verified; taps are updated without force
   pushes.
 - **Do not run publishing stages on `pull_request` or `pull_request_target`,

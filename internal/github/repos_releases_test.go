@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestCompareCommits(t *testing.T) {
@@ -74,5 +75,32 @@ func TestDeleteReleaseAndRenameAsset(t *testing.T) {
 	}
 	if _, err := c.RenameReleaseAsset(ctx, "o", "r", 9, ""); err == nil {
 		t.Fatal("empty name accepted")
+	}
+}
+
+func TestGetTagAndAssetTimes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/git/tags/abc":
+			writeJSON(w, 200, map[string]any{"sha": "abc", "tag": "v1", "object": map[string]any{"sha": "def", "type": "commit"}})
+		case "/repos/o/r/releases/1/assets":
+			writeJSON(w, 200, []any{map[string]any{"id": 2, "name": "a", "state": "starter", "created_at": "2026-01-02T03:04:05Z", "updated_at": "2026-01-02T03:05:05Z"}})
+		default:
+			writeJSON(w, 404, map[string]any{"message": "Not Found"})
+		}
+	}))
+	defer srv.Close()
+	c, _ := newTestClient(t, srv)
+	ctx := context.Background()
+	tg, err := c.GetTag(ctx, "o", "r", "abc")
+	if err != nil || tg.Object.SHA != "def" || tg.Object.Type != "commit" {
+		t.Fatalf("tag %+v err %v", tg, err)
+	}
+	if _, err := c.GetTag(ctx, "o", "r", "../x"); err == nil {
+		t.Fatal("invalid sha accepted")
+	}
+	as, err := c.ListReleaseAssets(ctx, "o", "r", 1)
+	if err != nil || len(as) != 1 || as[0].UpdatedAt.Sub(as[0].CreatedAt) != time.Minute {
+		t.Fatalf("assets %+v err %v", as, err)
 	}
 }

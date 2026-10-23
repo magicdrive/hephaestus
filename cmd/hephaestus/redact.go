@@ -1,7 +1,10 @@
 package hephaestus
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"io"
+	"net/url"
 	"reflect"
 	"slices"
 	"sort"
@@ -17,13 +20,15 @@ import (
 // redacted replaces a known secret in messages, outputs and the summary.
 const redacted = "***"
 
-// Shortest values treated as secrets: a known token, and the value of a
-// variable that only looks like a credential by name (a short value there
-// is more likely a flag such as "1" or "false" than a secret).
-const (
-	minSecretLen       = 4
-	minLikelySecretLen = 8
-)
+// minLikelySecretLen is the shortest value treated as a secret for a
+// variable that only looks like a credential by name (a short value there is
+// more likely a flag such as "1" or "false" than a secret). Known tokens are
+// redacted whatever their length.
+const minLikelySecretLen = 8
+
+// minEncodedLen is the shortest encoded form (base64, URL, quoted) of a
+// secret that is redacted; shorter ones would match unrelated text.
+const minEncodedLen = 4
 
 // redactor replaces known secret values with "***". GitHub masks registered
 // secrets in logs, but not in the step summary, outputs or values derived
@@ -33,27 +38,52 @@ type redactor struct {
 	secrets []string // longest first
 }
 
-// add registers secret values; short or empty values are ignored.
+// add registers secret values, with the encoded forms they commonly appear
+// in (see variants); empty values are ignored.
 func (r *redactor) add(values ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, v := range values {
 		v = strings.TrimSpace(v)
-		if len(v) < minSecretLen {
+		if v == "" {
 			continue
 		}
-		dup := false
-		for _, s := range r.secrets {
-			if s == v {
-				dup = true
-				break
+		for i, f := range variants(v) {
+			if i > 0 && len(f) < minEncodedLen {
+				continue
 			}
-		}
-		if !dup {
-			r.secrets = append(r.secrets, v)
+			if !slices.Contains(r.secrets, f) {
+				r.secrets = append(r.secrets, f)
+			}
 		}
 	}
 	sort.SliceStable(r.secrets, func(i, j int) bool { return len(r.secrets[i]) > len(r.secrets[j]) })
+}
+
+// variants returns v followed by its encoded forms: base64 (standard and
+// URL alphabets, unpadded so the padded form matches too) of v and of
+// "x-access-token:v" (HTTP basic credentials, as git and actions/checkout
+// use), URL query and path escaping, every non-alphanumeric byte
+// percent-encoded (as some clients do, e.g. ghs%5F...), and Go %q / JSON
+// string escaping.
+func variants(v string) []string {
+	out := []string{v}
+	for _, raw := range []string{v, "x-access-token:" + v} {
+		out = append(out,
+			base64.RawStdEncoding.EncodeToString([]byte(raw)),
+			base64.RawURLEncoding.EncodeToString([]byte(raw)))
+	}
+	q := strconv.Quote(v)
+	j, _ := json.Marshal(v) // a string always marshals
+	out = append(out, url.QueryEscape(v), url.PathEscape(v), percentAll(v, upperhex), percentAll(v, lowerhex),
+		q[1:len(q)-1], string(j[1:len(j)-1]))
+	var uniq []string
+	for _, f := range out {
+		if f != "" && !slices.Contains(uniq, f) {
+			uniq = append(uniq, f)
+		}
+	}
+	return uniq
 }
 
 // addEnviron registers the credentials in environ: the variables named in
@@ -76,6 +106,28 @@ func (r *redactor) addEnviron(environ []string, names ...string) {
 			r.add(v)
 		}
 	}
+}
+
+const (
+	upperhex = "0123456789ABCDEF"
+	lowerhex = "0123456789abcdef"
+)
+
+// percentAll percent-encodes every byte of s that is not an ASCII letter or
+// digit.
+func percentAll(s, hex string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+			b.WriteByte(c)
+			continue
+		}
+		b.WriteByte('%')
+		b.WriteByte(hex[c>>4])
+		b.WriteByte(hex[c&15])
+	}
+	return b.String()
 }
 
 // redact returns s with every known secret replaced.

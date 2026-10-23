@@ -56,15 +56,17 @@ type Publish struct {
 // Token renders TokenTemplate. An empty result means "use the default token".
 //
 // It is the one template that may read every environment variable,
-// credentials included (tmpl.Vars.Secret): reading a token is its purpose.
-// The rendered value is masked in GitHub Actions logs.
+// credentials included (tmpl.RenderSecret): reading a token is its purpose.
+// The rendered value is masked in GitHub Actions logs and registered with
+// tmpl.RegisterSecret, so no published value can contain it.
 func (p Publish) Token(vars tmpl.Vars) (string, error) {
-	t, err := tmpl.Render(p.TokenTemplate, vars.Secret())
+	t, err := tmpl.RenderSecret(p.TokenTemplate, vars)
 	if err != nil {
 		return "", fmt.Errorf("repository.token: %w", err)
 	}
 	t = strings.TrimSpace(t)
 	ghaction.MaskValue(t)
+	tmpl.RegisterSecret(t)
 	return t, nil
 }
 

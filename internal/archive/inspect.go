@@ -136,6 +136,8 @@ type inspector struct {
 	folded  map[string]string
 	entries int
 	total   int64
+	// abbrev lists raw ustar names that abbreviate a longer extended name.
+	abbrev []string
 }
 
 func unsafeErr(format string, args ...any) error {
@@ -266,10 +268,16 @@ func (ins *inspector) tarGz(r io.Reader) error {
 		return unsafeErr("not a gzip stream: %v", err)
 	}
 	defer gz.Close()
-	tr := tar.NewReader(gz)
+	tap := &headerTap{r: gz}
+	tr := tar.NewReader(tap)
 	for {
+		tap.start()
 		hdr, err := tr.Next()
+		tap.on = false
 		if errors.Is(err, io.EOF) {
+			if err := ins.checkAbbreviations(); err != nil {
+				return err
+			}
 			// tar.Reader stops at the end marker; other readers may not.
 			return checkTarTrailer(gz)
 		}
@@ -279,10 +287,24 @@ func (ins *inspector) tarGz(r io.Reader) error {
 		if err := ins.count(); err != nil {
 			return err
 		}
+		if hdr.Typeflag == tar.TypeXGlobalHeader {
+			// Some extractors apply global records to every member.
+			for _, k := range []string{"path", "linkpath", "size"} {
+				if _, ok := hdr.PAXRecords[k]; ok {
+					return unsafeErr("global PAX header sets %q; only per-entry names and sizes are accepted", k)
+				}
+			}
+			continue
+		}
+		abbrev, err := checkRawHeader(tap, hdr)
+		if err != nil {
+			return err
+		}
+		if abbrev != "" {
+			ins.abbrev = append(ins.abbrev, abbrev)
+		}
 		var isDir bool
 		switch hdr.Typeflag {
-		case tar.TypeXGlobalHeader:
-			continue
 		case tar.TypeDir:
 			isDir = true
 		case tar.TypeReg, '\x00': // '\x00' is the pre-POSIX regular file flag
@@ -340,7 +362,7 @@ func (ins *inspector) zip(r io.ReaderAt, size int64) error {
 	if len(zr.File) > ins.lim.MaxEntries {
 		return unsafeErr("archive has more than %d entries", ins.lim.MaxEntries)
 	}
-	if err := checkZipLayout(r, size, zr.File); err != nil {
+	if err := checkZipLayout(r, size, zr.File, ins.lim.MaxEntries); err != nil {
 		return err
 	}
 	for _, zf := range zr.File {

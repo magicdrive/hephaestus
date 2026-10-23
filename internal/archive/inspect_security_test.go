@@ -44,7 +44,7 @@ func rawTar(t *testing.T, entries ...tarEntry) []byte {
 	return buf.Bytes()
 }
 
-func gzipBytes(t *testing.T, data []byte) []byte {
+func gzipBytes(t testing.TB, data []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -107,6 +107,8 @@ type rawZipEntry struct {
 	localCRC  uint32
 	desc      bool // sizes and CRC in a data descriptor
 	offset    int  // >0: central directory offset of entry offset-1
+	// localExtra and centralExtra are appended to the extra fields.
+	localExtra, centralExtra []byte
 }
 
 type rawZipOptions struct {
@@ -150,6 +152,7 @@ func rawZip(entries []rawZipEntry, o rawZipOptions) []byte {
 			extra = le.AppendUint64(extra, uint64(len(e.body)))
 			extra = le.AppendUint64(extra, uint64(len(e.body)))
 		}
+		extra = append(extra, e.localExtra...)
 		var flags uint16
 		if e.desc {
 			flags = 0x8
@@ -207,6 +210,7 @@ func rawZip(entries []rawZipEntry, o rawZipOptions) []byte {
 			extra = le.AppendUint64(extra, uint64(len(e.body)))
 			extra = le.AppendUint64(extra, off)
 		}
+		extra = append(extra, e.centralExtra...)
 		var flags uint16
 		if e.desc {
 			flags = 0x8

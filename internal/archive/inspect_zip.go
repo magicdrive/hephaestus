@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"hash/crc32"
 	"io"
 	"sort"
 )
@@ -28,8 +29,12 @@ const (
 	// bsdtar writing to a pipe pads its output to 10 KiB blocks.
 	zipMaxPadding   = 64 << 10
 	zipZip64ExtraID = 0x0001
-	zipUint16Max    = 0xffff
-	zipUint32Max    = 0xffffffff
+	// zipUnicodePathID is the Info-ZIP Unicode Path extra field: a UTF-8
+	// name that some extractors (bsdtar, 7-Zip) use instead of the header
+	// name.
+	zipUnicodePathID = 0x7075
+	zipUint16Max     = 0xffff
+	zipUint32Max     = 0xffffffff
 
 	// Flag bits that change how an entry is read: encryption (0), data
 	// descriptor (3) and UTF-8 names (11).
@@ -67,9 +72,17 @@ type zipCDEntry struct {
 //     overlaps, so no member is hidden from the central directory;
 //   - every local header has the central directory's name, method,
 //     significant flags and, when present, CRC-32 and sizes, and every
-//     data descriptor agrees too.
-func checkZipLayout(r io.ReaderAt, size int64, files []*zip.File) error {
-	cds, cdOffset, err := readZipDirectory(r, size)
+//     data descriptor agrees too;
+//   - an Info-ZIP Unicode Path extra field (0x7075), in the local header
+//     or the central directory, names exactly the header name and carries
+//     that name's CRC-32; otherwise extractors honoring it would create a
+//     different file than the one inspected. Other extra fields carry no
+//     name that common extractors use (the Unicode Comment field 0x6375
+//     only affects the comment) and are not interpreted;
+//   - the declared number of entries (zip64 included) is at most
+//     maxEntries, checked before anything is allocated for them.
+func checkZipLayout(r io.ReaderAt, size int64, files []*zip.File, maxEntries int) error {
+	cds, cdOffset, err := readZipDirectory(r, size, maxEntries)
 	if err != nil {
 		return err
 	}
@@ -122,7 +135,7 @@ func readFull(r io.ReaderAt, off uint64, n int, limit uint64) ([]byte, error) {
 
 // readZipDirectory locates the end records and parses the central
 // directory, returning its entries in directory order and its offset.
-func readZipDirectory(r io.ReaderAt, size int64) ([]zipCDEntry, uint64, error) {
+func readZipDirectory(r io.ReaderAt, size int64, maxEntries int) ([]zipCDEntry, uint64, error) {
 	if size < zipEndLen {
 		return nil, 0, unsafeErr("zip archive is too short")
 	}
@@ -212,6 +225,9 @@ func readZipDirectory(r io.ReaderAt, size int64) ([]zipCDEntry, uint64, error) {
 	if cdOffset > cdEnd || cdSize != cdEnd-cdOffset {
 		return nil, 0, unsafeErr("zip central directory is not where the end record says (prefixed, concatenated or padded archive)")
 	}
+	if maxEntries < 0 || count > uint64(maxEntries) {
+		return nil, 0, unsafeErr("zip end record declares %d entries, more than the limit of %d", count, maxEntries)
+	}
 	if count > cdSize/zipCentralLen {
 		return nil, 0, unsafeErr("zip end record claims %d entries in a %d-byte central directory", count, cdSize)
 	}
@@ -234,6 +250,9 @@ func readZipDirectory(r io.ReaderAt, size int64) ([]zipCDEntry, uint64, error) {
 			return nil, 0, unsafeErr("reading zip central directory: %v", err)
 		}
 		read += uint64(zipCentralLen + len(rest))
+		if err := checkUnicodePath(rest[:nameLen], rest[nameLen:nameLen+extraLen], "central directory"); err != nil {
+			return nil, 0, err
+		}
 		e := zipCDEntry{
 			name:   rest[:nameLen],
 			flags:  binary.LittleEndian.Uint16(hdr[8:]),
@@ -281,6 +300,36 @@ func readZipDirectory(r io.ReaderAt, size int64) ([]zipCDEntry, uint64, error) {
 	return entries, cdOffset, nil
 }
 
+// checkUnicodePath accepts an Info-ZIP Unicode Path extra field only when
+// it is version 1, its CRC-32 is that of the header name, and its UTF-8 name
+// is the header name byte for byte. A malformed extra block ends parsing
+// the way extractors end it.
+func checkUnicodePath(name, extra []byte, where string) error {
+	seen := false
+	for len(extra) >= 4 {
+		id := binary.LittleEndian.Uint16(extra)
+		n := int(binary.LittleEndian.Uint16(extra[2:]))
+		if 4+n > len(extra) {
+			if id == zipUnicodePathID {
+				return unsafeErr("zip entry %q has a truncated Unicode Path extra field in its %s", name, where)
+			}
+			return nil
+		}
+		if id == zipUnicodePathID {
+			d := extra[4 : 4+n]
+			if seen {
+				return unsafeErr("zip entry %q has several Unicode Path extra fields in its %s", name, where)
+			}
+			seen = true
+			if len(d) < 5 || d[0] != 1 || binary.LittleEndian.Uint32(d[1:]) != crc32.ChecksumIEEE(name) || !bytes.Equal(d[5:], name) {
+				return unsafeErr("zip entry %q has a Unicode Path extra field in its %s naming another file; extractors honoring it would use that name", name, where)
+			}
+		}
+		extra = extra[4+n:]
+	}
+	return nil
+}
+
 // zip64Extra returns the data of the zip64 extended information field.
 func zip64Extra(extra []byte) ([]byte, bool) {
 	for len(extra) >= 4 {
@@ -316,6 +365,11 @@ func checkZipLocal(r io.ReaderAt, e *zipCDEntry, limit uint64) (uint64, error) {
 	}
 	if !bytes.Equal(rest[:nameLen], e.name) {
 		return 0, unsafeErr("zip entry %q is named %q in its local file header; streaming extractors would use that name", e.name, rest[:nameLen])
+	}
+	// The local Unicode Path, if any, must name the same file as well
+	// (the central one was checked while reading the directory).
+	if err := checkUnicodePath(rest[:nameLen], rest[nameLen:], "local file header"); err != nil {
+		return 0, err
 	}
 	flags := binary.LittleEndian.Uint16(hdr[6:])
 	if flags&zipFlagsSignificant != e.flags&zipFlagsSignificant || binary.LittleEndian.Uint16(hdr[8:]) != e.method {

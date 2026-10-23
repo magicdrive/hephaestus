@@ -552,7 +552,7 @@ func TestTailBuffer(t *testing.T) {
 var scrubProbe = []string{
 	"GITHUB_TOKEN", "HOMEBREW_TAP_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT",
 	"ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
-	"MY_RELEASE_TOKEN", "MY_TAP_TOKEN", "KEEP_ME",
+	"MY_RELEASE_VAR", "MY_TAP_VAR", "TAP_PAT", "NPM_AUTH", "SENTRY_API_KEY", "MY_PASSWORD", "KEEP_ME",
 }
 
 // TestCommandEnvScrubsCredentials is a regression test: build commands used
@@ -566,7 +566,7 @@ func TestCommandEnvScrubsCredentials(t *testing.T) {
 	for _, k := range scrubProbe {
 		in.Environ = append(in.Environ, k+"=secret-"+k)
 	}
-	in.ScrubEnv = []string{"MY_RELEASE_TOKEN", "MY_TAP_TOKEN", ""}
+	in.ScrubEnv = []string{"MY_RELEASE_VAR", "MY_TAP_VAR", ""}
 	res := run(t, in)
 	data, err := os.ReadFile(filepath.Join(root, res.Binaries[0].Path))
 	if err != nil {
@@ -597,7 +597,7 @@ builds:
 	// .Env (published values) hides the token; the full environment is
 	// available only through Secret.
 	in.Vars.Env = map[string]string{}
-	in.Vars = in.Vars.WithSecretEnv(map[string]string{"GITHUB_TOKEN": "ghs_optin"})
+	in.Vars = tmpl.WithSecretEnv(in.Vars, map[string]string{"GITHUB_TOKEN": "ghs_optin"})
 	res := run(t, in)
 	data, err := os.ReadFile(filepath.Join(root, res.Binaries[0].Path))
 	if err != nil {
@@ -609,8 +609,8 @@ builds:
 }
 
 func TestScrubEnv(t *testing.T) {
-	got := scrubEnv([]string{"A=1", "GITHUB_TOKEN=x", "X_TOKEN=y", "B=2", "ACTIONS_RUNTIME_TOKEN=z"}, []string{"X_TOKEN"})
-	if strings.Join(got, ",") != "A=1,B=2" {
+	got := scrubEnv([]string{"A=1", "GITHUB_TOKEN=x", "X_VAR=y", "B=2", "ACTIONS_RUNTIME_TOKEN=z", "TAP_PAT=p", "PATH=/bin"}, []string{"X_VAR"})
+	if strings.Join(got, ",") != "A=1,B=2,PATH=/bin" {
 		t.Fatalf("scrubEnv = %v", got)
 	}
 }

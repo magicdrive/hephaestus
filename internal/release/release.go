@@ -44,8 +44,19 @@
 // released (--commit / GITHUB_SHA, a full SHA), so the tag points at the
 // commit that was built. When neither is known and the tag does not exist,
 // a warning is logged: GitHub then tags the default branch's HEAD. GitHub
-// ignores target_commitish for an existing tag, so pushing the tag before
-// releasing remains the most reliable option.
+// ignores target_commitish for an existing tag, so when the tag exists the
+// commit it points to (annotated tags are peeled) must be the commit that
+// was built: a mismatch is an error before anything is created or
+// uploaded. When the built commit is unknown this cannot be verified and a
+// warning is logged.
+//
+// Incomplete assets: an asset in a state other than "uploaded" (e.g.
+// "starter") whose created_at/updated_at is within the last
+// starterGracePeriod may be a concurrent run's upload in progress; it is
+// not deleted and the asset fails with an error asking to re-run later.
+// Older ones are leftovers of failed uploads and are deleted. A starter
+// left by this run's own failed upload attempt (seen while retrying) is
+// deleted regardless of its age.
 package release
 
 import (
@@ -60,6 +71,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/magicdrive/hephaestus/internal/config"
@@ -80,9 +92,12 @@ const (
 	maxNotesFile = 1 << 20
 	// tmpSuffix names the temporary asset used while replacing an asset of
 	// a published release.
-	tmpSuffix      = ".hephaestus-tmp"
-	createAttempts = 3
-	uploadAttempts = 3
+	tmpSuffix = ".hephaestus-tmp"
+	// starterGracePeriod is how recent an incomplete asset must be to be
+	// treated as an upload in progress rather than a leftover.
+	starterGracePeriod = 10 * time.Minute
+	createAttempts     = 3
+	uploadAttempts     = 3
 )
 
 // Asset statuses.
@@ -167,7 +182,9 @@ type runner struct {
 	bodySet bool
 	// target is the target_commitish sent to GitHub: the configured one,
 	// else the commit being released; empty when neither is known.
-	target     string
+	target string
+	// commit is the built commit (Vars.Commit) when it is a full SHA.
+	commit     string
 	prerelease bool
 	assets     []*local
 	res        *Result
@@ -296,6 +313,9 @@ func (r *runner) prepareText() error {
 	}
 	if n := utf8.RuneCountInString(r.body); n > MaxBodyLength {
 		return fmt.Errorf("release notes are %d characters; GitHub allows %d", n, MaxBodyLength)
+	}
+	if c := strings.ToLower(strings.TrimSpace(r.in.Vars.Commit)); fullSHARe.MatchString(c) {
+		r.commit = c
 	}
 	r.target = r.cfg.TargetCommitish
 	if c := strings.ToLower(strings.TrimSpace(r.in.Vars.Commit)); r.target == "" && c != "" {
@@ -496,8 +516,8 @@ func (r *runner) run(ctx context.Context) (*Result, error) {
 			return nil, fmt.Errorf("release: looking up %s %s: %w", repo, r.tag, err)
 		}
 	}
-	if rel == nil || rel.Draft {
-		r.checkTagTarget(ctx)
+	if err := r.checkTag(ctx, rel == nil || rel.Draft); err != nil {
+		return nil, err
 	}
 	if rel == nil {
 		r.res.Created = true
@@ -707,6 +727,9 @@ func (r *runner) processAsset(ctx context.Context, rel *github.Release, byName m
 			if immutable {
 				return fail(fmt.Errorf("the immutable release has an incomplete asset (state %q) that cannot be removed", e.State))
 			}
+			if age, recent := assetAge(e); recent {
+				return fail(fmt.Errorf("an incomplete %s (state %q) was updated %s ago: another upload may be in progress; re-run after %s if it is a leftover", l.name, e.State, age.Round(time.Second), starterGracePeriod))
+			}
 			if r.in.DryRun {
 				r.action("delete incomplete %s (state %q) and upload it again", l.name, e.State)
 				ar.Status = StatusPlanned
@@ -803,6 +826,12 @@ func (r *runner) settleConcurrent(ctx context.Context, mine *github.Release) *gi
 		r.logf("warning: deleting the duplicate draft release %d failed (delete it manually): %v", mine.ID, err)
 	}
 	r.res.Created = false
+	if !r.bodySet && r.cfg.GenerateNotes && mine.Body != "" {
+		// The other draft's body was not written by this configuration
+		// (another run's generation, or someone else's text): publish the
+		// notes GitHub generated for this run's draft instead.
+		r.body, r.bodySet = mine.Body, true
+	}
 	r.logf("using release %d created by a concurrent run", keep.ID)
 	return keep
 }
@@ -833,22 +862,66 @@ func (r *runner) checkUnexpectedAssets(rel *github.Release, remote []github.Asse
 	return nil
 }
 
-// checkTagTarget warns when GitHub would create the tag at the default
-// branch's HEAD: no target_commitish, no known commit, and no tag yet.
-func (r *runner) checkTagTarget(ctx context.Context) {
-	if r.target != "" {
-		return
-	}
+// checkTag verifies an existing tag against the built commit, and warns
+// when GitHub would create a missing tag at the default branch's HEAD (no
+// target_commitish and no known commit; only relevant while unpublished).
+func (r *runner) checkTag(ctx context.Context, unpublished bool) error {
 	if r.c != nil {
-		_, err := r.c.GetRef(ctx, r.owner, r.repo, "tags/"+r.tag)
-		if err == nil {
-			return
+		sha, err := r.tagCommit(ctx)
+		switch {
+		case err == nil:
+			if r.commit == "" {
+				r.logf("warning: tag %s points to %s; the built commit is unknown (pass --commit or set GITHUB_SHA), so it was not verified", r.tag, sha)
+				return nil
+			}
+			if !strings.EqualFold(sha, r.commit) {
+				return fmt.Errorf("release: tag %s points to %s, but the artifacts were built from %s; build from the tagged commit or use another tag", r.tag, sha, r.commit)
+			}
+			return nil
+		case errors.Is(err, github.ErrNotFound):
+		default:
+			r.logf("warning: could not check tag %s: %v", r.tag, err)
 		}
-		if !errors.Is(err, github.ErrNotFound) {
-			r.logf("warning: could not check whether tag %s exists: %v", r.tag, err)
-		}
+	}
+	if !unpublished || r.target != "" {
+		return nil
 	}
 	r.logf("warning: tag %s does not exist (or could not be checked) and neither release.github.target_commitish nor the commit (--commit / GITHUB_SHA) is set: GitHub will create the tag at the HEAD of the default branch when the release is published, which may not be the commit that was built; push the tag first or pass --commit", r.tag)
+	return nil
+}
+
+// tagCommit returns the commit the tag points to, peeling annotated tags.
+func (r *runner) tagCommit(ctx context.Context) (string, error) {
+	ref, err := r.c.GetRef(ctx, r.owner, r.repo, "tags/"+r.tag)
+	if err != nil {
+		return "", err
+	}
+	sha, typ := ref.Object.SHA, ref.Object.Type
+	for i := 0; typ == "tag" && i < 5; i++ {
+		t, err := r.c.GetTag(ctx, r.owner, r.repo, sha)
+		if err != nil {
+			return "", fmt.Errorf("reading annotated tag %s: %w", sha, err)
+		}
+		sha, typ = t.Object.SHA, t.Object.Type
+	}
+	if typ != "commit" {
+		return "", fmt.Errorf("tag %s points to a %s, not a commit", r.tag, typ)
+	}
+	return strings.ToLower(sha), nil
+}
+
+// assetAge returns how long ago e was last updated and whether that is
+// within starterGracePeriod. An asset without timestamps counts as old.
+func assetAge(e github.Asset) (time.Duration, bool) {
+	t := e.UpdatedAt
+	if t.IsZero() {
+		t = e.CreatedAt
+	}
+	if t.IsZero() {
+		return 0, false
+	}
+	age := time.Since(t)
+	return age, age < starterGracePeriod
 }
 
 func (r *runner) deleteAsset(ctx context.Context, id int64) error {

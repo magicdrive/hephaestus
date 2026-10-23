@@ -132,7 +132,9 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 	if commit == "" {
 		commit = os.Getenv("GITHUB_SHA")
 	}
-	vars := templateVars(cfg, info, commit, os.Environ(), opts.TokenEnv, opts.TapTokenEnv)
+	refs := tokenRefs(cfg)
+	credVars := append([]string{opts.TokenEnv, opts.TapTokenEnv}, refs...)
+	vars := templateVars(cfg, info, commit, os.Environ(), credVars...)
 
 	owner, repo, err := resolveRepo(cfg, opts.Repo)
 	if err != nil {
@@ -143,6 +145,24 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 	ghaction.MaskValue(token)
 	ghaction.MaskValue(tapToken)
 	opts.redact.add(token, tapToken)
+	// No rendered (published) value may contain a token: a formula, release
+	// notes, a commit message or a pull request title.
+	tmpl.RegisterSecret(token, tapToken)
+	for _, r := range refs {
+		v := os.Getenv(r)
+		ghaction.MaskValue(v)
+		opts.redact.add(v)
+		tmpl.RegisterSecret(v)
+	}
+	if slices.Contains(opts.Stages, pipeline.Build) && (token != "" || tapToken != "") &&
+		(slices.Contains(opts.Stages, pipeline.Release) || slices.Contains(opts.Stages, pipeline.Tap)) {
+		w := "build commands run with access to this process's credentials (the release or tap token is set): " +
+			"they are removed from the commands' environment, but code running as the same user may still read them; " +
+			"run build and publish in separate jobs: docs/github-action.md#separate-build-and-publish-jobs"
+		fmt.Fprintf(opts.Stderr, "warning: %s\n", w)
+		ghaction.Warning(w)
+		rep.Warnings = append(rep.Warnings, w)
+	}
 
 	manifestPath := filepath.Join(cfg.Root, filepath.FromSlash(cfg.Manifest))
 	m, err := loadManifest(manifestPath, cfg, info, commit, opts.Fresh)
@@ -211,7 +231,7 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 		switch stage {
 		case pipeline.Build:
 			var res *build.Result
-			res, err = build.Run(ctx, build.Input{Config: cfg, Manifest: m, Vars: vars, Environ: os.Environ(), ScrubEnv: []string{opts.TokenEnv, opts.TapTokenEnv}, Stdout: opts.Stderr, Stderr: opts.Stderr})
+			res, err = build.Run(ctx, build.Input{Config: cfg, Manifest: m, Vars: vars, Environ: os.Environ(), ScrubEnv: credVars, Stdout: opts.Stderr, Stderr: opts.Stderr})
 			if res != nil {
 				rep.Build = res
 			}
@@ -294,12 +314,13 @@ func templateVars(cfg *config.Config, info version.Info, commit string, environ 
 	if len(short) > 7 {
 		short = short[:7]
 	}
-	return tmpl.Vars{
+	v := tmpl.Vars{
 		Project: cfg.Project.Name, ProjectName: cfg.Project.Name,
 		Version: info.Version, Tag: info.Tag, RawVersion: info.Tag,
 		Major: info.Major, Minor: info.Minor, Patch: info.Patch, Prerelease: info.Prerelease,
 		Commit: commit, ShortCommit: short, Env: env,
-	}.WithSecretEnv(full)
+	}
+	return tmpl.WithSecretEnv(v, full)
 }
 
 func resolveRepo(cfg *config.Config, flagRepo string) (string, string, error) {

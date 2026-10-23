@@ -297,3 +297,88 @@ func TestPullRequestReusedOnlyWhenHeadAndBaseMatch(t *testing.T) {
 		}
 	})
 }
+
+// --- N7: strict version extraction and a visible skip ---
+
+func TestFormulaVersionIgnoresNestedAndHeredocLines(t *testing.T) {
+	for name, tc := range map[string]struct{ in, want string }{
+		"class-level version":                   {"class T < Formula\n  desc \"x\"\n  version \"1.2.3\"\nend\n", "1.2.3"},
+		"caveats heredoc":                       {"class T < Formula\n  def caveats\n    <<~EOS\n  version \"999.0.0\"\n    EOS\n  end\n  version \"1.0.0\"\nend\n", "1.0.0"},
+		"heredoc only":                          {"class T < Formula\n  def caveats\n    <<~EOS\n  version \"999.0.0\"\n    EOS\n  end\nend\n", ""},
+		"resource block":                        {"class T < Formula\n  resource \"x\" do\n    version \"999.0.0\"\n    url \"https://x/releases/download/v999.0.0/x.tgz\"\n  end\nend\n", ""},
+		"resource at class indent":              {"class T < Formula\n  resource \"x\" do\n  version \"999.0.0\"\n  end\nend\n", ""},
+		"deeper indent":                         {"class T < Formula\n    version \"999.0.0\"\nend\n", ""},
+		"on_macos url":                          {"class T < Formula\n  on_macos do\n    on_arm do\n      url \"https://x/releases/download/v1.4.0/t.tgz\"\n    end\n  end\nend\n", "1.4.0"},
+		"resource url skipped for on_linux url": {"class T < Formula\n  resource \"r\" do\n    url \"https://x/releases/download/v9.0.0/r.tgz\"\n  end\n  on_linux do\n    url \"https://x/releases/download/v1.5.0/t.tgz\"\n  end\nend\n", "1.5.0"},
+		"test block url":                        {"class T < Formula\n  test do\n    url \"https://x/releases/download/v9.0.0/r.tgz\"\n  end\nend\n", ""},
+		"string, not statement":                 {"class T < Formula\n  desc \"version 9.9.9\"\nend\n", ""},
+	} {
+		if got := formulaVersion([]byte(tc.in)); got != tc.want {
+			t.Errorf("%s: formulaVersion = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+func TestHeredocVersionDoesNotBlockUpdates(t *testing.T) {
+	f := newFake(t, token)
+	tapped := "class Tool < Formula\n  version \"0.9.0\"\n  def caveats\n    <<~EOS\n  version \"999.0.0\"\n    EOS\n  end\nend\n"
+	f.addRepo(tapRepo, "main", map[string]string{formulaPath: tapped})
+	fx := newFixture(t)
+	fx.direct()
+	r := one(t)(Run(context.Background(), fx.input(f.client(t, token))))
+	if r.Status != StatusUpdated {
+		t.Fatalf("result %+v", r)
+	}
+}
+
+func TestDowngradeSkipIsAWarning(t *testing.T) {
+	f := newFake(t, token)
+	f.addRepo(tapRepo, "main", map[string]string{formulaPath: formulaWith("999.0.0")})
+	fx := newFixture(t)
+	fx.direct()
+	res, err := Run(context.Background(), fx.input(f.client(t, token)))
+	if err != nil {
+		t.Fatalf("a skipped downgrade must not fail the run: %v", err)
+	}
+	r := res[0]
+	if r.Status != StatusSkipped || len(r.Warnings) != 1 || !strings.Contains(r.Warnings[0], "Tap has a newer version (999.0.0); not downgraded") {
+		t.Fatalf("result %+v", r)
+	}
+}
+
+// --- N10: unverifiable comparisons are refused ---
+
+func TestUnverifiableComparisonIsRefused(t *testing.T) {
+	many := []any{}
+	for i := 0; i < 300; i++ {
+		many = append(many, map[string]any{"filename": formulaPath, "status": "modified"})
+	}
+	for name, cmp := range map[string]map[string]any{
+		"ahead without files": {"status": "ahead", "ahead_by": 2, "files": []any{}},
+		"files missing":       {"status": "diverged", "ahead_by": 1},
+		"300 files":           {"status": "ahead", "ahead_by": 1, "files": many},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t, token)
+			f.addRepo(tapRepo, "main", map[string]string{formulaPath: oldFormula})
+			f.mu.Lock()
+			f.repos[tapRepo].branches[prBranch] = f.repos[tapRepo].branches["main"]
+			f.mu.Unlock()
+			f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+				if strings.Contains(r.URL.Path, "/compare/") {
+					reply(w, 200, cmp)
+					return true
+				}
+				return false
+			}
+			fx := newFixture(t)
+			_, err := Run(context.Background(), fx.input(f.client(t, token)))
+			if err == nil || !strings.Contains(err.Error(), "cannot be verified") {
+				t.Fatalf("err = %v", err)
+			}
+			if len(f.writes()) != 0 {
+				t.Fatalf("writes %v", f.writes())
+			}
+		})
+	}
+}

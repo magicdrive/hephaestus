@@ -23,11 +23,14 @@
 // created, never moved: there is no force update anywhere in this package.
 //
 // Downgrades: before writing, the version of the formula already in the tap
-// (its version line, else a semantic version found as a path segment of its
-// url) is compared with the one being published. When the tap's is newer
-// (e.g. an older tag's workflow was re-run) nothing is written and the
-// result is skipped, with the reason, unless brews[].allow_downgrade is
-// set. Versions that are not semantic versions cannot be compared: the
+// (its class-level version statement, else a semantic version found as a
+// path segment of its top-level or on_macos/on_linux url; see
+// formulaVersion) is compared with the one being published. When the tap's
+// is newer (e.g. an older tag's workflow was re-run) nothing is written and
+// the result is skipped, with the reason and a warning ("Tap has a newer
+// version"), unless brews[].allow_downgrade is set. A skip is not a failure,
+// since patch releases of an older series legitimately meet a newer
+// formula; the warning keeps a tap pinned to a bogus high version visible. Versions that are not semantic versions cannot be compared: the
 // formula is then updated with a warning. This applies to both modes (in
 // pull request mode the base branch is compared).
 //
@@ -80,6 +83,9 @@ const TokenEnv = "HOMEBREW_TAP_GITHUB_TOKEN" //nolint:gosec // G101: environment
 const (
 	maxFormulaSize = 1 << 20 // the contents API returns inline content up to 1 MB
 	commitAttempts = 3
+	// maxCompareFiles is the number of files GitHub lists at most in a
+	// comparison.
+	maxCompareFiles = 300
 )
 
 // Input configures Run.
@@ -154,6 +160,8 @@ type publisher struct {
 	c       *github.Client
 	content []byte
 	res     Result
+	// downOld and downNew are the versions behind a skipped downgrade.
+	downOld, downNew string
 }
 
 func (p *publisher) logf(format string, args ...any) {
@@ -550,7 +558,13 @@ func (p *publisher) findPull(ctx context.Context, baseOwner, baseRepo, headOwner
 // update" title. A diverged branch is accepted on the same condition: the
 // base merely moved on after the branch was created. A branch with no
 // changes of its own (identical, or behind: e.g. its pull request was
-// merged) is reused too; the formula is then committed to it as usual.
+// merged) is reused too; the formula is then committed to it as usual. A
+// branch that cannot be verified (commits ahead but no file list, or a list
+// at GitHub's 300-file limit, which may be truncated) is refused.
+//
+// Known limitation: the check and the later commit and pull request are
+// separate API calls, so a push to the branch in between (by someone with
+// write access to the tap) is not detected.
 func (p *publisher) verifyHeadBranch(ctx context.Context, baseOwner, baseRepo, base, headOwner, head string, cross bool) error {
 	spec := head
 	if cross {
@@ -567,6 +581,12 @@ func (p *publisher) verifyHeadBranch(ctx context.Context, baseOwner, baseRepo, b
 	case github.CompareIdentical, github.CompareBehind, github.CompareAhead, github.CompareDiverged:
 	default:
 		return fmt.Errorf("the existing %s: unexpected comparison status %q with %s@%s", where, cmp.Status, baseFull, base)
+	}
+	if len(cmp.Files) >= maxCompareFiles {
+		return fmt.Errorf("the existing %s changes %d or more files compared with %s@%s (GitHub truncates the list, so it cannot be verified); %s", where, maxCompareFiles, baseFull, base, advice)
+	}
+	if cmp.AheadBy > 0 && len(cmp.Files) == 0 {
+		return fmt.Errorf("the existing %s has %d commits not on %s@%s but GitHub listed no changed files, so it cannot be verified; %s", where, cmp.AheadBy, baseFull, base, advice)
 	}
 	var other []string
 	for _, f := range cmp.Files {
@@ -589,23 +609,84 @@ func (p *publisher) verifyHeadBranch(ctx context.Context, baseOwner, baseRepo, b
 var errDowngrade = errors.New("the tap has a newer formula")
 
 var (
-	versionLineRe = regexp.MustCompile(`(?m)^[ \t]*version[ \t]+["']([^"'\n]+)["']`)
-	urlLineRe     = regexp.MustCompile(`(?m)^[ \t]*url[ \t]+["']([^"'\n]+)["']`)
+	versionStmtRe = regexp.MustCompile(`^version[ \t]+["']([^"'\n]+)["']`)
+	urlStmtRe     = regexp.MustCompile(`^url[ \t]+["']([^"'\n]+)["']`)
+	heredocRe     = regexp.MustCompile(`<<[~-]?(["']?)([A-Za-z_][A-Za-z0-9_]*)(["']?)`)
+	doBlockRe     = regexp.MustCompile(`\bdo(?:[ \t]*\|[^|]*\|)?[ \t]*$`)
 	semverRe      = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 )
 
-// formulaVersion returns the version a formula declares: its version line,
-// else the first path segment of its url that is a semantic version (the
-// tag in a GitHub release download URL). It returns "" when there is none.
+// platformBlocks are the blocks whose url still describes the formula
+// itself (unlike resource or test blocks).
+var platformBlocks = map[string]bool{"on_macos": true, "on_linux": true, "on_arm": true, "on_intel": true}
+
+// formulaVersion returns the version a formula declares. Only statements of
+// the formula itself count, so a crafted line in a heredoc (caveats), a
+// resource block or a method body cannot set it:
+//
+//   - a `version "x"` statement directly in the class body (indented by
+//     exactly two spaces, outside any block and heredoc); else
+//   - the first path segment that is a semantic version (the tag in a
+//     GitHub release download URL) of the first url statement in the class
+//     body or in on_macos/on_linux/on_arm/on_intel blocks.
+//
+// It returns "" when there is none. The parser follows the layout of
+// generated and brew-style formulae; it does not evaluate Ruby.
 func formulaVersion(content []byte) string {
-	if m := versionLineRe.FindSubmatch(content); m != nil {
-		return strings.TrimSpace(string(m[1]))
+	type block struct {
+		indent int
+		kind   string
 	}
-	m := urlLineRe.FindSubmatch(content)
-	if m == nil {
+	var stack []block
+	heredoc := ""
+	firstURL := ""
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimRight(line, " \t\r")
+		trimmed := strings.TrimLeft(line, " \t")
+		if heredoc != "" {
+			if trimmed == heredoc {
+				heredoc = ""
+			}
+			continue
+		}
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(trimmed)
+		if m := heredocRe.FindStringSubmatch(trimmed); m != nil && m[1] == m[3] {
+			heredoc = m[2]
+		}
+		if trimmed == "end" || strings.HasPrefix(trimmed, "end ") || strings.HasPrefix(trimmed, "end.") {
+			if n := len(stack); n > 0 && stack[n-1].indent == indent {
+				stack = stack[:n-1]
+			}
+			continue
+		}
+		if doBlockRe.MatchString(trimmed) {
+			kind, _, _ := strings.Cut(trimmed, " ")
+			stack = append(stack, block{indent, kind})
+			continue
+		}
+		if len(stack) == 0 && indent == 2 && line[:2] == "  " {
+			if m := versionStmtRe.FindStringSubmatch(trimmed); m != nil {
+				return strings.TrimSpace(m[1])
+			}
+		}
+		if firstURL == "" && indent >= 2 {
+			m := urlStmtRe.FindStringSubmatch(trimmed)
+			ok := m != nil && (len(stack) > 0 || indent == 2)
+			for _, b := range stack {
+				ok = ok && platformBlocks[b.kind]
+			}
+			if ok {
+				firstURL = m[1]
+			}
+		}
+	}
+	if firstURL == "" {
 		return ""
 	}
-	u, err := url.Parse(string(m[1]))
+	u, err := url.Parse(firstURL)
 	if err != nil {
 		return ""
 	}
@@ -726,12 +807,19 @@ func (p *publisher) downgrade(existing []byte) bool {
 		p.warn("downgrading %s from %s to %s (allow_downgrade is set)", p.p.Path, oldV, newV)
 		return false
 	}
+	p.downOld, p.downNew = oldV, newV
 	p.res.Reason = fmt.Sprintf("the tap already has version %s of %s, newer than %s; not downgrading it (set brews[].allow_downgrade: true to force)", oldV, p.p.Path, newV)
 	return true
 }
 
+// skipDowngrade records a skip because the tap is newer. The run still
+// succeeds: re-running an older tag, or publishing a patch release of an
+// older series (1.4.9 after 2.0.0), legitimately meets a newer formula. The
+// skip is therefore surfaced as a warning (in the CLI summary) rather than
+// as a failure; set brews[].allow_downgrade to overwrite.
 func (p *publisher) skipDowngrade() {
 	p.res.Status, p.res.NoOp = StatusSkipped, true
+	p.warn("formula %s: Tap has a newer version (%s); not downgraded to %s (set brews[].allow_downgrade: true to force)", p.b.Name, p.downOld, p.downNew)
 	p.logf("skipped: %s", p.res.Reason)
 }
 

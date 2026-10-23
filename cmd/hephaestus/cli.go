@@ -9,12 +9,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/magicdrive/hephaestus/internal/compat/goreleaser"
 	"github.com/magicdrive/hephaestus/internal/config"
 	"github.com/magicdrive/hephaestus/internal/manifest"
 	"github.com/magicdrive/hephaestus/internal/pipeline"
+	"github.com/magicdrive/hephaestus/internal/tmpl"
 )
 
 // Version is the running hephaestus version, set by Execute.
@@ -58,7 +60,7 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 		return 2
 	}
 	cmd, rest := args[0], args[1:]
-	var stages string
+	var stages, phase string
 	switch cmd {
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
@@ -89,6 +91,7 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 	fs.StringVar(&opts.TapTokenEnv, "tap-token-env", "HOMEBREW_TAP_GITHUB_TOKEN", "environment variable holding the tap token")
 	if cmd == "run" {
 		fs.StringVar(&stages, "stages", "", "comma-separated stages to run, or all (default: every configured stage)")
+		fs.StringVar(&phase, "phase", "", "run only the selected stages of one phase: local (build, archive, checksum) or publish (release, formula, tap)")
 	}
 	if err := fs.Parse(rest); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -100,6 +103,10 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 		fmt.Fprintf(stderr, "hephaestus %s: unexpected argument %q\n", cmd, fs.Arg(0))
 		return 2
 	}
+	if phase != "" && phase != phaseLocal && phase != phasePublish {
+		fmt.Fprintf(stderr, "hephaestus %s: --phase must be %s or %s\n", cmd, phaseLocal, phasePublish)
+		return 2
+	}
 	red.addEnviron(os.Environ(), opts.TokenEnv, opts.TapTokenEnv)
 
 	cfg, err := loadConfig(opts.ConfigPath)
@@ -109,6 +116,8 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 	}
 	tokenWarnings, literals := literalTokens(cfg)
 	red.add(literals...)
+	// Variables read by repository.token are credentials too.
+	red.addEnviron(os.Environ(), tokenRefs(cfg)...)
 	for _, w := range append(cfg.Warnings(), tokenWarnings...) {
 		fmt.Fprintf(stderr, "warning: %s\n", w)
 	}
@@ -126,8 +135,54 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
 	}
+	if phase != "" {
+		list = inPhase(list, phase)
+		if len(list) == 0 {
+			fmt.Fprintf(stderr, "==> phase %s: no stages to run\n", phase)
+			return 0
+		}
+	}
 	opts.Stages = list
 	return run(ctx, cfg, opts)
+}
+
+// Phases split a run so that build code and publishing credentials need not
+// share a process: the GitHub Action runs the local phase in a step without
+// tokens and the publish phase in a later step.
+const (
+	phaseLocal   = "local"   // build, archive, checksum
+	phasePublish = "publish" // release, formula, tap
+)
+
+// inPhase returns the stages of list that belong to phase, in order.
+func inPhase(list []pipeline.Stage, phase string) []pipeline.Stage {
+	var out []pipeline.Stage
+	for _, s := range list {
+		local := s == pipeline.Build || s == pipeline.Archive || s == pipeline.Checksum
+		if local == (phase == phaseLocal) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// tokenRefs returns the environment variables brews[].repository.token
+// templates read. They hold credentials whatever their name, so they are
+// hidden from .Env, removed from build commands and redacted.
+func tokenRefs(cfg *config.Config) []string {
+	var names []string
+	for _, b := range cfg.Brews {
+		refs, err := tmpl.EnvRefs(b.Repository.Token)
+		if err != nil {
+			continue // reported by configuration validation
+		}
+		for _, r := range refs {
+			if !slices.Contains(names, r) {
+				names = append(names, r)
+			}
+		}
+	}
+	return names
 }
 
 func loadConfig(path string) (*config.Config, error) {
