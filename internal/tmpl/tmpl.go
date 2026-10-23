@@ -1,0 +1,128 @@
+// Package tmpl renders the Go text/template expressions allowed in Hephaestus
+// configuration values.
+//
+// Rendering is strict: referencing an unknown field or a missing key is an
+// error rather than "<no value>", so typos fail loudly at validation time.
+// Only a small, side-effect-free function set is available.
+package tmpl
+
+import (
+	"bytes"
+	"fmt"
+	"sort"
+	"strings"
+	"text/template"
+)
+
+// Vars is the data passed to every template. Fields are documented in
+// docs/configuration.md; keep the two in sync.
+type Vars struct {
+	Project     string // project.name
+	ProjectName string // alias of Project (GoReleaser compatibility)
+	Version     string // version without a leading "v"
+	Tag         string // git tag, e.g. "v1.2.3"
+	RawVersion  string // version exactly as supplied
+	Major       string
+	Minor       string
+	Patch       string
+	Prerelease  string
+	Commit      string
+	ShortCommit string
+	OS          string // target OS (GOOS-style name), empty outside a target
+	Os          string // alias of OS (GoReleaser compatibility)
+	Arch        string // target architecture (GOARCH-style name)
+	Arm         string // ARM version for arch=arm, if any
+	Ext         string // executable extension for the target (".exe" on windows)
+	Env         map[string]string
+}
+
+// WithTarget returns a copy of v with the target fields set.
+func (v Vars) WithTarget(os, arch, arm string) Vars {
+	v.OS, v.Os, v.Arch, v.Arm = os, os, arch, arm
+	v.Ext = ""
+	if os == "windows" {
+		v.Ext = ".exe"
+	}
+	return v
+}
+
+var funcs = template.FuncMap{
+	"tolower":    strings.ToLower,
+	"toupper":    strings.ToUpper,
+	"lower":      strings.ToLower,
+	"upper":      strings.ToUpper,
+	"trim":       strings.TrimSpace,
+	"trimprefix": func(s, prefix string) string { return strings.TrimPrefix(s, prefix) },
+	"trimsuffix": func(s, suffix string) string { return strings.TrimSuffix(s, suffix) },
+	"replace":    func(s, old, new string) string { return strings.ReplaceAll(s, old, new) },
+	"title": func(s string) string {
+		if s == "" {
+			return s
+		}
+		return strings.ToUpper(s[:1]) + s[1:]
+	},
+}
+
+// FuncNames lists the available template functions, sorted.
+func FuncNames() []string {
+	names := make([]string, 0, len(funcs))
+	for k := range funcs {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// MaxOutput bounds a rendered value; configuration values are short strings.
+const MaxOutput = 64 << 10
+
+// Render evaluates s as a template against v. Strings without "{{" are
+// returned unchanged without parsing. A missing .Env key is an error.
+func Render(s string, v Vars) (string, error) {
+	return render(s, v, "missingkey=error")
+}
+
+// Check parses s and renders it against sample data so typos in field or
+// function names surface during configuration validation, before any work
+// starts. Environment variables are not required to exist at check time.
+func Check(s string) error {
+	_, err := render(s, Vars{
+		Project: "p", ProjectName: "p", Version: "0.0.0", Tag: "v0.0.0", RawVersion: "v0.0.0",
+		Major: "0", Minor: "0", Patch: "0", Commit: "0", ShortCommit: "0",
+		OS: "linux", Os: "linux", Arch: "amd64",
+	}, "missingkey=zero")
+	return err
+}
+
+func render(s string, v Vars, missing string) (string, error) {
+	if !strings.Contains(s, "{{") {
+		return s, nil
+	}
+	t, err := template.New("value").Option(missing).Funcs(funcs).Parse(s)
+	if err != nil {
+		return "", fmt.Errorf("invalid template %q: %w", s, cleanErr(err))
+	}
+	if v.Env == nil {
+		v.Env = map[string]string{}
+	}
+	var buf limitedBuffer
+	if err := t.Execute(&buf, v); err != nil {
+		return "", fmt.Errorf("cannot render template %q: %w", s, cleanErr(err))
+	}
+	return buf.String(), nil
+}
+
+type limitedBuffer struct{ bytes.Buffer }
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.Len()+len(p) > MaxOutput {
+		return 0, fmt.Errorf("template output exceeds %d bytes", MaxOutput)
+	}
+	return b.Buffer.Write(p)
+}
+
+func cleanErr(err error) error {
+	msg := err.Error()
+	msg = strings.TrimPrefix(msg, "template: value:")
+	return fmt.Errorf("%s", strings.TrimSpace(msg))
+}
