@@ -39,7 +39,11 @@ func Run(in Input) (*Result, error) {
 			ids = append(ids, a.ID)
 		}
 	}
-	in.Manifest.RemoveKind(manifest.KindArchive, ids...)
+	// Replace only what this stage produced; archives imported by a build
+	// provider (existing / goreleaser) may share an id and must survive.
+	in.Manifest.RemoveFunc(func(a manifest.Artifact) bool {
+		return a.Kind == manifest.KindArchive && a.Source.Stage == "archive" && contains(ids, a.ID)
+	})
 	for _, a := range res.Archives {
 		in.Manifest.Put(a)
 	}

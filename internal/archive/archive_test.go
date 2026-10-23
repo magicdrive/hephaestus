@@ -661,3 +661,19 @@ archives:
 		}
 	}
 }
+
+func TestRerunKeepsImportedArchives(t *testing.T) {
+	root := fixture(t, map[string]string{"a": "a"})
+	cfg := loadConfig(t, root, header+`    files: [a]
+`)
+	in := input(cfg)
+	imported := manifest.Artifact{Kind: manifest.KindArchive, ID: "default", Name: "prebuilt.zip", Path: "pre/prebuilt.zip", OS: "linux", Arch: "arm64", Format: "zip",
+		SHA256: strings.Repeat("a", 64), Source: manifest.Source{Stage: "build", Provider: "existing"}}
+	in.Manifest.Put(imported)
+	if _, err := Run(in); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(in.Manifest.Filter(manifest.KindArchive)); n != 2 {
+		t.Errorf("archives = %d, want imported + generated", n)
+	}
+}

@@ -348,6 +348,17 @@ func (m *Manifest) RemoveKind(k Kind, ids ...string) {
 	m.Artifacts = keep
 }
 
+// RemoveFunc drops every artifact for which drop returns true.
+func (m *Manifest) RemoveFunc(drop func(Artifact) bool) {
+	keep := m.Artifacts[:0]
+	for _, a := range m.Artifacts {
+		if !drop(a) {
+			keep = append(keep, a)
+		}
+	}
+	m.Artifacts = keep
+}
+
 // Filter returns the artifacts of kind k, optionally restricted to ids.
 func (m *Manifest) Filter(k Kind, ids ...string) []Artifact {
 	var out []Artifact

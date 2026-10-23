@@ -114,16 +114,37 @@ func (b *Build) Provider() string {
 	}
 }
 
-// GoReleaserImport reads binaries from GoReleaser's dist/artifacts.json.
+// GoReleaserImport reads binaries (and optionally archives) from
+// GoReleaser's dist/artifacts.json.
 type GoReleaserImport struct {
-	Artifacts string   `yaml:"artifacts"`
-	IDs       []string `yaml:"ids"`
+	// Artifacts is the project-relative path of artifacts.json; defaults to
+	// dist/artifacts.json.
+	Artifacts string `yaml:"artifacts"`
+	// IDs keeps only artifacts whose extra.ID is listed (GoReleaser build
+	// ids for binaries, archive ids for archives). Empty keeps all.
+	IDs []string `yaml:"ids"`
+	// Archives also imports artifacts of type "Archive" as archive
+	// artifacts, so GoReleaser-made archives can be published as they are.
+	Archives bool `yaml:"archives"`
+	// GoAMD64 selects the amd64 microarchitecture level ("v1" to "v4") to
+	// import when GoReleaser built several; defaults to v1. Artifacts of
+	// other levels are skipped because a target has no level dimension.
+	GoAMD64 string `yaml:"goamd64"`
 }
 
-// ExistingImport takes prebuilt executables from a path template evaluated
-// for every target.
+// Existing import kinds.
+const (
+	ExistingKindBinary  = "binary"
+	ExistingKindArchive = "archive"
+)
+
+// ExistingImport takes prebuilt files from a path template evaluated for
+// every target.
 type ExistingImport struct {
 	Path string `yaml:"path"`
+	// Kind is "binary" (default: an executable) or "archive" (a .tar.gz,
+	// .tgz or .zip imported as a release-ready archive).
+	Kind string `yaml:"kind"`
 }
 
 // Command is an argument vector. In YAML it is either a list (executed
