@@ -1,0 +1,42 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    "group:allNonMajor"
+  ],
+  "timezone": "Asia/Tokyo",
+  "schedule": ["before 10am on monday"],
+  "labels": ["dependencies"],
+  "commitMessagePrefix": "chore(deps):",
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "rebaseWhen": "behind-base-branch",
+  "minimumReleaseAge": "3 days",
+  "packageRules": [
+    {
+      "description": "GitHub Actions stay pinned to commit SHAs",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions",
+      "pinDigests": true,
+      "automerge": false
+    },
+    {
+      "description": "Go major updates monthly",
+      "matchDatasources": ["go"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "Go major dependencies",
+      "schedule": ["before 10am on the first day of the month"]
+    },
+    {
+      "description": "Vulnerable packages first",
+      "matchDatasources": ["go"],
+      "labels": ["security"],
+      "prPriority": 10
+    }
+  ],
+  "ignorePaths": ["**/testdata/**", "**/*.golden"],
+  "postUpdateOptions": ["gomodTidy"],
+  "osvVulnerabilityAlerts": true
+}

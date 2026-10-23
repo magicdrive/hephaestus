@@ -2,8 +2,8 @@ package build
 
 import (
 	"bytes"
-	"crypto/md5"
-	"crypto/sha1"
+	"crypto/md5"  //nolint:gosec // G501: md5 checksums offered for GoReleaser compatibility, not for security
+	"crypto/sha1" //nolint:gosec // G505: sha1 checksums offered for GoReleaser compatibility, not for security
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
@@ -267,9 +267,9 @@ func (s *stage) verifyChecksum(rel, claim, sha256Hex string) error {
 	case "sha224":
 		h = sha256.New224()
 	case "sha1":
-		h = sha1.New()
+		h = sha1.New() //nolint:gosec // G401: user-selected checksum algorithm (GoReleaser compatibility)
 	case "md5":
-		h = md5.New()
+		h = md5.New() //nolint:gosec // G401: user-selected checksum algorithm (GoReleaser compatibility)
 	case "crc32":
 		h = crc32.NewIEEE()
 	default:

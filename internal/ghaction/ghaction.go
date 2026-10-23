@@ -44,12 +44,12 @@ func writeOutputs(path string, outputs map[string]string) error {
 		}
 		fmt.Fprintf(&b, "%s<<%s\n%s\n%s\n", k, delim, outputs[k], delim)
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644) //nolint:gosec // G703: path is the file GitHub Actions provides via $GITHUB_OUTPUT/$GITHUB_STEP_SUMMARY
 	if err != nil {
 		return err
 	}
 	if _, err := f.WriteString(b.String()); err != nil {
-		f.Close()
+		_ = f.Close() // already failing; the original error takes precedence
 		return err
 	}
 	return f.Close()
@@ -78,12 +78,12 @@ func AppendSummary(markdown string) error {
 	if len(markdown) > MaxSummary {
 		markdown = markdown[:MaxSummary-64] + "\n\n_(summary truncated)_\n"
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644) //nolint:gosec // G703: path is the file GitHub Actions provides via $GITHUB_OUTPUT/$GITHUB_STEP_SUMMARY
 	if err != nil {
 		return err
 	}
 	if _, err := f.WriteString(markdown); err != nil {
-		f.Close()
+		_ = f.Close() // already failing; the original error takes precedence
 		return err
 	}
 	return f.Close()

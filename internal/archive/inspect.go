@@ -303,10 +303,10 @@ func (ins *inspector) zip(r io.ReaderAt, size int64) error {
 		}
 		f := manifest.File{Path: name, Type: TypeDir, Mode: fmt.Sprintf("%04o", perm)}
 		if !isDir {
-			if zf.UncompressedSize64 > uint64(ins.lim.MaxFileSize) {
+			if zf.UncompressedSize64 > uint64(ins.lim.MaxFileSize) { //nolint:gosec // G115: MaxFileSize is a validated non-negative limit
 				return unsafeErr("entry %q is %d bytes, over the %d-byte limit per file", name, zf.UncompressedSize64, ins.lim.MaxFileSize)
 			}
-			declared := int64(zf.UncompressedSize64)
+			declared := int64(zf.UncompressedSize64) //nolint:gosec // G115: bounded by MaxFileSize (int64) just above
 			if err := ins.reserve(name, declared); err != nil {
 				return err
 			}
@@ -317,11 +317,11 @@ func (ins *inspector) zip(r io.ReaderAt, size int64) error {
 			sum, err := hashExact(name, rc, declared)
 			if err == nil {
 				// Drain to EOF so the zip reader verifies the CRC-32.
-				if _, cerr := io.Copy(io.Discard, rc); cerr != nil {
+				if _, cerr := io.Copy(io.Discard, rc); cerr != nil { //nolint:gosec // G110: hashExact already consumed exactly the declared (size-limited) bytes; archive/zip rejects data beyond the declared size
 					err = unsafeErr("entry %q: %v", name, cerr)
 				}
 			}
-			rc.Close()
+			_ = rc.Close() // read-only; any corruption was already reported via CRC check
 			if err != nil {
 				return err
 			}

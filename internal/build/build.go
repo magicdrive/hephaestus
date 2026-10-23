@@ -306,7 +306,7 @@ func openVerified(root *os.Root, rel string, maxSize int64) (*verified, error) {
 		}
 	}
 	if err != nil {
-		f.Close()
+		_ = f.Close() // read-only; the original error takes precedence
 		return nil, err
 	}
 	h := sha256.New()
@@ -318,7 +318,7 @@ func openVerified(root *os.Root, rel string, maxSize int64) (*verified, error) {
 		err = fmt.Errorf("%q changed size while reading (%d, then %d bytes)", rel, st.Size(), n)
 	}
 	if err != nil {
-		f.Close()
+		_ = f.Close() // read-only; the original error takes precedence
 		if errors.Is(err, fs.ErrPermission) {
 			return nil, fmt.Errorf("%q: permission denied: %w", rel, err)
 		}
@@ -333,7 +333,7 @@ func verifyFile(root *os.Root, rel string, maxSize int64) (int64, string, error)
 	if err != nil {
 		return 0, "", err
 	}
-	v.file.Close()
+	_ = v.file.Close() // read-only; digest and size are already computed
 	return v.size, v.sha256, nil
 }
 

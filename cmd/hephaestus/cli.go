@@ -1,5 +1,5 @@
-// Package cli implements the hephaestus command.
-package cli
+// Package hephaestus implements the hephaestus command line.
+package hephaestus
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	"github.com/magicdrive/hephaestus/internal/pipeline"
 )
 
-// Version is set at link time (-ldflags "-X .../cli.Version=v1.2.3").
+// Version is the running hephaestus version, set by Execute.
 var Version = "dev"
 
 const usage = `hephaestus — forge release artifacts into reliable distributions

@@ -100,19 +100,6 @@ func (fx *fixture) input(c *github.Client) Input {
 	}
 }
 
-// rewrite replaces a file's content and updates the manifest accordingly.
-func (fx *fixture) rewrite(name, content string) {
-	fx.t.Helper()
-	if err := os.WriteFile(filepath.Join(fx.cfg.Root, "dist", name), []byte(content), 0o644); err != nil {
-		fx.t.Fatal(err)
-	}
-	for i := range fx.man.Artifacts {
-		if fx.man.Artifacts[i].Name == name {
-			fx.man.Artifacts[i].SHA256, fx.man.Artifacts[i].Size = sum(content), int64(len(content))
-		}
-	}
-}
-
 func (fx *fixture) downloadURL(name string) string {
 	for _, a := range fx.man.Artifacts {
 		if a.Name == name && a.Kind != manifest.KindBinary {

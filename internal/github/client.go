@@ -363,7 +363,7 @@ func backoff(attempt int) time.Duration {
 	if attempt < 6 {
 		d = min(maxBackoff, time.Second<<attempt)
 	}
-	return d/2 + rand.N(d/2+1)
+	return d/2 + rand.N(d/2+1) //nolint:gosec // G404: retry jitter only; not security-sensitive
 }
 
 // Wait blocks for d, or until ctx is done. It uses Options.Sleep when set.
@@ -533,7 +533,7 @@ func (c *Client) once(ctx context.Context, cl *call) (http.Header, error) {
 
 func drain(resp *http.Response) {
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-	resp.Body.Close()
+	_ = resp.Body.Close() // nothing actionable on close failure after draining
 }
 
 func (c *Client) newRequest(ctx context.Context, method string, u *url.URL, cl *call, body []byte, first, auth bool) (*http.Request, error) {
@@ -618,7 +618,7 @@ func readLimited(r io.Reader, limit int64) ([]byte, error) {
 
 // doJSON sends in (if non-nil) as JSON and decodes the response into out.
 func (c *Client) doJSON(ctx context.Context, method, u string, in, out any) error {
-	cl := &call{method: method, url: u, handle: readJSON(out)}
+	cl := &call{method: method, url: u, handle: readJSON(out)} //nolint:bodyclose // c.do closes the response body (drain) before returning
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
@@ -640,7 +640,7 @@ func listAll[T any](ctx context.Context, c *Client, first string) ([]T, error) {
 			return nil, fmt.Errorf("github: GET %s: more than %d pages", first, maxPages)
 		}
 		var items []T
-		h, err := c.do(ctx, &call{method: http.MethodGet, url: next, handle: readJSON(&items)})
+		h, err := c.do(ctx, &call{method: http.MethodGet, url: next, handle: readJSON(&items)}) //nolint:bodyclose // c.do closes the response body (drain) before returning
 		if err != nil {
 			return nil, err
 		}

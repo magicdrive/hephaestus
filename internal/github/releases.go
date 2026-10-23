@@ -189,7 +189,7 @@ func (c *Client) UploadReleaseAsset(ctx context.Context, owner, repo string, rel
 		size:        size,
 		contentType: contentType,
 		timeout:     c.xferTimeout,
-		handle:      readJSON(&a),
+		handle:      readJSON(&a), //nolint:bodyclose // c.do closes the response body (drain) before returning
 	})
 	if err != nil {
 		return nil, err

@@ -297,7 +297,7 @@ func (c *Config) lineOf(path string) int {
 		key, idx := part, -1
 		if i := strings.IndexByte(part, '['); i >= 0 {
 			key = part[:i]
-			fmt.Sscanf(part[i:], "[%d]", &idx)
+			_, _ = fmt.Sscanf(part[i:], "[%d]", &idx) // on parse failure idx stays -1
 		}
 		if key != "" {
 			v := mapValue(n, key)

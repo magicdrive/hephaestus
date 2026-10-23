@@ -29,3 +29,6 @@ linters:
     rules:
       - path: _test\.go
         linters: [gosec, errcheck]
+      # Tests deliberately misspell field names to exercise unknown-field detection.
+      - path: _test\.go
+        linters: [misspell]

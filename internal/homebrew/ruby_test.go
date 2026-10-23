@@ -22,7 +22,7 @@ func TestRubyString(t *testing.T) {
 		{"C# and #1", `"C# and #1"`},
 		{"line1\nline2\ttab\r", `"line1\nline2\ttab\r"`},
 		{"nul\x00esc\x1bdel\x7f", `"nul\u{0}esc\u{1b}del\u{7f}"`},
-		{"bidi‮override​", `"bidi\u{202e}override\u{200b}"`},
+		{"bidi\u202eoverride\u200b", `"bidi\u{202e}override\u{200b}"`},
 		{"日本語 ✓", `"日本語 ✓"`},
 	}
 	for _, tt := range tests {
@@ -87,7 +87,7 @@ func unescapeRuby(lit string) (string, error) {
 }
 
 func FuzzRubyString(f *testing.F) {
-	for _, s := range []string{"", `"; system("rm -rf /"); "`, "#{`id`}", "a\nb", "\\", "#", "#@x", "‮", "__END__", "\x00"} {
+	for _, s := range []string{"", `"; system("rm -rf /"); "`, "#{`id`}", "a\nb", "\\", "#", "#@x", "\u202e", "__END__", "\x00"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
@@ -172,7 +172,7 @@ func TestCodeBlock(t *testing.T) {
 		{"x = <<~'EOS'\ny", "not terminated"},
 		{"a\x00b", "U+0000"},
 		{"a\x1bb", "U+001B"},
-		{"a‮b", "U+202E"},
+		{"a\u202eb", "U+202E"},
 		{"a\rb", "U+000D"},
 		{"bad\xff", "UTF-8"},
 	} {
@@ -265,7 +265,7 @@ func TestRubyInjection(t *testing.T) {
 		`\"; system("touch ` + marker + `") #`,
 		"EOS\nsystem(\"touch " + marker + "\")\nEOS",
 		"#@foo #$0 \\#{x} \\",
-		"\x00\x1b[31mred‮",
+		"\x00\x1b[31mred\u202e",
 	}
 	probe := filepath.Join(dir, "probe.rb")
 	if err := os.WriteFile(probe, []byte(rubyProbe), 0o644); err != nil {

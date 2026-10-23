@@ -60,7 +60,7 @@ const (
 )
 
 // TokenEnv is the environment variable conventionally holding the tap token.
-const TokenEnv = "HOMEBREW_TAP_GITHUB_TOKEN"
+const TokenEnv = "HOMEBREW_TAP_GITHUB_TOKEN" //nolint:gosec // G101: environment variable name, not a credential
 
 const (
 	maxFormulaSize = 1 << 20 // the contents API returns inline content up to 1 MB

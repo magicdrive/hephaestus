@@ -87,7 +87,7 @@ runs:
         cd "$ACTION_PATH"
         bin="$RUNNER_TEMP/hephaestus-bin/hephaestus"
         [[ "$RUNNER_OS" == "Windows" ]] && bin="$bin.exe"
-        CGO_ENABLED=0 go build -trimpath -mod=readonly -o "$bin" ./cmd/hephaestus
+        CGO_ENABLED=0 go build -trimpath -mod=readonly -o "$bin" .
         echo "HEPHAESTUS_BIN=$bin" >> "$GITHUB_ENV"
     - name: Run hephaestus
       id: run

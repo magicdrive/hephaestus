@@ -203,15 +203,15 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	name := tmp.Name()
 	defer os.Remove(name) // no-op after a successful rename
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close() // already failing; the original error takes precedence
 		return err
 	}
 	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
+		_ = tmp.Close() // already failing; the original error takes precedence
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close() // already failing; the original error takes precedence
 		return err
 	}
 	if err := tmp.Close(); err != nil {

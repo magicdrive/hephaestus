@@ -11,6 +11,7 @@
 # created on exit. Intended for disposable CI runners; safe but noticeable on a
 # workstation.
 set -euo pipefail
+export LC_ALL=C
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 fixture="$repo/testdata/e2e/fixture"
@@ -34,7 +35,7 @@ trap cleanup EXIT
 step() { printf '\n==> %s\n' "$*"; }
 
 step "Build hephaestus"
-(cd "$repo" && go build -trimpath -o "$work/hephaestus" ./cmd/hephaestus)
+(cd "$repo" && go build -trimpath -o "$work/hephaestus" .)
 heph="$work/hephaestus"
 
 step "Forge fixture $tag: build, archive, checksum, formula"
