@@ -6,7 +6,7 @@ import (
 )
 
 func TestRender(t *testing.T) {
-	v := Vars{Project: "mycli", Version: "1.2.3", Env: map[string]string{"FOO": "bar"}}.WithTarget("windows", "amd64", "")
+	v := Vars{Project: "mycli", Version: "1.2.3", Commit: "abc123", ArtifactName: "x.zip", ArtifactExt: ".zip", Env: map[string]string{"FOO": "bar"}}.WithTarget("windows", "amd64", "")
 	tests := []struct {
 		in, want, err string
 	}{
@@ -21,6 +21,9 @@ func TestRender(t *testing.T) {
 		{in: "{{ title .OS }}", want: "Windows"},
 		{in: "{{ .Project ", err: "invalid template"},
 		{in: "{{ exec \"x\" }}", err: "exec"},
+		{in: "{{ .FullCommit }}", want: "abc123"},
+		{in: "{{ urlPathEscape \"a/b c\" }}", want: "a%2Fb%20c"},
+		{in: "{{ .ArtifactName }}{{ .ArtifactExt }}", want: "x.zip.zip"},
 	}
 	for _, tt := range tests {
 		got, err := Render(tt.in, v)
@@ -39,6 +42,9 @@ func TestRender(t *testing.T) {
 func TestCheck(t *testing.T) {
 	if err := Check("{{ .Env.ANYTHING }}_{{ .Version }}"); err != nil {
 		t.Errorf("Check: %v", err)
+	}
+	if err := Check("{{ .ArtifactName }} {{ .FullCommit }} {{ urlPathEscape .Tag }}"); err != nil {
+		t.Errorf("Check(GoReleaser compatibility names): %v", err)
 	}
 	if err := Check("{{ .Versoin }}"); err == nil {
 		t.Error("Check accepted a misspelled field")

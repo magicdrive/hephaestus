@@ -1,0 +1,10 @@
+project_name: mycli
+brews:
+  - name: mycli
+    folder: Formula
+    tap:
+      owner: acme
+      name: homebrew-tap
+  - name: other
+    plist: |
+      <?xml version="1.0"?>

@@ -208,6 +208,13 @@ func (c *Config) Validate() error {
 				add(p+".existing.path", "is required")
 			}
 			checkTmpl(p+".existing.path", b.Existing.Path)
+			switch b.Existing.Kind {
+			case "":
+				b.Existing.Kind = ExistingKindBinary
+			case ExistingKindBinary, ExistingKindArchive:
+			default:
+				add(p+".existing.kind", "must be %q or %q", ExistingKindBinary, ExistingKindArchive)
+			}
 		case ProviderGoReleaser:
 			if b.Targets != nil || b.Matrix != nil {
 				add(p, "targets come from GoReleaser's artifacts.json; remove targets/matrix")
@@ -217,6 +224,18 @@ func (c *Config) Validate() error {
 			}
 			if err := pathutil.ValidateRelative(b.GoReleaser.Artifacts); err != nil {
 				add(p+".goreleaser.artifacts", "%v", err)
+			}
+			switch b.GoReleaser.GoAMD64 {
+			case "":
+				b.GoReleaser.GoAMD64 = "v1"
+			case "v1", "v2", "v3", "v4":
+			default:
+				add(p+".goreleaser.goamd64", "must be v1, v2, v3 or v4")
+			}
+			for j, id := range b.GoReleaser.IDs {
+				if id == "" {
+					add(fmt.Sprintf("%s.goreleaser.ids[%d]", p, j), "must not be empty")
+				}
 			}
 		}
 		if b.Provider() != ProviderGoReleaser {
@@ -500,6 +519,8 @@ func (c *Config) validateBrew(i int, archiveIDs, names map[string]bool, add func
 	p := fmt.Sprintf("brews[%d]", i)
 	if !formulaNameRe.MatchString(b.Name) {
 		add(p+".name", "%q is not a valid Homebrew formula name (lowercase letters, digits, +_.- and an optional @version)", b.Name)
+	} else if b.Name[0] >= '0' && b.Name[0] <= '9' {
+		add(p+".name", "%q must start with a letter: Homebrew cannot load a formula whose class name starts with a digit", b.Name)
 	}
 	if names[b.Name] {
 		add(p+".name", "duplicate formula %q", b.Name)

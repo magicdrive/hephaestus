@@ -1,0 +1,17 @@
+version: 2
+project_name: mycli
+brews:
+  - name: mycli
+    commit_author:
+      name: bot
+      email: bot@example.com
+      use_github_app_token: true
+      signing:
+        enabled: true
+    repository:
+      owner: acme
+      name: homebrew-tap
+      git:
+        url: git@github.com:acme/homebrew-tap.git
+      pull_request:
+        body: hello

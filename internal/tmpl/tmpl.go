@@ -9,6 +9,7 @@ package tmpl
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"text/template"
@@ -33,8 +34,17 @@ type Vars struct {
 	Arch        string // target architecture (GOARCH-style name)
 	Arm         string // ARM version for arch=arm, if any
 	Ext         string // executable extension for the target (".exe" on windows)
-	Env         map[string]string
+	// ArtifactName, ArtifactPath and ArtifactExt describe the artifact a
+	// value is rendered for (GoReleaser compatibility); empty elsewhere.
+	ArtifactName string // file name, e.g. "mycli_1.2.3_darwin_arm64.tar.gz"
+	ArtifactPath string // project-relative path
+	ArtifactExt  string // extension including the dot, e.g. ".tar.gz"
+	Env          map[string]string
 }
+
+// FullCommit is an alias of Commit (GoReleaser compatibility). It is a method
+// so that every Vars value provides it without extra wiring.
+func (v Vars) FullCommit() string { return v.Commit }
 
 // WithTarget returns a copy of v with the target fields set.
 func (v Vars) WithTarget(os, arch, arm string) Vars {
@@ -55,6 +65,8 @@ var funcs = template.FuncMap{
 	"trimprefix": func(s, prefix string) string { return strings.TrimPrefix(s, prefix) },
 	"trimsuffix": func(s, suffix string) string { return strings.TrimSuffix(s, suffix) },
 	"replace":    func(s, old, new string) string { return strings.ReplaceAll(s, old, new) },
+	// urlPathEscape escapes one URL path segment (GoReleaser compatibility).
+	"urlPathEscape": url.PathEscape,
 	"title": func(s string) string {
 		if s == "" {
 			return s
@@ -90,6 +102,7 @@ func Check(s string) error {
 		Project: "p", ProjectName: "p", Version: "0.0.0", Tag: "v0.0.0", RawVersion: "v0.0.0",
 		Major: "0", Minor: "0", Patch: "0", Commit: "0", ShortCommit: "0",
 		OS: "linux", Os: "linux", Arch: "amd64",
+		ArtifactName: "p_0.0.0_linux_amd64.tar.gz", ArtifactPath: "dist/p_0.0.0_linux_amd64.tar.gz", ArtifactExt: ".tar.gz",
 	}, "missingkey=zero")
 	return err
 }

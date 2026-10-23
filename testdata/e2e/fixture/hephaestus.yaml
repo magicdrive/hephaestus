@@ -1,0 +1,48 @@
+# End-to-end fixture: a Go CLI built with a plain command, packaged with a
+# declared layout, and installed through a generated Homebrew formula.
+version: 1
+project:
+  name: heph-fixture
+  description: Fixture CLI for Hephaestus end-to-end tests
+  homepage: https://github.com/magicdrive/hephaestus
+  license: MIT
+
+builds:
+  - id: cli
+    matrix:
+      os: [darwin, linux]
+      arch: [amd64, arm64]
+    command: [go, build, -trimpath, -ldflags, "-s -w -X main.version={{ .Version }}", -o, "dist/bin/{{ .OS }}_{{ .Arch }}/heph-fixture", .]
+    env:
+      GOOS: "{{ .OS }}"
+      GOARCH: "{{ .Arch }}"
+      CGO_ENABLED: "0"
+      GOFLAGS: -buildvcs=false
+    output: dist/bin/{{ .OS }}_{{ .Arch }}/heph-fixture
+
+archives:
+  - id: default
+    name: "{{ .Project }}_{{ .Version }}_{{ .OS }}_{{ .Arch }}"
+    files:
+      - src: "dist/bin/{{ .OS }}_{{ .Arch }}/heph-fixture"
+        dst: bin/heph-fixture
+        mode: "0755"
+      - README.md
+      - LICENSE
+      - src: "man/*.1"
+        dst: share/man/man1/
+      - src: completions/heph-fixture.bash
+        dst: completions/
+        required: false
+
+brews:
+  - name: heph-fixture
+    url_template: "{{ .Env.E2E_URL_BASE }}/{{ .ArtifactName }}"
+    install: |
+      bin.install "bin/heph-fixture"
+      man1.install "share/man/man1/heph-fixture.1"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/heph-fixture --version")
+    repository:
+      owner: magicdrive
+      name: homebrew-tap

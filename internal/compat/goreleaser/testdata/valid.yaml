@@ -1,0 +1,92 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: mycli
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+brews:
+  - name: mycli
+    ids: [default]
+    homepage: https://github.com/acme/mycli
+    description: Friendly tool for managing widgets
+    license: MIT
+    directory: Formula
+    goarm: 7
+    skip_upload: auto
+    url_template: "https://github.com/acme/mycli/releases/download/{{ urlPathEscape .Tag }}/{{ .ArtifactName }}"
+    commit_author:
+      name: release-bot
+      email: release-bot@example.com
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    repository:
+      owner: acme
+      name: homebrew-tap
+      branch: "{{ .ProjectName }}-{{ .Version }}"
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        draft: false
+        base: main
+    dependencies:
+      - git
+      - name: go
+        type: build
+      - name: pinentry-mac
+        os: mac
+    conflicts:
+      - mycli-legacy
+    caveats: |
+      Run `mycli init` to get started.
+    install: |
+      bin.install "mycli"
+    extra_install: |
+      man1.install "manpages/mycli.1.gz"
+    test: |
+      system "#{bin}/mycli", "--help"
+
+  - name: mycli@1
+    ids: [default]
+    homepage: https://github.com/acme/mycli
+    description: Friendly tool for managing widgets (v1 series)
+    license: MIT
+    repository:
+      owner: acme
+      name: homebrew-tap
+      pull_request:
+        enabled: true
+        base:
+          owner: upstream
+          name: homebrew-tap
+          branch: master
+    service: |
+      run [opt_bin/"mycli", "serve"]
+      keep_alive true
+    custom_block: |
+      head "https://github.com/acme/mycli.git", branch: "main"
+
+release:
+  github:
+    owner: acme
+    name: mycli

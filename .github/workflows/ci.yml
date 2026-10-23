@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CGO_ENABLED: "0"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then echo "::error::not gofmt-ed:"; echo "$unformatted"; exit 1; fi
+      - name: go vet
+        run: go vet ./... && GOOS=windows go vet ./...
+      - name: go mod tidy
+        run: go mod tidy -diff
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Unit and integration tests
+        shell: bash
+        run: go test -count=1 -coverprofile=coverage.out ./...
+      - name: Race detector
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 ./...
+      - name: Coverage summary
+        shell: bash
+        run: go tool cover -func=coverage.out | tail -1
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fuzz smoke (20s per target)
+        run: scripts/fuzz.sh 20s
+
+  cross-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: |
+          GOOS="${TARGET%/*}" GOARCH="${TARGET#*/}" go build -trimpath -o /dev/null ./cmd/hephaestus
+        env:
+          TARGET: ${{ matrix.target }}
+
+  homebrew-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Put Homebrew on PATH (Linux)
+        if: runner.os == 'Linux'
+        run: echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+      - name: Build fixture, archive, generate formula, brew audit/install/test
+        run: scripts/homebrew-e2e.sh
+
+  action-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the action (snapshot build + archive + formula)
+        id: heph
+        uses: ./
+        with:
+          working-directory: testdata/e2e/fixture
+          stages: build,archive,checksum
+          snapshot: "true"
+      - name: Check outputs
+        env:
+          STATUS: ${{ steps.heph.outputs.status }}
+          ARTIFACTS: ${{ steps.heph.outputs.artifacts }}
+        run: |
+          echo "status=$STATUS"
+          echo "$ARTIFACTS" | jq -e 'length >= 4'
+          [[ "$STATUS" == "no-op" ]]
+      - name: Check config only
+        uses: ./
+        with:
+          command: check
+          working-directory: testdata/e2e/fixture

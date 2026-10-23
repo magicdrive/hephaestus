@@ -1,6 +1,11 @@
 package config
 
-import "gopkg.in/yaml.v3"
+import (
+	"fmt"
+	"reflect"
+
+	"gopkg.in/yaml.v3"
+)
 
 // Brew configures one Homebrew formula. Field names follow GoReleaser's
 // `brews` entries so existing configurations can be copied over; see
@@ -76,7 +81,7 @@ func (d *BrewDependency) UnmarshalYAML(n *yaml.Node) error {
 		return n.Decode(&d.Name)
 	}
 	type plain BrewDependency
-	return decodeStrict(n, (*plain)(d))
+	return decodeKnown(n, (*plain)(d))
 }
 
 // BrewRepository mirrors GoReleaser's repository.
@@ -103,4 +108,36 @@ type BrewPRBase struct {
 	Owner  string `yaml:"owner"`
 	Name   string `yaml:"name"`
 	Branch string `yaml:"branch"`
+}
+
+// UnmarshalYAML accepts a bare string as the base branch, as GoReleaser does
+// (`base: main`).
+func (b *BrewPRBase) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		return n.Decode(&b.Branch)
+	}
+	type plain BrewPRBase
+	return decodeKnown(n, (*plain)(b))
+}
+
+// decodeKnown decodes a mapping into v (a pointer to a struct), rejecting
+// unknown and duplicate keys. Types with a custom UnmarshalYAML are skipped by
+// checkKnown, so they must perform this check themselves.
+func decodeKnown(n *yaml.Node, v any) error {
+	if n.Kind != yaml.MappingNode {
+		return &Error{Line: n.Line, Msg: "expected a mapping or a string"}
+	}
+	fields := yamlFields(reflect.TypeOf(v).Elem())
+	seen := map[string]bool{}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k := n.Content[i]
+		if seen[k.Value] {
+			return &Error{Path: k.Value, Line: k.Line, Msg: "duplicate key"}
+		}
+		seen[k.Value] = true
+		if _, ok := fields[k.Value]; !ok {
+			return &Error{Path: k.Value, Line: k.Line, Msg: fmt.Sprintf("unknown field%s", suggest(k.Value, fields))}
+		}
+	}
+	return decodeStrict(n, v)
 }

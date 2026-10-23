@@ -1,0 +1,11 @@
+version: 2
+project_name: mycli
+brews:
+  - name: mycli
+    description: "{{ .Summary }}"
+    homepage: "{{ envOrDefault \"HOMEPAGE\" \"https://example.com\" }}"
+    install: |
+      bin.install "{{ .Binary }}"
+    license: "{{ .Env.LICENSE }}"
+    test: |
+      assert_match "{{ .Version }}", shell_output("#{bin}/mycli version")

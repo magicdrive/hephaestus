@@ -1,0 +1,31 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - gosec
+    - misspell
+    - unconvert
+    - bodyclose
+  settings:
+    errcheck:
+      exclude-functions:
+        # Diagnostics written to stdout/stderr or a log writer; a failure to
+        # print is not actionable.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gosec:
+      excludes:
+        - G204 # build commands run user-configured programs by design
+        - G304 # paths are validated and confined with os.Root before use
+        - G301
+        - G302
+        - G306
+    staticcheck:
+      checks: ["all", "-QF1001", "-QF1008", "-ST1000", "-ST1003"]
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters: [gosec, errcheck]

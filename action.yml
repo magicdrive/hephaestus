@@ -1,0 +1,121 @@
+name: Hephaestus
+description: Forge release artifacts into reliable distributions — archives, GitHub Releases and Homebrew formulas for any language.
+author: magicdrive
+branding:
+  icon: package
+  color: orange
+
+inputs:
+  command:
+    description: "hephaestus command: run, check, build, archive, checksum, release, formula or tap."
+    default: run
+  stages:
+    description: "With command=run: comma-separated stages (build,archive,checksum,release,formula,tap) or all. Default: every configured stage."
+    default: ""
+  config:
+    description: Path to the configuration file, relative to working-directory.
+    default: ""
+  tag:
+    description: Release tag. Defaults to the pushed tag (github.ref_name on tag events).
+    default: ""
+  snapshot:
+    description: Build without a tag (no release or tap publication).
+    default: "false"
+  dry-run:
+    description: Plan GitHub writes without performing them.
+    default: "false"
+  fresh:
+    description: Ignore an existing artifact manifest.
+    default: "false"
+  working-directory:
+    description: Directory to run in.
+    default: "."
+  github-token:
+    description: Token for the release repository (needs contents:write to publish).
+    default: ${{ github.token }}
+  tap-token:
+    description: Token with contents:write (and pull-requests:write for PR mode) on the Homebrew tap. GITHUB_TOKEN cannot write to another repository.
+    default: ""
+
+outputs:
+  status:
+    description: "published, no-op, dry-run or failed."
+    value: ${{ steps.run.outputs.status }}
+  no-op:
+    description: '"true" when nothing changed on GitHub.'
+    value: ${{ steps.run.outputs.no-op }}
+  version:
+    description: Version being released.
+    value: ${{ steps.run.outputs.version }}
+  artifacts:
+    description: JSON list of archives and checksum files (name, path, sha256, url).
+    value: ${{ steps.run.outputs.artifacts }}
+  release-url:
+    description: URL of the GitHub Release.
+    value: ${{ steps.run.outputs.release-url }}
+  release-id:
+    description: ID of the GitHub Release.
+    value: ${{ steps.run.outputs.release-id }}
+  uploaded-assets:
+    description: JSON list of asset names uploaded or replaced in this run.
+    value: ${{ steps.run.outputs.uploaded-assets }}
+  formula-paths:
+    description: Newline-separated paths of generated formulas.
+    value: ${{ steps.run.outputs.formula-paths }}
+  formula-commit-sha:
+    description: Newline-separated tap commit SHAs.
+    value: ${{ steps.run.outputs.formula-commit-sha }}
+  pull-request-url:
+    description: Newline-separated tap pull request URLs.
+    value: ${{ steps.run.outputs.pull-request-url }}
+
+runs:
+  using: composite
+  steps:
+    # Hephaestus is built from this action's own pinned source, so the code
+    # that runs is exactly the code at the ref you reference (pin a SHA).
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache: false
+    - name: Build hephaestus
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        cd "$ACTION_PATH"
+        bin="$RUNNER_TEMP/hephaestus-bin/hephaestus"
+        [[ "$RUNNER_OS" == "Windows" ]] && bin="$bin.exe"
+        CGO_ENABLED=0 go build -trimpath -mod=readonly -o "$bin" ./cmd/hephaestus
+        echo "HEPHAESTUS_BIN=$bin" >> "$GITHUB_ENV"
+    - name: Run hephaestus
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_STAGES: ${{ inputs.stages }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_SNAPSHOT: ${{ inputs.snapshot }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_FRESH: ${{ inputs.fresh }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        HOMEBREW_TAP_GITHUB_TOKEN: ${{ inputs.tap-token }}
+      run: |
+        set -euo pipefail
+        case "$INPUT_COMMAND" in
+          run|check|build|archive|checksum|release|formula|tap) ;;
+          *) echo "::error::invalid command input"; exit 2 ;;
+        esac
+        args=("$INPUT_COMMAND")
+        [[ -n "$INPUT_CONFIG" ]] && args+=(--config "$INPUT_CONFIG")
+        if [[ "$INPUT_COMMAND" != check ]]; then
+          [[ -n "$INPUT_TAG" ]] && args+=(--tag "$INPUT_TAG")
+          [[ "$INPUT_SNAPSHOT" == true ]] && args+=(--snapshot)
+          [[ "$INPUT_DRY_RUN" == true ]] && args+=(--dry-run)
+          [[ "$INPUT_FRESH" == true ]] && args+=(--fresh)
+          [[ "$INPUT_COMMAND" == run && -n "$INPUT_STAGES" ]] && args+=(--stages "$INPUT_STAGES")
+        fi
+        "$HEPHAESTUS_BIN" "${args[@]}"
