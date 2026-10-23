@@ -23,7 +23,10 @@ for os in darwin linux windows; do
       f=$(ls hephaestus_*_"${os}_${arch}".tar.gz)
       got="$(tar -tzf "$f" | sort | tr '\n' ' ')"
       want="LICENSE README.md hephaestus "
-      tar -tvzf "$f" | grep -q -- '-rwxr-xr-x .* hephaestus$' || { echo "$f: hephaestus is not 0755"; exit 1; }
+      # Not a pipe into grep -q: tar's write error after grep exits would
+      # fail under pipefail.
+      verbose="$(tar -tvzf "$f")"
+      grep -q -- '-rwxr-xr-x .* hephaestus$' <<<"$verbose" || { echo "$f: hephaestus is not 0755"; exit 1; }
     fi
     [[ "$got" == "$want" ]] || { echo "$f: contents '$got', want '$want'"; exit 1; }
     grep -q "  $f\$" "$sumfile" || { echo "$f missing from $sumfile"; exit 1; }

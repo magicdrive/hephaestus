@@ -204,7 +204,7 @@ func planOne(root *os.Root, cfg *config.Config, a *config.Archive, t config.Targ
 		}
 	}
 
-	r := &resolver{root: root, cfg: cfg, archive: a, target: t, vars: vars, mtime: mtime, byPath: map[string]*Entry{}, folded: map[string]string{}}
+	r := &resolver{root: root, cfg: cfg, archive: a, target: t, vars: vars, mtime: mtime, byPath: map[string]*Entry{}, folded: map[string]string{}, binaries: binaryPaths(in.Manifest)}
 	if a.FilesDeclared() {
 		for i := range a.Files {
 			if err := r.addSpec(i, &a.Files[i]); err != nil {
@@ -271,6 +271,21 @@ type resolver struct {
 	folded  map[string]string
 	skipped []string
 	total   int64
+	// binaries holds the source paths of every binary in the manifest.
+	// They default to 0755 even where the host file system has no
+	// executable bit (Windows).
+	binaries map[string]bool
+}
+
+// binaryPaths returns the source paths of the manifest's binaries.
+func binaryPaths(m *manifest.Manifest) map[string]bool {
+	out := map[string]bool{}
+	if m != nil {
+		for _, b := range m.Filter(manifest.KindBinary) {
+			out[b.Path] = true
+		}
+	}
+	return out
 }
 
 // addBinaries places the target's binaries at the archive root; used when
@@ -522,7 +537,7 @@ func (r *resolver) addFile(src, target string, mode *uint32, info *entryInfo, la
 	}
 
 	perm := uint32(0o644)
-	if st.Mode().Perm()&0o100 != 0 {
+	if st.Mode().Perm()&0o100 != 0 || r.binaries[src] {
 		perm = 0o755
 	}
 	if mode != nil {

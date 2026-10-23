@@ -3,6 +3,7 @@ package manifest
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -34,7 +35,7 @@ func TestWriteFileInRoundTrip(t *testing.T) {
 		t.Errorf("temporary files left: %v", entries)
 	}
 	st, err := os.Stat(filepath.Join(dir, "dist", "sub", "m.json"))
-	if err != nil || st.Mode().Perm() != 0o644 {
+	if err != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o644) {
 		t.Errorf("mode = %v, %v", st, err)
 	}
 }

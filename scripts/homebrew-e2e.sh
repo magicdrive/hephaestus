@@ -54,7 +54,10 @@ expected="$(printf '%s\n' LICENSE README.md bin/ bin/heph-fixture share/ share/m
 if [[ "$listing" != "$expected" ]]; then
   echo "unexpected archive contents:"; echo "$listing"; exit 1
 fi
-tar -tvzf "$archive" | grep -q -- '-rwxr-xr-x .*bin/heph-fixture$'
+# Capture the listing first: grep -q exits at the first match, and tar's
+# write error on the closed pipe would fail the script under pipefail.
+verbose="$(tar -tvzf "$archive")"
+grep -q -- '-rwxr-xr-x .*bin/heph-fixture$' <<<"$verbose"
 
 step "Archives are byte-for-byte reproducible"
 cp "dist/heph-fixture_${version}_checksums.txt" "$work/first.txt"

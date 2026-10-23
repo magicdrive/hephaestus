@@ -163,9 +163,12 @@ directory after the rules above (including collision checks).
 
 ## Permissions and ownership
 
-- Default file mode: `0755` if the source is executable by its owner, else
-  `0644`. Other source bits (group/other, umask effects) are ignored, so the
-  result is the same on every machine.
+- Default file mode: `0755` if the source is executable by its owner or is a
+  build binary recorded in the manifest, else `0644`. Other source bits
+  (group/other, umask effects) are ignored, so the result is the same on
+  every machine. Windows file systems have no executable bit: when archiving
+  on Windows, set `mode: "0755"` on executables other than build binaries
+  (scripts, for example), or archives differ from those built elsewhere.
 - An explicit `mode` must be an octal string, readable by the owner, and must
   not set setuid/setgid/sticky bits or group/world write. `0444`, `0555`,
   `0600`, `0644`, `0700` and `0755` are fine; `4755`, `0777` and `0664` are

@@ -404,7 +404,8 @@ func TestInspectArchivesFromSystemTools(t *testing.T) {
 			dest := filepath.Join(out, name+"."+tl.format)
 			args := make([]string, len(tl.args))
 			for i, a := range tl.args {
-				args[i] = strings.ReplaceAll(a, "OUT", dest)
+				// sh (MSYS on Windows) drops backslashes.
+				args[i] = strings.ReplaceAll(a, "OUT", filepath.ToSlash(dest))
 			}
 			cmd := exec.Command(args[0], args[1:]...)
 			cmd.Dir = src

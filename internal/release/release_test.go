@@ -820,7 +820,7 @@ func TestPreflightValidation(t *testing.T) {
 		{"tampered same size", func(fx *fixture, in *Input) {
 			_ = os.WriteFile(filepath.Join(fx.cfg.Root, "dist", linuxName), []byte(strings.Repeat("z", len(defaultFiles[linuxName]))), 0o644)
 		}, "has sha256"},
-		{"missing file", func(fx *fixture, in *Input) { _ = os.Remove(filepath.Join(fx.cfg.Root, "dist", darwinName)) }, "no such file"},
+		{"missing file", func(fx *fixture, in *Input) { _ = os.Remove(filepath.Join(fx.cfg.Root, "dist", darwinName)) }, "no such file (the manifest lists it"},
 		{"no sha256 in manifest", func(fx *fixture, in *Input) {
 			for i := range fx.man.Artifacts {
 				if fx.man.Artifacts[i].Kind == manifest.KindChecksum {

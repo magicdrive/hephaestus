@@ -23,6 +23,10 @@ import (
 	"github.com/magicdrive/hephaestus/internal/tmpl"
 )
 
+// hostExecBits reports whether the file system has Unix executable bits.
+// On Windows a source file's mode cannot say whether it is executable.
+const hostExecBits = runtime.GOOS != "windows"
+
 // fixture creates files under a temporary project root. A value starting
 // with "->" creates a symlink to the rest of the value; a key ending in "*"
 // is made executable.
@@ -182,14 +186,14 @@ func TestSingleFileAndRename(t *testing.T) {
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("entries = %v, want %v", names, want)
 	}
-	if m["bin/mycli"].content != "BIN" || m["bin/mycli"].mode != 0o755 {
+	if m["bin/mycli"].content != "BIN" || (hostExecBits && m["bin/mycli"].mode != 0o755) {
 		t.Errorf("bin/mycli = %+v", m["bin/mycli"])
 	}
 	if m["README.md"].mode != 0o644 || m["bin"].mode != 0o755 {
 		t.Errorf("modes: README %o, bin %o", m["README.md"].mode, m["bin"].mode)
 	}
 	a := res.Archives[0]
-	if strings.Join(a.Executables, ",") != "bin/mycli" || a.Format != "tar.gz" || a.OS != "linux" {
+	if (hostExecBits && strings.Join(a.Executables, ",") != "bin/mycli") || a.Format != "tar.gz" || a.OS != "linux" {
 		t.Errorf("manifest artifact = %+v", a)
 	}
 	data, _ := os.ReadFile(filepath.Join(root, a.Path))
@@ -391,12 +395,32 @@ func TestPermissions(t *testing.T) {
 	runOK(t, cfg)
 	_, m := readArchive(t, filepath.Join(root, "dist", "mycli_1.2.3_linux_amd64.tar.gz"))
 	for name, want := range map[string]int64{"tool": 0o755, "doc": 0o644, "script": 0o755, "ro": 0o444} {
+		if name == "tool" && !hostExecBits {
+			continue
+		}
 		if m[name].mode != want {
 			t.Errorf("%s mode = %o, want %o", name, m[name].mode, want)
 		}
 	}
 	if m["tool"].uid != 0 || m["tool"].uname != "" {
 		t.Errorf("owner leaked: %+v", m["tool"])
+	}
+}
+
+// TestManifestBinariesAreExecutable checks that a build binary is packaged
+// as 0755 even when its source file has no executable bit, as on Windows.
+func TestManifestBinariesAreExecutable(t *testing.T) {
+	root := fixture(t, map[string]string{"out/mycli": "BIN", "out/notes.txt": "n"})
+	cfg := loadConfig(t, root, header+`    files: [{src: out/mycli, dst: bin/}, out/notes.txt]
+`)
+	in := input(cfg)
+	in.Manifest.Put(manifest.Artifact{Kind: manifest.KindBinary, ID: "default", Name: "mycli", Path: "out/mycli", OS: "linux", Arch: "amd64", Source: manifest.Source{Stage: "build"}})
+	if _, err := Run(in); err != nil {
+		t.Fatal(err)
+	}
+	_, m := readArchive(t, filepath.Join(root, "dist", "mycli_1.2.3_linux_amd64.tar.gz"))
+	if m["bin/mycli"].mode != 0o755 || m["out/notes.txt"].mode != 0o644 {
+		t.Errorf("modes: bin/mycli %o, out/notes.txt %o", m["bin/mycli"].mode, m["out/notes.txt"].mode)
 	}
 }
 
@@ -417,7 +441,7 @@ archives:
 		t.Fatalf("entries = %v", names)
 	}
 	e := m["mycli_1.2.3_windows_arm64/mycli.exe"]
-	if e.mode != 0o755 || e.content != "W" || !e.mtime.Equal(DefaultMTime) {
+	if (hostExecBits && e.mode != 0o755) || e.content != "W" || !e.mtime.Equal(DefaultMTime) {
 		t.Errorf("exe = %+v", e)
 	}
 }
@@ -641,13 +665,16 @@ archives:
 			}
 			cmd = exec.Command("unzip", "-q", filepath.Join(root, a.Path), "-d", dir)
 		} else {
-			cmd = exec.Command("tar", "-xzf", filepath.Join(root, a.Path), "-C", dir)
+			// Relative -f: GNU tar (Git for Windows) reads "C:\\..." as
+			// a remote host:path.
+			cmd = exec.Command("tar", "-xzf", filepath.Base(a.Path), "-C", dir)
+			cmd.Dir = filepath.Join(root, filepath.Dir(a.Path))
 		}
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%s: %v\n%s", cmd, err, out)
 		}
 		st, err := os.Stat(filepath.Join(dir, "bin", "mycli"))
-		if err != nil || st.Mode().Perm()&0o100 == 0 {
+		if err != nil || (hostExecBits && st.Mode().Perm()&0o100 == 0) {
 			t.Errorf("%s: bin/mycli = %v, %v", a.Name, st, err)
 		}
 		if b, _ := os.ReadFile(filepath.Join(dir, "docs", "a.md")); string(b) != "a" {

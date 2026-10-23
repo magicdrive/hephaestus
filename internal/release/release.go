@@ -66,6 +66,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -441,6 +442,9 @@ func verifyFile(l *local, a manifest.Artifact) error {
 		return errors.New("the manifest records no sha256; refusing to upload an unverified file")
 	}
 	f, err := manifest.OpenConfined(l.root, l.rel)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%s: no such file (the manifest lists it; re-run the stage that produces it)", l.path)
+	}
 	if err != nil {
 		return err
 	}
