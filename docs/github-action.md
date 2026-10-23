@@ -32,7 +32,7 @@ earlier steps cannot change how Hephaestus itself is built.
 | `stages` | `""` | With `command: run`: comma-separated stages (`build,archive,checksum,release,formula,tap`) or `all`. Empty runs every stage the configuration declares. Ignored by other commands. |
 | `config` | `""` | Configuration file, relative to `working-directory`. Empty: `hephaestus.yaml` (or `.yml`, `.hephaestus.yaml`, `.hephaestus.yml`). |
 | `tag` | `""` | Release tag. Empty: the pushed tag (`github.ref_name` when the workflow runs for a tag). |
-| `snapshot` | `"false"` | `"true"` builds without a tag (version `0.0.0-SNAPSHOT`). The release and tap stages refuse to run, so combine it with `stages`. |
+| `snapshot` | `"false"` | `"true"` builds without a tag (version `0.0.0-SNAPSHOT`). Configured release and tap stages are skipped; naming them in `stages` is an error. |
 | `dry-run` | `"false"` | `"true"` plans release and tap writes without performing them (reads still use the tokens when given). |
 | `fresh` | `"false"` | `"true"` ignores an existing manifest instead of continuing from it. |
 | `working-directory` | `.` | Directory to run in (the project root when the configuration is there). |

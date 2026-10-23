@@ -168,7 +168,7 @@ hephaestus version
 |---|---|
 | `--config PATH` | 設定ファイル（既定はカレントディレクトリの `hephaestus.yaml`） |
 | `--tag TAG` | リリースタグ（既定はタグ push 時の `$GITHUB_REF_NAME`）。`--snapshot` 以外では必須 |
-| `--snapshot` | バージョン `0.0.0-SNAPSHOT`、タグなし。release と tap ステージは実行を拒否する |
+| `--snapshot` | バージョン `0.0.0-SNAPSHOT`、タグなし。設定済みの release と tap ステージは飛ばし、`--stages` で明示した場合はエラー |
 | `--stages LIST` | `run` のみ。カンマ区切りのステージ、または `all` |
 | `--phase local\|publish` | `run` のみ。選んだステージのうち一方の段だけを実行する。`local` は build・archive・checksum、`publish` は release・formula・tap。ビルドと公開を別プロセスで実行するためのもの（Action はこれを使う） |
 | `--dry-run` | release と tap の書き込みを計画だけして実行しない |

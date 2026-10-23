@@ -215,3 +215,18 @@ brews:
 		t.Error("brews_from outside the root accepted")
 	}
 }
+
+func TestSnapshotSkipsConfiguredPublishing(t *testing.T) {
+	clearGitHubEnv(t)
+	root := project(t, "release:\n  github: {owner: o, name: r}\n")
+	cfg := filepath.Join(root, "hephaestus.yaml")
+	if code, _, errs := runCLI(t, "run", "--config", cfg, "--snapshot"); code != 0 {
+		t.Fatalf("snapshot with configured release: %s", errs)
+	}
+	if code, _, errs := runCLI(t, "run", "--config", cfg, "--snapshot", "--phase", "publish"); code != 0 || !strings.Contains(errs, "no stages to run") {
+		t.Errorf("snapshot publish phase: %d %s", code, errs)
+	}
+	if code, _, _ := runCLI(t, "run", "--config", cfg, "--snapshot", "--stages", "release"); code != 1 {
+		t.Error("explicit release with --snapshot accepted")
+	}
+}
