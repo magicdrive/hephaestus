@@ -184,6 +184,7 @@ hephaestus check              validate the configuration and print the plan
 hephaestus run                run every configured stage (or --stages a,b)
 hephaestus build|archive|checksum|release|formula|tap   run one stage
 hephaestus preflight --tag vX.Y.Z   read-only release checks before pushing a tag
+hephaestus status --tag vX.Y.Z      read-only state of a release and the next safe action
 hephaestus version
 ```
 
@@ -388,6 +389,7 @@ Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
 | [Threat model](docs/security/threat-model.md) | Assets, attackers, defenses, residual risk |
 | [Development](docs/development.md) | Make targets, tests, golden files, fuzzing, E2E |
 | [Release preflight](docs/preflight.md) | `hephaestus preflight --tag vX.Y.Z`: read-only checks before pushing a tag |
+| [Recovering a release](docs/recovery.md) | `hephaestus status`, every failure point and its safe recovery |
 | [Releasing](docs/releasing.md) | How Hephaestus releases itself: `make publish vX.Y.Z`, prereleases, recovery |
 | [Repository conventions](docs/architecture/repository-conventions.md) | Conventions shared with Ark and Enma |
 | [Architecture](ARCHITECTURE.md) | Invariants for contributors |
