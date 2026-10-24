@@ -97,7 +97,7 @@ type Facts struct {
 	Token     bool
 	TapToken  bool
 	DryRun    bool
-	SkipTapIf bool // every brew has skip_upload: true
+	SkipTapIf bool // every brew skips the tap (skip_upload: true, or auto on a prerelease)
 }
 
 // Check returns every missing input for the requested stages, considering
