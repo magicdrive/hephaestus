@@ -201,3 +201,25 @@ func TestPreflightChecksAreDocumented(t *testing.T) {
 		t.Errorf("docs/preflight.md checks table:\n  %v\nwant (execution order):\n  %v", documented, preflight.Checks())
 	}
 }
+
+// TestReleaseNotes: the release body comes from RELEASE_NOTES.md
+// (release.github.notes_file); its heading and compare link name the same
+// version, so notes are not published under another version by mistake.
+func TestReleaseNotes(t *testing.T) {
+	notes := readFile(t, "RELEASE_NOTES.md")
+	m := regexp.MustCompile(`\A# Hephaestus (v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\n`).FindStringSubmatch(notes)
+	if m == nil {
+		t.Fatal(`RELEASE_NOTES.md must start with "# Hephaestus vX.Y.Z"`)
+	}
+	if !strings.Contains(notes, "/compare/") || !strings.Contains(notes, "..."+m[1]+"\n") {
+		t.Errorf("RELEASE_NOTES.md: the Full Changelog link must end in ...%s", m[1])
+	}
+	if !strings.Contains(readFile(t, "CHANGELOG.md"), "## "+m[1]) {
+		t.Errorf("CHANGELOG.md has no section for %s", m[1])
+	}
+	for _, f := range []string{"hephaestus.yaml", "hephaestus.rehearsal.yaml"} {
+		if !strings.Contains(readFile(t, f), "notes_file: RELEASE_NOTES.md") {
+			t.Errorf("%s must publish RELEASE_NOTES.md", f)
+		}
+	}
+}

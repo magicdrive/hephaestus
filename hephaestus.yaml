@@ -50,7 +50,8 @@ release:
   github:
     owner: magicdrive
     name: hephaestus
-    generate_notes: true
+    # The notes of the version being released; update it before tagging.
+    notes_file: RELEASE_NOTES.md
 
 brews:
   - name: hephaestus

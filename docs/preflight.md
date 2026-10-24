@@ -87,10 +87,10 @@ IDs are stable; they appear in the JSON report and in `--skip`.
 | `config.formula` | error | Each formula's tap publication resolves for this tag (skipped for prereleases with `skip_upload: auto`) | — |
 | `github.repository` | error | The repository exists and is not archived | GitHub |
 | `github.release` | error | No release or draft exists for the tag (drafts need a token with push access to be seen; without one this warns) | GitHub |
-| `github.ci` | error | Every check run and commit status on HEAD succeeded, nothing is pending, and every check required by the branch ruleset ran and succeeded | GitHub |
+| `github.ci` | error | The latest run of every check on HEAD succeeded, nothing is pending, and every check required by the branch ruleset (from the app it names, if any) ran and succeeded; see [Check runs](#check-runs) | GitHub |
 | `github.workflow` | error | The release workflow exists and is active (when configured) | GitHub |
 | `github.environment` | error | The environment exists and deploys **only from tag policies**, one of which matches the tag; a branch policy (even `v*`) fails | GitHub |
-| `github.secrets` | error | Required secret names exist (environment first, then repository). The tap token is required only when a formula is published for this tag | GitHub |
+| `github.secrets` | error | Required secret names exist: in the configured environment, else in any environment, else in the repository. The tap token is required only when a formula is published for this tag | GitHub |
 | `github.ruleset.branch` | warning | An active ruleset protects the release branch and requires a status check | GitHub |
 | `github.ruleset.tag` | error | An active tag ruleset forbids deleting and updating the tag (WARN when missing); a rule blocking **creation** fails | GitHub |
 | `tap.repository` | error | Each tap a formula is published to exists and is not archived | GitHub |
@@ -100,6 +100,31 @@ IDs are stable; they appear in the JSON report and in `--skip`.
 
 A check whose prerequisite did not pass is `SKIP` with the reason, so one
 root cause is reported once.
+
+### Check runs
+
+A commit often has several check runs with the same name: re-run attempts,
+the same workflow run again (a release re-run, a second tag on one commit),
+or another app reporting a check of that name. `github.ci` reads every run
+(`filter=all`; the API's default `filter=latest` selects by `completed_at`
+and can hide a newer run that is still in progress) and decides
+independently of the order the API returns them in:
+
+- runs are grouped by app and name; each group is decided by its **latest**
+  run: the one with the highest ID (IDs grow with creation, so a re-run
+  attempt is newer than the run it replaces), else the latest
+  `started_at`;
+- a newer run that is queued or in progress makes the check pending (FAIL
+  "still running"), never hidden behind an older success; an older failure
+  does not outlive a newer success;
+- runs of different apps are different checks, and each must succeed; a
+  required check that names an app (`integration_id`) is satisfied only by
+  that app's runs;
+- when neither the ID nor `started_at` tells two runs with different
+  outcomes apart, the check is `UNKNOWN`, never guessed.
+
+The evidence lists every group with its latest run ID and how many older
+runs it superseded.
 
 ## JSON report
 
@@ -150,10 +175,10 @@ check is `UNKNOWN` with a hint, not `FAIL`.
 | --- | --- |
 | `github.repository`, `tap.repository` | `/repos/{o}/{r}` |
 | `github.release` | `/repos/{o}/{r}/releases` |
-| `github.ci` | `/repos/{o}/{r}/commits/{sha}/check-runs`, `/commits/{sha}/status` |
+| `github.ci` | `/repos/{o}/{r}/commits/{sha}/check-runs?filter=all`, `/commits/{sha}/status` |
 | `github.workflow` | `/repos/{o}/{r}/actions/workflows/{file}` |
 | `github.environment` | `/repos/{o}/{r}/environments/{env}`, `.../deployment-branch-policies` |
-| `github.secrets` | `/repos/{o}/{r}/environments/{env}/secrets`, `/repos/{o}/{r}/actions/secrets` (names only; secret values are not retrievable through the API) |
+| `github.secrets` | `/repos/{o}/{r}/environments`, `/repos/{o}/{r}/environments/{env}/secrets`, `/repos/{o}/{r}/actions/secrets` (names only; secret values are not retrievable through the API) |
 | `github.ruleset.*`, `github.ci` | `/repos/{o}/{r}/rulesets`, `/rulesets/{id}` |
 | `tap.layout`, `tap.branch`, `tap.pull-request` | `/repos/{o}/{t}/contents`, `/git/ref/heads/{branch}`, `/pulls` |
 

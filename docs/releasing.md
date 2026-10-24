@@ -28,6 +28,10 @@ checks for this repository.
 
 ## Cutting a release
 
+Before tagging, describe the version in `RELEASE_NOTES.md` (published as
+the release body through `release.github.notes_file`; its heading names the
+version) and add it to `CHANGELOG.md`, through a pull request.
+
 ```sh
 make publish-check v0.1.0-rc.1    # optional: the preflight alone
 make publish v0.1.0-rc.1          # or: make publish VERSION=v0.1.0-rc.1
@@ -155,8 +159,7 @@ never merges it. Users get the new version once it is merged.
    - `actions/attest-build-provenance` — provenance for the archives and
      the checksum file (recorded in the public Sigstore transparency log);
    - `hephaestus run --stages release` with `GITHUB_TOKEN` — draft,
-     upload, verify, publish, with GitHub-generated notes
-     (`generate_notes: true`);
+     upload, verify, publish, with `RELEASE_NOTES.md` as the notes;
    - when `tap=publish`: `hephaestus run --stages formula,tap` with
      `HOMEBREW_TAP_GITHUB_TOKEN` — the formula and a pull request on
      `magicdrive/homebrew-tap`;
