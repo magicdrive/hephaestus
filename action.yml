@@ -165,7 +165,12 @@ runs:
           [[ -n "$INPUT_STAGES" ]] && args+=(--stages "$INPUT_STAGES")
           args+=(--phase local)
         fi
-        "$HEPHAESTUS_BIN" "${args[@]}"
+        # The runner injects the OIDC request token into every step even
+        # when env blanks it, and build code can read this shell's
+        # /proc/PID/environ. exec replaces the shell, so no ancestor of the
+        # build below the runner still holds it.
+        exec env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_RUNTIME_TOKEN \
+          "$HEPHAESTUS_BIN" "${args[@]}"
     # Publishing stages (release, formula, tap) get the tokens. With command
     # run, this is the publish phase; it is skipped when the local step
     # failed.
