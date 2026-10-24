@@ -38,6 +38,10 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Check the release tag
+        # Rejects a tag that is not vMAJOR.MINOR.PATCH[-PRERELEASE] before
+        # anything is built (internal/publish.ParseVersion).
+        run: go run ./internal/cmd/publish plan "$GITHUB_REF_NAME"
       - name: Build hephaestus from the tagged source
         run: make build
       - name: Build, archive and checksum
@@ -78,12 +82,18 @@ jobs:
           path: dist
       - name: Verify dist again before publishing anything
         run: scripts/verify-dist.sh dist
+      - name: Plan the release
+        # Whether this tag is a prerelease and whether the tap is published
+        # (skip_upload), decided by the same Go code as the tap stage
+        # (internal/publish.Plan), not by matching the tag here. The tap
+        # token is passed only to the steps that publish the tap.
+        id: plan
+        run: go run ./internal/cmd/publish plan "$GITHUB_REF_NAME" | tee -a "$GITHUB_OUTPUT"
       - name: Rehearse the formula and tap pull request (read-only)
         # Checks the tap token, the tap's formula directory, a newer formula
         # on the tap and the pull request branch before the release becomes
         # public, since a published release cannot be taken back.
-        # Prereleases skip the tap (skip_upload: auto).
-        if: ${{ !contains(github.ref_name, '-') }}
+        if: steps.plan.outputs.tap == 'publish'
         env:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
         run: |
@@ -102,8 +112,16 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: ./build/hephaestus run --stages release
       - name: Generate the formula and open a tap pull request
+        if: steps.plan.outputs.tap == 'publish'
         env:
           # Fine-grained token or GitHub App token with contents and
           # pull-requests write on magicdrive/homebrew-tap only.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: ./build/hephaestus run --stages formula,tap
+      - name: Generate the formula without publishing it (tap skipped)
+        # Prereleases (skip_upload: auto): no tap token in this process; the
+        # tap stage logs why it skips. The release is already published, so
+        # a failure here must not turn the run red.
+        if: steps.plan.outputs.tap == 'skip'
+        continue-on-error: true
         run: ./build/hephaestus run --stages formula,tap
