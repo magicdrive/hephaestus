@@ -423,7 +423,8 @@ archive (`url_template`, `url_headers`, `install`, `extra_install`).
 
 A tag must be 1–128 characters of letters, digits, `.`, `_`, `+` and `-`,
 without `..`. It is taken from `--tag`, else from `$GITHUB_REF_NAME` when
-`$GITHUB_REF_TYPE` is `tag`.
+`$GITHUB_REF_TYPE` is `tag` (not with `--snapshot`, which ignores the tag a
+tag push provides; `--tag` together with `--snapshot` is an error).
 
 ### Functions
 

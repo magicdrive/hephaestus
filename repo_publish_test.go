@@ -169,3 +169,19 @@ func TestMakefile_Publish(t *testing.T) {
 		t.Errorf("make -n ran the tool (calls %q, err %v)\n%s", calls, err, out)
 	}
 }
+
+// TestCI_RunsSnapshotAsOnATagPush keeps the regression check for the
+// v0.1.0-rc.1 failure: release.yml runs ci.yml on a tag push, so CI must
+// also prove that a snapshot works when the runner reports a tag.
+func TestCI_RunsSnapshotAsOnATagPush(t *testing.T) {
+	job := readWorkflow(t, ".github/workflows/ci.yml").Jobs["snapshot"]
+	if job == nil {
+		t.Fatal("ci.yml has no snapshot job")
+	}
+	for _, s := range job.Steps {
+		if strings.Contains(s.Run, "GITHUB_REF_TYPE=tag") && strings.Contains(s.Run, "GITHUB_REF_NAME=") && strings.Contains(s.Run, "make snapshot") {
+			return
+		}
+	}
+	t.Error("the snapshot job must also run make snapshot with GITHUB_REF_TYPE=tag")
+}

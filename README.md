@@ -189,7 +189,7 @@ hephaestus version
 | Flag | Meaning |
 |---|---|
 | `--config PATH` | Configuration file (default: `hephaestus.yaml` in the current directory). |
-| `--tag TAG` | Release tag (default: `$GITHUB_REF_NAME` on tag pushes). Required unless `--snapshot`. |
+| `--tag TAG` | Release tag (default: `$GITHUB_REF_NAME` on tag pushes, except with `--snapshot`). Required unless `--snapshot`. |
 | `--snapshot` | Version `0.0.0-SNAPSHOT`, no tag. Configured release and tap stages are skipped; naming them in `--stages` is an error. |
 | `--stages LIST` | `run` only: comma-separated stages or `all`. |
 | `--phase local\|publish` | `run` only: run just the selected stages of one phase, `local` (build, archive, checksum) or `publish` (release, formula, tap), so building and publishing can run in separate processes (the action does this). |

@@ -113,6 +113,10 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make snapshot
+      - name: Snapshot as on a tag push
+        # release.yml runs this CI on a tag push, where the runner sets
+        # GITHUB_REF_TYPE=tag for every step; --snapshot must ignore it.
+        run: GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.0.0-ci.1 GITHUB_REF=refs/tags/v0.0.0-ci.1 make snapshot
 
   homebrew-e2e:
     strategy:

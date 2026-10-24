@@ -255,6 +255,43 @@ brews:
 	}
 }
 
+// TestSnapshotOnTagPush: on a tag push the runner sets GITHUB_REF_TYPE=tag
+// and GITHUB_REF_NAME for every step, including CI that release.yml calls.
+// An explicit --snapshot (make snapshot, the action's snapshot input) must
+// ignore that tag; without --snapshot the tag is still taken from it, and
+// an explicit --tag still conflicts with --snapshot. (v0.1.0-rc.1's release
+// run failed on exactly this: snapshot, action-smoke, action-boundary.)
+func TestSnapshotOnTagPush(t *testing.T) {
+	clearGitHubEnv(t)
+	t.Setenv("GITHUB_REF_TYPE", "tag")
+	t.Setenv("GITHUB_REF_NAME", "v1.2.3-rc.1")
+	t.Setenv("GITHUB_REF", "refs/tags/v1.2.3-rc.1")
+	root := project(t, "release:\n  github: {owner: o, name: r}\n")
+	cfg := filepath.Join(root, "hephaestus.yaml")
+	for _, args := range [][]string{
+		{"run", "--config", cfg, "--snapshot", "--fresh", "--stages", "build,archive,checksum"},                     // make snapshot
+		{"run", "--config", cfg, "--snapshot", "--fresh", "--stages", "build,archive,checksum", "--phase", "local"}, // action.yml
+	} {
+		code, _, errs := runCLI(t, args...)
+		if code != 0 {
+			t.Fatalf("%v on a tag push: %s", args, errs)
+		}
+		if _, err := os.Stat(filepath.Join(root, "dist", "tool_"+SnapshotVersion+"_linux_amd64.tar.gz")); err != nil {
+			t.Errorf("%v: no snapshot archive: %v", args, err)
+		}
+	}
+	if code, _, errs := runCLI(t, "run", "--config", cfg, "--snapshot", "--tag", "v1.2.3"); code != 1 || !strings.Contains(errs, "mutually exclusive") {
+		t.Errorf("--snapshot with --tag: %d %s", code, errs)
+	}
+	code, _, errs := runCLI(t, "run", "--config", cfg, "--fresh", "--stages", "build,archive,checksum")
+	if code != 0 {
+		t.Fatalf("tag from the tag push: %s", errs)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dist", "tool_1.2.3-rc.1_linux_amd64.tar.gz")); err != nil {
+		t.Errorf("the tag push's tag was not used: %v", err)
+	}
+}
+
 func TestSnapshotSkipsConfiguredPublishing(t *testing.T) {
 	clearGitHubEnv(t)
 	root := project(t, "release:\n  github: {owner: o, name: r}\n")
