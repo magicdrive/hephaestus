@@ -145,6 +145,26 @@ func TestReleaseWorkflow_PublishesOnlyAfterEveryGate(t *testing.T) {
 	}
 }
 
+// TestReleaseWorkflow_CIJobGrantsWhatCINeeds checks that the ci job calling
+// ci.yml grants every permission a ci.yml job asks for: GitHub refuses to
+// start a workflow whose called jobs request more than the caller allows.
+func TestReleaseWorkflow_CIJobGrantsWhatCINeeds(t *testing.T) {
+	ci := readWorkflow(t, ".github/workflows/ci.yml")
+	for _, f := range releaseWorkflows {
+		granted := readWorkflow(t, f).Jobs["ci"].Permissions
+		if granted == nil {
+			granted = readWorkflow(t, f).Permissions
+		}
+		for name, j := range ci.Jobs {
+			for scope, level := range j.Permissions {
+				if level == "write" && granted[scope] != "write" || level == "read" && granted[scope] == "" {
+					t.Errorf("%s: ci job grants %s: %q, but ci.yml job %q needs %q", f, scope, granted[scope], name, level)
+				}
+			}
+		}
+	}
+}
+
 // releaseWorkflows are the workflows that publish (or rehearse publishing).
 var releaseWorkflows = []string{".github/workflows/release.yml", ".github/workflows/release-rehearsal.yml"}
 

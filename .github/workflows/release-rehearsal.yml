@@ -27,6 +27,12 @@ concurrency:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+    # A called workflow's jobs get at most what the caller grants:
+    # action-boundary needs id-token: write to prove the token does not
+    # reach build code.
+    permissions:
+      contents: read
+      id-token: write
 
   build:
     needs: [ci]
