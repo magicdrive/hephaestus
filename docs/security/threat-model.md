@@ -238,6 +238,11 @@ text, build code, configuration.
 - Build commands do not receive the tokens in their environment (see
   supply chain attack for what that does not prevent).
 - Tokens are sent only over https (http only to loopback).
+- `preflight` and `status` are read-only: their GitHub access is an
+  interface of GET methods only (tests fail on any other request), and
+  their annotations, step summary and `--report` file go through the same
+  redaction. The action's preflight step receives the release token only
+  and an empty tap token.
 
 **Residual:** a credential under a name the heuristic misses is visible to
 `.Env`; transformed values other than the encodings above (split, hashed,
@@ -307,6 +312,20 @@ responses.
 
 **Residual:** without the concurrency group, two runs may still race on
 asset uploads; each run verifies what it finds.
+
+### Workflow hardening (Hephaestus's own workflows)
+
+- Every action is pinned to a full commit SHA; checkouts use
+  `persist-credentials: false`.
+- Workflows default to `permissions: contents: read`; write permissions
+  (`contents`, `id-token`, `attestations`) are granted per job, only in the
+  release job, which runs in the `release` environment.
+- No workflow uses `pull_request_target` or `workflow_run`; no `${{ }}`
+  expression is interpolated into a `run:` script (values pass through
+  `env`).
+- The tap token is a secret of the `release` environment, passed only to
+  the tap rehearsal and publication steps, which run only when the
+  release plan publishes the tap (stable releases).
 
 ### Untrusted pull request
 
