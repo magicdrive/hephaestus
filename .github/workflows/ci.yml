@@ -183,7 +183,9 @@ jobs:
           working-directory: testdata/e2e/fixture
       - name: Release preflight (offline)
         # A pull request checks out a detached merge commit, so git.branch
-        # fails: this checks that the action reports, not that it passes.
+        # fails; a push checks out a shallow clone without origin/HEAD, so
+        # git.branch is unknown. This checks that the action reports, not
+        # that it passes.
         id: preflight
         continue-on-error: true
         uses: ./
@@ -205,6 +207,7 @@ jobs:
           case "$STATUS" in
             pass|warn) [[ "$CODE" == 0 && "$OUTCOME" == success ]] ;;
             fail) [[ "$CODE" == 1 && "$OUTCOME" == failure ]] ;;
+            unknown) [[ "$CODE" == 3 && "$OUTCOME" == failure ]] ;;
             *) echo "unexpected status"; exit 1 ;;
           esac
           jq -e '[.checks[] | select(.group == "github")] | all(.status == "SKIP")' "$REPORT"
