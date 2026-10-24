@@ -1,0 +1,78 @@
+# Hephaestus releases itself with Hephaestus. The release workflow
+# (.github/workflows/release.yml) runs every stage on a v* tag after CI
+# passes; `make snapshot` runs build, archive and checksum locally.
+version: 1
+
+project:
+  name: hephaestus
+  description: Release automation for CLIs in any language
+  homepage: https://github.com/magicdrive/hephaestus
+  license: MIT
+
+builds:
+  - id: hephaestus
+    matrix:
+      os: [darwin, linux, windows]
+      arch: [amd64, arm64]
+    command:
+      - go
+      - build
+      - -trimpath
+      - -ldflags
+      - "-s -w -X main.version=v{{ .Version }}"
+      - -o
+      - "dist/bin/{{ .OS }}_{{ .Arch }}/hephaestus{{ .Ext }}"
+      - .
+    env:
+      GOOS: "{{ .OS }}"
+      GOARCH: "{{ .Arch }}"
+      CGO_ENABLED: "0"
+    output: "dist/bin/{{ .OS }}_{{ .Arch }}/hephaestus{{ .Ext }}"
+
+archives:
+  - id: hephaestus
+    name: "{{ .Project }}_{{ .Version }}_{{ .OS }}_{{ .Arch }}"
+    format: tar.gz
+    format_overrides:
+      - os: windows
+        format: zip
+    files:
+      - src: "dist/bin/{{ .OS }}_{{ .Arch }}/hephaestus{{ .Ext }}"
+        dst: "hephaestus{{ .Ext }}"
+        mode: "0755"
+      - LICENSE
+      - README.md
+
+checksum:
+  name: "{{ .Project }}_checksums.txt"
+
+release:
+  github:
+    owner: magicdrive
+    name: hephaestus
+    # The notes of the version being released; update it before tagging.
+    notes_file: RELEASE_NOTES.md
+
+brews:
+  - name: hephaestus
+    ids: [hephaestus]
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    # magicdrive/homebrew-tap keeps its formulae at the repository root;
+    # creating Formula/ there would hide them from Homebrew.
+    # Prereleases (v1.2.3-rc.1) never update the tap.
+    skip_upload: auto
+    install: |
+      bin.install "hephaestus"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/hephaestus version")
+    repository:
+      owner: magicdrive
+      name: homebrew-tap
+      pull_request:
+        enabled: true
+
+# Release safety checks before a tag is pushed: hephaestus preflight --tag vX.Y.Z
+# (docs/preflight.md). make publish runs its own checks for this repository.
+preflight:
+  workflow: release.yml
+  environment: release
