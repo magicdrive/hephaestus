@@ -78,7 +78,7 @@ func TestInitTemplatesProduceReleases(t *testing.T) {
 				}
 			}
 			formula, _ := os.ReadFile(filepath.Join(dir, "dist", "homebrew", "mycli.rb"))
-			if !strings.Contains(string(formula), `bin.install "mycli"`) || !strings.Contains(string(formula), "https://github.com/acme/mycli/releases/download/v1.0.0/") {
+			if !strings.Contains(string(formula), `bin.install "mycli"`) || !strings.Contains(string(formula), `system bin/"mycli", "--version"`) || !strings.Contains(string(formula), "https://github.com/acme/mycli/releases/download/v1.0.0/") {
 				t.Errorf("formula:\n%s", formula)
 			}
 		})

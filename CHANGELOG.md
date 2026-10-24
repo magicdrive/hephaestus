@@ -11,6 +11,8 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   `brews` configured, which every `init` template has, `run --snapshot`
   failed with "a tag is required". Naming formula with `--snapshot` is
   refused like release and tap.
+- The `init` templates' formula test is `system bin/"NAME", "--version"`;
+  `"#{bin}/NAME"` failed `brew audit --strict`.
 - `make publish` re-reads the release job's tap steps when GitHub reports
   them only partially right after the run, instead of failing the
   verification of a correct release (seen on v1.0.0-rc.1, verified with

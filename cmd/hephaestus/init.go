@@ -152,7 +152,7 @@ brews:
     install: |
       bin.install "[[ .Name ]]"
     test: |
-      system "#{bin}/[[ .Name ]]", "--version"
+      system bin/"[[ .Name ]]", "--version"
     repository:
       owner: [[ .TapOwner ]]
       name: [[ .TapName ]]
