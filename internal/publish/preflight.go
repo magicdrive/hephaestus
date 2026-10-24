@@ -31,6 +31,9 @@ type Check struct {
 	Name   string
 	OK     bool
 	Detail string
+	// Err marks a check that could not be made (API, network), as opposed
+	// to one that found a problem.
+	Err bool
 }
 
 // Report is the preflight outcome.
@@ -49,6 +52,22 @@ func (r *Report) add(name string, ok bool, format string, args ...any) {
 
 func (r *Report) addErr(name string, err error) {
 	r.add(name, false, "%v", err)
+	r.Checks[len(r.Checks)-1].Err = true
+}
+
+// Inconclusive reports whether every failed check failed only because it
+// could not be made: nothing was found wrong yet.
+func (r *Report) Inconclusive() bool {
+	failed := false
+	for _, c := range r.Checks {
+		if !c.OK {
+			if !c.Err {
+				return false
+			}
+			failed = true
+		}
+	}
+	return failed
 }
 
 // OK reports whether every check passed.
@@ -98,15 +117,21 @@ func preflightGit(ctx context.Context, d *Deps, p *Project, tag string, r *Repor
 	}
 	r.add("git repository", true, "%s", top)
 
-	url, err := d.Git.RemoteURL(ctx, "origin")
-	if err != nil {
-		r.addErr("origin", err)
-	} else if repo, err := ParseGitHubRemote(url); err != nil {
-		r.addErr("origin", err)
-	} else if !strings.EqualFold(repo.String(), p.Repo.String()) {
-		r.add("origin", false, "origin is %s, the release repository is %s", repo, p.Repo)
-	} else {
-		r.add("origin", true, "%s", p.Repo)
+	for _, push := range []bool{false, true} {
+		name := "origin"
+		if push {
+			name = "origin push url"
+		}
+		url, err := d.Git.RemoteURL(ctx, "origin", push)
+		if err != nil {
+			r.addErr(name, err)
+		} else if repo, err := ParseGitHubRemote(url); err != nil {
+			r.addErr(name, err)
+		} else if !strings.EqualFold(repo.String(), p.Repo.String()) {
+			r.add(name, false, "%s is %s, the release repository is %s", name, repo, p.Repo)
+		} else {
+			r.add(name, true, "%s", p.Repo)
+		}
 	}
 
 	branch, err := d.Git.CurrentBranch(ctx)
@@ -373,7 +398,11 @@ func tagRulesetProtects(sets []Ruleset, tag string) (bool, string) {
 			return false, fmt.Sprintf("ruleset %q blocks creating %s", rs.Name, tag)
 		}
 		if rs.Enforcement == "active" && slices.Contains(types, "deletion") && slices.Contains(types, "update") {
-			protecting = append(protecting, rs.Name)
+			name := rs.Name
+			if n := len(rs.BypassActors); n > 0 {
+				name += fmt.Sprintf(" (warning: %d bypass actors can still move or delete it)", n)
+			}
+			protecting = append(protecting, name)
 		}
 	}
 	if len(protecting) == 0 {

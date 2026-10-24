@@ -44,7 +44,8 @@ type Outcome struct {
 }
 
 // ExitCode maps an outcome to a process exit code: 0 completed, 1 failed,
-// 3 unknown (monitoring stopped; the release may still be running).
+// 3 unknown (monitoring stopped; the release may still be running). make
+// reports any non-zero status as its own failure.
 func (o *Outcome) ExitCode() int {
 	switch {
 	case o.State == Completed:
@@ -152,18 +153,34 @@ func Publish(ctx context.Context, d *Deps, p *Project, pl *Plan, opts Options) *
 
 	d.logf("==> pushing tag %s (not forced)", tag)
 	pushedAt := d.Now()
-	if err := d.Git.PushTag(ctx, tag); err != nil {
-		// The push may have reached GitHub even though git reported an
-		// error; only the remote state decides.
-		if c, exists, rerr := d.Git.RemoteTag(ctx, tag); rerr != nil || !exists || c != rep.Commit {
-			return fail(fmt.Errorf("push tag: %w", err), unpushedHint(tag)...)
+	// The push and the check of its result are not cut short by Ctrl-C:
+	// whether the tag reached origin decides everything that follows.
+	pctx := context.WithoutCancel(ctx)
+	perr := d.Git.PushTag(pctx, tag)
+	c, exists, rerr := d.Git.RemoteTag(pctx, tag)
+	switch {
+	case rerr != nil:
+		// Unknown: the push may have reached GitHub.
+		o.Err, o.MonitorLost = fmt.Errorf("cannot tell whether %s reached origin (push: %v; check: %w)", tag, perr, rerr), true
+		o.Next = []string{"run make publish-status " + tag + " before anything else: if the tag is on origin, the release is running"}
+		return o
+	case !exists:
+		if perr == nil {
+			perr = errors.New("git reported success but origin has no such tag")
 		}
-		d.logf("    git reported %v, but origin has %s at %s: continuing", err, tag, short(rep.Commit))
+		return fail(fmt.Errorf("push tag: %w", perr), unpushedHint(tag)...)
+	case c != rep.Commit:
+		o.State = TagPushed
+		return fail(fmt.Errorf("origin has %s at %s, not %s", tag, c, rep.Commit), "do not move the tag; inspect with make publish-status "+tag)
+	case perr != nil:
+		d.logf("    git reported %v, but origin has %s at %s: continuing", perr, tag, short(rep.Commit))
 	}
 	o.State = TagPushed
 	d.logf("    %s is on origin: the release workflow now runs on GitHub; it cannot be called back from here", tag)
 
-	return follow(ctx, d, p, pl, o, pushedAt.Add(-time.Minute), rep.TapHeads, opts)
+	// The window allows for a local clock ahead of GitHub's; the tag and
+	// commit identify the run on their own.
+	return follow(ctx, d, p, pl, o, pushedAt.Add(-5*time.Minute), rep.TapHeads, opts)
 }
 
 // Watch follows the release of an already pushed tag: it finds the run,
@@ -231,6 +248,9 @@ func follow(ctx context.Context, d *Deps, p *Project, pl *Plan, o *Outcome, sinc
 	d.logf("==> verifying the release")
 	rep := VerifyRelease(ctx, d, p, VerifyInput{Plan: pl, Commit: o.Commit, Run: &run, TapHeads: tapHeads})
 	rep.Print(d.Out)
+	if rep.Inconclusive() {
+		return lost(errors.New("the release run succeeded but verification could not complete (API or network)"))
+	}
 	if !rep.OK() {
 		return fail(errors.New("the release workflow succeeded but the release does not verify"),
 			"do not delete or replace published assets; investigate the failed checks",

@@ -30,8 +30,9 @@ func TestReleaseWorkflow_TapTokenOnlyWhenTapPublished(t *testing.T) {
 		names = append(names, s.Name)
 		if s.ID == "plan" {
 			plan = i
-			if !strings.Contains(s.Run, "go run ./internal/cmd/publish plan") || !strings.Contains(s.Run, "$GITHUB_OUTPUT") {
-				t.Errorf("plan step must write internal/cmd/publish plan to $GITHUB_OUTPUT: %q", s.Run)
+			if !strings.Contains(s.Run, "go run ./internal/cmd/publish plan") || !strings.Contains(s.Run, "$GITHUB_OUTPUT") ||
+				!strings.Contains(s.Run, "pipefail") || !strings.Contains(s.Run, "tap=(publish|skip)") {
+				t.Errorf("plan step must write a checked internal/cmd/publish plan to $GITHUB_OUTPUT with pipefail: %q", s.Run)
 			}
 		}
 		token := false

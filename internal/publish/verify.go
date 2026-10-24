@@ -41,8 +41,9 @@ func VerifyRelease(ctx context.Context, d *Deps, p *Project, in VerifyInput) *Re
 	} else {
 		r.add("tag commit", exists && c == in.Commit, "%s -> %s (want %s)", tag, short(c), short(in.Commit))
 	}
+	var sums map[string]string
 	if ok {
-		verifyAssets(ctx, d, p, pl, in.Commit, rel, r)
+		sums = verifyAssets(ctx, d, p, pl, in.Commit, rel, r)
 	}
 	if in.Run != nil {
 		verifyTapSteps(ctx, d, p, pl, in.Run, r)
@@ -51,7 +52,7 @@ func VerifyRelease(ctx context.Context, d *Deps, p *Project, in VerifyInput) *Re
 		if t.Publish.Skip {
 			verifyTapUntouched(ctx, d, pl, t, in.TapHeads, r)
 		} else {
-			verifyTapPullRequest(ctx, d, pl, t, rel, r)
+			verifyTapPullRequest(ctx, d, pl, t, rel, sums, r)
 		}
 	}
 	return r
@@ -91,7 +92,9 @@ func verifyReleaseState(ctx context.Context, d *Deps, p *Project, pl *Plan, r *R
 	return rel, true
 }
 
-func verifyAssets(ctx context.Context, d *Deps, p *Project, pl *Plan, commit string, rel Release, r *Report) {
+// verifyAssets returns the SHA-256 of every downloaded asset (nil when they
+// could not all be downloaded).
+func verifyAssets(ctx context.Context, d *Deps, p *Project, pl *Plan, commit string, rel Release, r *Report) map[string]string {
 	want := pl.Assets()
 	byName := map[string]Asset{}
 	var got []string
@@ -102,12 +105,12 @@ func verifyAssets(ctx context.Context, d *Deps, p *Project, pl *Plan, commit str
 	slices.Sort(got)
 	if !slices.Equal(got, want) {
 		r.add("assets", false, "release has %v, want %v", got, want)
-		return
+		return nil
 	}
 	for _, name := range want {
 		if byName[name].State != "uploaded" {
 			r.add("assets", false, "%s is %s", name, byName[name].State)
-			return
+			return nil
 		}
 	}
 	r.add("assets", true, "%d assets: %s", len(want), strings.Join(want, ", "))
@@ -115,23 +118,23 @@ func verifyAssets(ctx context.Context, d *Deps, p *Project, pl *Plan, commit str
 	dir, err := os.MkdirTemp("", "hephaestus-publish-")
 	if err != nil {
 		r.addErr("download", err)
-		return
+		return nil
 	}
 	defer os.RemoveAll(dir)
 	if err := d.GH.DownloadRelease(ctx, p.Repo, pl.Version.Tag, dir); err != nil {
 		r.addErr("download", err)
-		return
+		return nil
 	}
 	sums := map[string]string{}
 	for _, name := range want {
 		sum, err := sha256File(filepath.Join(dir, name))
 		if err != nil {
 			r.addErr("download", err)
-			return
+			return nil
 		}
 		if dg := byName[name].Digest; dg != "" && dg != "sha256:"+sum {
 			r.add("asset digest", false, "%s: downloaded sha256:%s, GitHub reports %s", name, sum, dg)
-			return
+			return nil
 		}
 		sums[name] = sum
 	}
@@ -162,6 +165,7 @@ func verifyAssets(ctx context.Context, d *Deps, p *Project, pl *Plan, commit str
 	} else {
 		r.add("attestations", true, "%d verified (signer %s, %s, commit %s, GitHub-hosted runner)", len(want), policy.SignerWorkflow, policy.SourceRef, short(commit))
 	}
+	return sums
 }
 
 func sha256File(p string) (string, error) {
@@ -307,7 +311,7 @@ var (
 // verifyTapPullRequest checks the formula pull request of a published tap:
 // it exists, changes only the formula, and every download URL and sha256
 // matches a release archive. It is never merged by publish.
-func verifyTapPullRequest(ctx context.Context, d *Deps, pl *Plan, t TapPlan, rel Release, r *Report) {
+func verifyTapPullRequest(ctx context.Context, d *Deps, pl *Plan, t TapPlan, rel Release, sums map[string]string, r *Report) {
 	pub := t.Publish
 	tap := Repo{Owner: pub.Owner, Name: pub.Name}
 	if !pub.PullRequest {
@@ -342,9 +346,13 @@ func verifyTapPullRequest(ctx context.Context, d *Deps, pl *Plan, t TapPlan, rel
 		r.addErr("tap formula", err)
 		return
 	}
+	// The downloaded files' hashes, else GitHub's digests.
 	digests := map[string]string{}
 	for _, a := range rel.Assets {
 		digests[a.Name] = strings.TrimPrefix(a.Digest, "sha256:")
+	}
+	for name, sum := range sums {
+		digests[name] = sum
 	}
 	ok, detail := formulaMatchesRelease(string(content), t.URLPrefix, pl.Archives, digests)
 	r.add("tap formula", ok, "%s", detail)
@@ -380,7 +388,7 @@ func formulaMatchesRelease(formula, prefix string, archives []string, digests ma
 				break
 			}
 		}
-		if sum == "" || (digests[name] != "" && sum != digests[name]) {
+		if sum == "" || digests[name] == "" || sum != digests[name] {
 			return false, fmt.Sprintf("%s: formula sha256 %q, release asset sha256 %q", name, sum, digests[name])
 		}
 		n++

@@ -17,7 +17,9 @@ type Git interface {
 	CurrentBranch(ctx context.Context) (string, error)
 	// Status returns `git status --porcelain` including untracked files.
 	Status(ctx context.Context) (string, error)
-	RemoteURL(ctx context.Context, remote string) (string, error)
+	// RemoteURL returns the fetch URL, or with push the URL git pushes to
+	// (pushurl / pushInsteadOf applied).
+	RemoteURL(ctx context.Context, remote string, push bool) (string, error)
 	// FetchMain updates refs/remotes/origin/main without fetching tags.
 	FetchMain(ctx context.Context) error
 	// Commit resolves ref to a commit SHA; "" when it does not exist.
@@ -59,7 +61,10 @@ func (g GitCLI) Status(ctx context.Context) (string, error) {
 	return g.out(ctx, "status", "--porcelain=v1", "--untracked-files=all")
 }
 
-func (g GitCLI) RemoteURL(ctx context.Context, remote string) (string, error) {
+func (g GitCLI) RemoteURL(ctx context.Context, remote string, push bool) (string, error) {
+	if push {
+		return g.out(ctx, "remote", "get-url", "--push", remote)
+	}
 	return g.out(ctx, "remote", "get-url", remote)
 }
 
@@ -116,7 +121,8 @@ func (g GitCLI) CreateTag(ctx context.Context, tag, commit, message string) erro
 
 func (g GitCLI) PushTag(ctx context.Context, tag string) error {
 	ref := "refs/tags/" + tag
-	_, err := g.out(ctx, "push", "--porcelain", "--no-verify", "origin", ref+":"+ref)
+	// --no-follow-tags overrides push.followTags: only this one tag goes.
+	_, err := g.out(ctx, "-c", "push.followTags=false", "push", "--no-follow-tags", "--porcelain", "--no-verify", "origin", ref+":"+ref)
 	return err
 }
 

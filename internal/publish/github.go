@@ -66,7 +66,12 @@ type Ruleset struct {
 	Name        string `json:"name"`
 	Target      string `json:"target"`
 	Enforcement string `json:"enforcement"`
-	Conditions  struct {
+	// BypassActors may move or delete protected refs despite the rules.
+	BypassActors []struct {
+		ActorType  string `json:"actor_type"`
+		BypassMode string `json:"bypass_mode"`
+	} `json:"bypass_actors"`
+	Conditions struct {
 		RefName struct {
 			Include []string `json:"include"`
 			Exclude []string `json:"exclude"`

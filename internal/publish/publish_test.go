@@ -243,6 +243,7 @@ func TestPublishRefusals(t *testing.T) {
 		{"not main", "v0.1.0-rc.1", func(h *harness) { h.git.branch = "feature" }, "[FAIL] branch"},
 		{"detached", "v0.1.0-rc.1", func(h *harness) { h.git.branch = "" }, "HEAD is detached"},
 		{"remote mismatch", "v0.1.0-rc.1", func(h *harness) { h.git.origin = "https://github.com/someone/fork.git" }, "[FAIL] origin"},
+		{"push url elsewhere", "v0.1.0-rc.1", func(h *harness) { h.git.pushURL = "git@github.com:someone/fork.git" }, "[FAIL] origin push url"},
 		{"unpushed commit", "v0.1.0-rc.1", func(h *harness) { h.git.head = otherSHA }, "[FAIL] in sync with origin"},
 		{"local tag exists", "v0.1.0-rc.1", func(h *harness) { h.git.localTags["v0.1.0-rc.1"] = testCommit }, "[FAIL] local tag"},
 		{"remote tag exists", "v0.1.0-rc.1", func(h *harness) { h.git.remoteTags["v0.1.0-rc.1"] = testCommit }, "[FAIL] remote tag"},
@@ -309,6 +310,21 @@ func TestPublishTagStage(t *testing.T) {
 		h.git.pushErr = errors.New("connection reset")
 		o, _ := publishRun(t, h, "v0.1.0-rc.1", fastOpts)
 		if o.State != Failed || o.FailedAt != TagCreatedLocally || h.git.localTags["v0.1.0-rc.1"] == "" {
+			t.Fatalf("outcome %+v", o)
+		}
+	})
+	t.Run("interrupted push: outcome unknown, not unpublished", func(t *testing.T) {
+		h := newHarness(t)
+		h.git.pushErr, h.git.lostAfterPush = errors.New("signal: interrupt"), true
+		o, _ := publishRun(t, h, "v0.1.0-rc.1", fastOpts)
+		if !o.MonitorLost || o.ExitCode() != 3 || strings.Contains(strings.Join(o.Next, "\n"), "nothing was published") {
+			t.Fatalf("outcome %+v", o)
+		}
+	})
+	t.Run("push succeeded but no remote tag", func(t *testing.T) {
+		h := newHarness(t)
+		h.git.pushVanishes = true
+		if o, _ := publishRun(t, h, "v0.1.0-rc.1", fastOpts); o.State != Failed || o.FailedAt != TagCreatedLocally {
 			t.Fatalf("outcome %+v", o)
 		}
 	})
@@ -402,6 +418,17 @@ func TestPublishWorkflowOutcomes(t *testing.T) {
 			t.Fatalf("outcome %+v\n%s", o, h.out)
 		}
 	})
+}
+
+// TestPublishVerificationInconclusive: a download that fails after a green
+// run is a monitoring problem, not a failed release.
+func TestPublishVerificationInconclusive(t *testing.T) {
+	h := newHarness(t)
+	h.gh.downloadErr = errors.New("connection reset")
+	o, _ := publishRun(t, h, "v0.1.0-rc.1", fastOpts)
+	if !o.MonitorLost || o.ExitCode() != 3 || o.State != WorkflowSucceeded {
+		t.Fatalf("outcome %+v\n%s", o, h.out)
+	}
 }
 
 func TestPublishVerificationFailures(t *testing.T) {

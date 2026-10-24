@@ -90,8 +90,12 @@ command, or a goal that is not a version is an error before anything runs.
    request that changes only `hephaestus.rb`, with this release's URLs and
    checksums (stable).
 
-Exit status: 0 released and verified; 1 failed (or refused before tagging);
-2 usage error; 3 monitoring stopped and the outcome is unknown.
+The tool's summary says which outcome it is: released and verified; failed
+(or refused before tagging); or **outcome unknown** — monitoring stopped
+(network, Ctrl-C, timeout, a verification that could not be completed) and
+the release may still be running or fine. `make` exits 0 only for the first.
+Run directly (`go build -o build/publish ./internal/cmd/publish`), the tool
+exits 0, 1, 2 (usage) or 3 (outcome unknown).
 
 ### After the tag is pushed
 
@@ -163,7 +167,7 @@ never merges it. Users get the new version once it is merged.
 | --- | --- | --- |
 | Preflight or confirmation | nothing | fix the failed check, run `make publish` again |
 | Tag creation or the re-check before the push | a local tag only | `git show vX.Y.Z`, then `git tag -d vX.Y.Z` and start again |
-| Push | a local tag; maybe the remote one | `make publish-status`: if the tag is on `origin`, `make publish-watch`; otherwise as above |
+| Push | a local tag; maybe the remote one | `make publish-status`: if the tag is on `origin`, `make publish-watch`; otherwise as above. An interrupted push is reported as "outcome unknown", never as "nothing was published" |
 | Run not found / monitoring stopped | the tag on `origin` | `make publish-watch vX.Y.Z` (or the Actions page); nothing is wrong with the release yet |
 | Run failed before the release step (ci, build, verify, attest) | the tag; no release | transient: `gh run rerun <id> --failed`; code fix: merge it and release a **new version** (e.g. the next `-rc.N`) — never move or delete the tag |
 | Run failed during the release step | a **draft** release | re-run the failed jobs: the draft is resumed, identical assets are skipped |

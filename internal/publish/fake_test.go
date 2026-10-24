@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,12 +79,18 @@ type fakeGit struct {
 	branch     string
 	status     string
 	origin     string
+	pushURL    string
 	head       string
 	originMain string
 	localTags  map[string]string
 	remoteTags map[string]string
 	fetchErr   error
 	pushErr    error
+	// lostAfterPush makes RemoteTag fail once the push was attempted.
+	lostAfterPush bool
+	// pushVanishes makes a "successful" push leave no remote tag.
+	pushVanishes bool
+	pushTried    bool
 	// pushLands makes a failed push still create the remote tag.
 	pushLands bool
 	// onPush runs after a successful push (to start a fake workflow run).
@@ -107,7 +114,10 @@ func (g *fakeGit) CurrentBranch(context.Context) (string, error) {
 	return g.branch, nil
 }
 func (g *fakeGit) Status(context.Context) (string, error) { return g.status, nil }
-func (g *fakeGit) RemoteURL(context.Context, string) (string, error) {
+func (g *fakeGit) RemoteURL(_ context.Context, _ string, push bool) (string, error) {
+	if push && g.pushURL != "" {
+		return g.pushURL, nil
+	}
 	return g.origin, nil
 }
 func (g *fakeGit) FetchMain(context.Context) error { return g.fetchErr }
@@ -127,6 +137,9 @@ func (g *fakeGit) Commit(_ context.Context, ref string) (string, error) {
 func (g *fakeGit) RemoteTag(_ context.Context, tag string) (string, bool, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.lostAfterPush && g.pushTried {
+		return "", false, errors.New("network down")
+	}
 	c, ok := g.remoteTags[tag]
 	return c, ok, nil
 }
@@ -145,6 +158,11 @@ func (g *fakeGit) CreateTag(_ context.Context, tag, commit, _ string) error {
 }
 func (g *fakeGit) PushTag(_ context.Context, tag string) error {
 	g.mu.Lock()
+	g.pushTried = true
+	if g.pushVanishes {
+		g.mu.Unlock()
+		return nil
+	}
 	if g.pushErr != nil {
 		on := g.onPush
 		if !g.pushLands {
@@ -175,31 +193,32 @@ func (g *fakeGit) PushTag(_ context.Context, tag string) error {
 // fakeGH is an in-memory GitHub: the repository's settings as configured
 // in production, plus a release workflow that "runs" when a tag is pushed.
 type fakeGH struct {
-	mu         sync.Mutex
-	t          *testing.T
-	authErr    error
-	ciRuns     []Run
-	rulesets   []Ruleset
-	env        Environment
-	envErr     error
-	secrets    []string
-	releases   []Release
-	latest     string
-	runs       []Run
-	runPolls   int  // RunByID calls before the run completes
-	frozen     bool // RunByID never changes the run (stuck in the queue)
-	conclusion string
-	runsErr    error // returned by Runs while non-nil
-	runByIDErr error
-	tapHead    string
-	tapPRs     []PullRequest
-	tapFiles   map[string]string // path -> content on the tap's default branch
-	prFiles    []string
-	prFormula  string
-	assets     map[string][]byte // name -> content served by DownloadRelease
-	badAttest  map[string]bool
-	attested   []string
-	jobs       []Job
+	mu          sync.Mutex
+	t           *testing.T
+	authErr     error
+	ciRuns      []Run
+	rulesets    []Ruleset
+	env         Environment
+	envErr      error
+	secrets     []string
+	releases    []Release
+	latest      string
+	runs        []Run
+	runPolls    int  // RunByID calls before the run completes
+	frozen      bool // RunByID never changes the run (stuck in the queue)
+	conclusion  string
+	runsErr     error // returned by Runs while non-nil
+	runByIDErr  error
+	tapHead     string
+	tapPRs      []PullRequest
+	tapFiles    map[string]string // path -> content on the tap's default branch
+	prFiles     []string
+	prFormula   string
+	assets      map[string][]byte // name -> content served by DownloadRelease
+	downloadErr error
+	badAttest   map[string]bool
+	attested    []string
+	jobs        []Job
 }
 
 func newFakeGH(t *testing.T) *fakeGH {
@@ -393,6 +412,9 @@ func (f *fakeGH) PullRequestFiles(context.Context, Repo, int) ([]string, error) 
 	return f.prFiles, nil
 }
 func (f *fakeGH) DownloadRelease(_ context.Context, _ Repo, _ string, dir string) error {
+	if f.downloadErr != nil {
+		return f.downloadErr
+	}
 	for name, data := range f.assets {
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
 			return err

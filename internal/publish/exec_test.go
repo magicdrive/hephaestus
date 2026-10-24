@@ -156,6 +156,9 @@ func TestGitCLI(t *testing.T) {
 	_ = g.FetchMain(ctx)
 	_ = g.CreateTag(ctx, "v1.0.0", testCommit, "Release v1.0.0")
 	_ = g.PushTag(ctx, "v1.0.0")
+	if !slices.ContainsFunc(rec.calls, func(c []string) bool { return slices.Contains(c, "push") }) {
+		t.Fatal("no push call recorded")
+	}
 	for _, c := range rec.calls {
 		cmd := strings.Join(c, " ")
 		for _, bad := range []string{"--force", "-f ", "+refs/tags", "--delete", "--tags", "--mirror", "--all"} {
@@ -163,13 +166,20 @@ func TestGitCLI(t *testing.T) {
 				t.Errorf("unsafe git call: %s", cmd)
 			}
 		}
-		switch c[1] {
+		sub := c[1]
+		if sub == "-c" {
+			if c[2] != "push.followTags=false" {
+				t.Errorf("unexpected config override: %s", cmd)
+			}
+			sub = c[3]
+		}
+		switch sub {
 		case "tag":
 			if !slices.Contains(c, "--annotate") || c[len(c)-1] != testCommit {
 				t.Errorf("tag must be annotated at the checked commit: %s", cmd)
 			}
 		case "push":
-			if !slices.Equal(c[len(c)-2:], []string{"origin", "refs/tags/v1.0.0:refs/tags/v1.0.0"}) {
+			if !slices.Contains(c, "--no-follow-tags") || !slices.Equal(c[len(c)-2:], []string{"origin", "refs/tags/v1.0.0:refs/tags/v1.0.0"}) {
 				t.Errorf("push must push exactly the one tag: %s", cmd)
 			}
 		case "fetch":

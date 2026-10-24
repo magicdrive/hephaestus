@@ -88,7 +88,14 @@ jobs:
         # (internal/publish.Plan), not by matching the tag here. The tap
         # token is passed only to the steps that publish the tap.
         id: plan
-        run: go run ./internal/cmd/publish plan "$GITHUB_REF_NAME" | tee -a "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          set -euo pipefail
+          plan="$(go run ./internal/cmd/publish plan "$GITHUB_REF_NAME")"
+          echo "$plan"
+          # An unexpected plan would skip both tap steps without failing.
+          grep -qxE 'tap=(publish|skip)' <<<"$plan" || { echo "::error::unexpected release plan"; exit 1; }
+          echo "$plan" >> "$GITHUB_OUTPUT"
       - name: Rehearse the formula and tap pull request (read-only)
         # Checks the tap token, the tap's formula directory, a newer formula
         # on the tap and the pull request branch before the release becomes
