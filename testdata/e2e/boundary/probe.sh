@@ -23,7 +23,10 @@ for v in GITHUB_TOKEN GH_TOKEN HOMEBREW_TAP_GITHUB_TOKEN ACTIONS_RUNTIME_TOKEN A
   fi
 done
 
-if [[ -r /proc/self/environ ]]; then
+os="$(uname -s)"
+# Decide by OS, not by /proc: Git Bash on Windows emulates /proc for MSYS
+# processes only, and Hephaestus (a native process) is not one of them.
+if [[ "$os" == Linux ]]; then
   parent_comm="$(cat "/proc/$PPID/comm")"
   if [[ "$parent_comm" != hephaestus* ]]; then
     echo "probe: parent is $parent_comm, expected hephaestus"; leak=1
@@ -58,7 +61,7 @@ if [[ -r /proc/self/environ ]]; then
   fi
 fi
 
-if [[ ! -r /proc/self/environ && "$(uname -s)" == Darwin ]]; then
+if [[ "$os" == Darwin ]]; then
   # ps -E appends the environment to the command line of the same user's
   # processes; Hephaestus cannot hide its own here, so it must hold none.
   pid=$PPID checked=0 worker=0
@@ -89,6 +92,11 @@ if [[ ! -r /proc/self/environ && "$(uname -s)" == Darwin ]]; then
     echo "probe: the ancestor walk did not reach Runner.Worker"; leak=1
   fi
 fi
+
+case "$os" in
+  Linux | Darwin) ;;
+  *) echo "probe: $os: checked the build's own environment only (other processes' environments are not readable)" ;;
+esac
 
 mkdir -p "$(dirname "$HEPHAESTUS_OUTPUT")"
 printf 'probe\n' >"$HEPHAESTUS_OUTPUT"

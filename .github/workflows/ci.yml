@@ -166,7 +166,8 @@ jobs:
           echo "$ARTIFACTS" | jq -e 'length == 5'
           # Every reported artifact exists where the output says.
           cd testdata/e2e/fixture
-          echo "$ARTIFACTS" | jq -r '.[].path' | while read -r p; do
+          # jq on Windows ends lines with CRLF.
+          echo "$ARTIFACTS" | jq -r '.[].path' | tr -d '\r' | while read -r p; do
             [[ -f "$p" ]] || { echo "missing $p"; exit 1; }
           done
       - name: Check configuration
