@@ -294,6 +294,7 @@ Formula はマニフェストから生成します。URL は公開したリリ�
 
 | ドキュメント | 内容 |
 |---|---|
+| [CLI reference](docs/cli.md) | すべてのコマンド、フラグ、終了コード |
 | [Configuration](docs/configuration.md) | すべてのフィールド、既定値、制約、テンプレート変数 |
 | [Archives](docs/archives.md) | ファイル一覧、パスの意味論、パーミッション、決定性 |
 | [GitHub Action](docs/github-action.md) | 入力、出力、権限、トークン、ワークフロー |

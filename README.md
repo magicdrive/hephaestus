@@ -391,6 +391,7 @@ Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
 
 | Document | Contents |
 |---|---|
+| [CLI reference](docs/cli.md) | Every command, flag and exit code |
 | [Configuration](docs/configuration.md) | Every field, default, constraint and template variable |
 | [Archives](docs/archives.md) | File lists, path semantics, permissions, determinism |
 | [GitHub Action](docs/github-action.md) | Inputs, outputs, permissions, tokens, workflows |
