@@ -433,6 +433,35 @@ func TestPublishVerificationInconclusive(t *testing.T) {
 	}
 }
 
+// TestPublishTapStepsLagging: right after the run, GitHub may report the
+// release job's steps partially; the tap steps are read again instead of
+// failing the verification (v1.0.0-rc.1 showed "found 0 of the 2 tap steps"
+// for a correct release).
+func TestPublishTapStepsLagging(t *testing.T) {
+	partial := [][]Job{
+		{{Name: "release", Status: "completed", Steps: []Step{{Name: "Plan the release"}}}},
+		{{Name: "release", Status: "completed", Steps: []Step{{Name: TapPreflightStep}, {Name: TapPublishStep}}}},
+	}
+	t.Run("complete later", func(t *testing.T) {
+		h := newHarness(t)
+		h.gh.laggingJobs = partial
+		o, _ := publishRun(t, h, "v0.1.0-rc.1", fastOpts)
+		if o.State != Completed || !strings.Contains(h.out.String(), "[ok  ] tap steps") || len(h.gh.laggingJobs) != 0 {
+			t.Fatalf("outcome %+v\n%s", o, h.out)
+		}
+	})
+	t.Run("never complete is inconclusive", func(t *testing.T) {
+		h := newHarness(t)
+		for range tapStepAttempts {
+			h.gh.laggingJobs = append(h.gh.laggingJobs, partial[0])
+		}
+		o, _ := publishRun(t, h, "v0.1.0-rc.1", fastOpts)
+		if !o.MonitorLost || o.ExitCode() != 3 || !strings.Contains(h.out.String(), "step data incomplete") {
+			t.Fatalf("outcome %+v\n%s", o, h.out)
+		}
+	})
+}
+
 func TestPublishVerificationFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

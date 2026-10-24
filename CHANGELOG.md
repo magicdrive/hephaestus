@@ -3,6 +3,19 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
+## Unreleased
+
+### Fixed
+
+- `run --snapshot` skips the formula stage too (it needs a tag): with
+  `brews` configured, which every `init` template has, `run --snapshot`
+  failed with "a tag is required". Naming formula with `--snapshot` is
+  refused like release and tap.
+- `make publish` re-reads the release job's tap steps when GitHub reports
+  them only partially right after the run, instead of failing the
+  verification of a correct release (seen on v1.0.0-rc.1, verified with
+  `make publish-watch`).
+
 ## v1.0.0-rc.1
 
 First release candidate of 1.0; full notes in

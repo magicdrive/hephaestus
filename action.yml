@@ -25,7 +25,7 @@ inputs:
     description: 'With command=preflight: run only the checks that need no network.'
     default: "false"
   snapshot:
-    description: Build without a tag (no release or tap publication).
+    description: Build without a tag (no release, formula or tap).
     default: "false"
   dry-run:
     description: Plan GitHub writes without performing them.

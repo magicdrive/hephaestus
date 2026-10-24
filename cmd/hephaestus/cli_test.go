@@ -302,8 +302,10 @@ func TestSnapshotSkipsConfiguredPublishing(t *testing.T) {
 	if code, _, errs := runCLI(t, "run", "--config", cfg, "--snapshot", "--phase", "publish"); code != 0 || !strings.Contains(errs, "no stages to run") {
 		t.Errorf("snapshot publish phase: %d %s", code, errs)
 	}
-	if code, _, _ := runCLI(t, "run", "--config", cfg, "--snapshot", "--stages", "release"); code != 1 {
-		t.Error("explicit release with --snapshot accepted")
+	for _, stage := range []string{"release", "formula", "tap"} {
+		if code, _, errs := runCLI(t, "run", "--config", cfg, "--snapshot", "--stages", stage); code != 1 || !strings.Contains(errs, "needs a release tag") {
+			t.Errorf("explicit %s with --snapshot: %d %s", stage, code, errs)
+		}
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // VerifyInput is what a release is verified against.
@@ -220,34 +221,59 @@ func checksumsMatch(listed, sums map[string]string, archives []string) (bool, st
 	return true, fmt.Sprintf("%d archives match the checksum file", len(archives))
 }
 
+// Right after a run completes, GitHub may still report a job's steps
+// partially (missing steps, or steps without a conclusion). The tap steps
+// are re-read a few times before that is reported as inconclusive.
+const (
+	tapStepAttempts = 6
+	tapStepDelay    = 20 * time.Second
+)
+
 // verifyTapSteps checks that the release job ran the tap steps exactly
 // when the tap is published.
 func verifyTapSteps(ctx context.Context, d *Deps, p *Project, pl *Plan, run *Run, r *Report) {
-	jobs, err := d.GH.Jobs(ctx, p.Repo, run.ID)
-	if err != nil {
-		r.addErr("tap steps", err)
-		return
-	}
 	want := "success"
 	if pl.TapSkipped() {
 		want = "skipped"
 	}
-	found := 0
-	for _, j := range jobs {
-		for _, s := range j.Steps {
-			if s.Name != TapPublishStep && s.Name != TapPreflightStep {
-				continue
-			}
-			found++
-			if s.Conclusion != want {
-				r.add("tap steps", false, "step %q concluded %s, want %s", s.Name, s.Conclusion, want)
-				return
+	var steps []Step
+	for attempt := 0; ; attempt++ {
+		jobs, err := d.GH.Jobs(ctx, p.Repo, run.ID)
+		if err != nil {
+			r.addErr("tap steps", err)
+			return
+		}
+		steps = steps[:0]
+		for _, j := range jobs {
+			for _, s := range j.Steps {
+				if s.Name == TapPublishStep || s.Name == TapPreflightStep {
+					steps = append(steps, s)
+				}
 			}
 		}
+		complete := len(steps) == 2
+		for _, s := range steps {
+			if s.Conclusion == "" {
+				complete = false
+			}
+		}
+		if complete {
+			break
+		}
+		if attempt+1 >= tapStepAttempts || d.Sleep == nil {
+			r.addErr("tap steps", fmt.Errorf("GitHub reports %d of the 2 tap steps of run %d with a conclusion (step data incomplete); re-run make publish-watch to verify again", len(steps), run.ID))
+			return
+		}
+		if err := d.Sleep(ctx, tapStepDelay); err != nil {
+			r.addErr("tap steps", err)
+			return
+		}
 	}
-	if found != 2 {
-		r.add("tap steps", false, "found %d of the 2 tap steps in run %d", found, run.ID)
-		return
+	for _, s := range steps {
+		if s.Conclusion != want {
+			r.add("tap steps", false, "step %q concluded %s, want %s", s.Name, s.Conclusion, want)
+			return
+		}
 	}
 	if want == "skipped" {
 		r.add("tap steps", true, "tap rehearsal and publish steps skipped: the tap token was not used")

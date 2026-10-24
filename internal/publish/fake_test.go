@@ -219,6 +219,7 @@ type fakeGH struct {
 	badAttest   map[string]bool
 	attested    []string
 	jobs        []Job
+	laggingJobs [][]Job
 }
 
 func newFakeGH(t *testing.T) *fakeGH {
@@ -362,7 +363,16 @@ func (f *fakeGH) RunByID(_ context.Context, _ Repo, id int64) (Run, error) {
 	}
 	return Run{}, ErrNotFound
 }
-func (f *fakeGH) Jobs(context.Context, Repo, int64) ([]Job, error) { return f.jobs, nil }
+func (f *fakeGH) Jobs(context.Context, Repo, int64) ([]Job, error) {
+	// laggingJobs are returned first, one per call, like GitHub still
+	// filling in a completed run's steps.
+	if len(f.laggingJobs) > 0 {
+		j := f.laggingJobs[0]
+		f.laggingJobs = f.laggingJobs[1:]
+		return j, nil
+	}
+	return f.jobs, nil
+}
 func (f *fakeGH) Rulesets(context.Context, Repo) ([]Ruleset, error) {
 	return f.rulesets, nil
 }

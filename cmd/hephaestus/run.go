@@ -46,6 +46,12 @@ type Options struct {
 	redact *redactor
 }
 
+// needsTag reports whether stage s needs a release tag, so it is skipped by
+// --snapshot.
+func needsTag(s pipeline.Stage) bool {
+	return s == pipeline.Release || s == pipeline.Formula || s == pipeline.Tap
+}
+
 // SnapshotVersion is used with --snapshot.
 const SnapshotVersion = "0.0.0-SNAPSHOT"
 
@@ -119,8 +125,8 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 	case opts.Snapshot:
 		info = version.Info{Version: SnapshotVersion, Major: "0", Minor: "0", Patch: "0", Prerelease: "SNAPSHOT"}
 		for _, s := range opts.Stages {
-			if s == pipeline.Release || s == pipeline.Tap {
-				return fmt.Errorf("stage %s cannot run with --snapshot", s)
+			if needsTag(s) {
+				return fmt.Errorf("stage %s cannot run with --snapshot (it needs a release tag)", s)
 			}
 		}
 	case tag == "":
