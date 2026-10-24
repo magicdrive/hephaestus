@@ -4,8 +4,9 @@
 # Builds the fixture CLI for four targets with Hephaestus, archives it, checks
 # that archives are reproducible and laid out as declared, generates a formula
 # pointing at the local archives (file:// URLs), then runs the real Homebrew:
-# brew audit --strict, brew install, brew test, the installed executable and
-# its man page, and brew uninstall, inside a throw-away tap.
+# brew audit --strict, brew style on every golden formula, brew install,
+# brew test, the installed executable and its man page, and brew uninstall,
+# inside throw-away taps.
 #
 # It installs into the machine's Homebrew prefix and removes everything it
 # created on exit. Intended for disposable CI runners; safe but noticeable on a
@@ -28,6 +29,7 @@ cleanup() {
   set +e
   brew uninstall --force "$tap/$formula" >/dev/null 2>&1
   brew untap --force "$tap" >/dev/null 2>&1
+  brew untap --force "${tap}style" >/dev/null 2>&1
   rm -rf "$work" "$fixture/dist"
 }
 trap cleanup EXIT
@@ -73,6 +75,23 @@ cat "$tapdir/Formula/$formula.rb"
 
 step "brew audit --strict"
 brew audit --strict --formula "$tap/$formula"
+
+step "brew style on the generator's golden formulas"
+# Each golden is checked alone, as mycli.rb in a second throw-away tap. The
+# custom golden keeps def post_install on purpose (deprecated, warned).
+style_tap="${tap}style"
+brew tap-new --no-git "$style_tap" >/dev/null
+style_dir="$(brew --repository "$style_tap")/Formula"
+for golden in "$repo"/internal/homebrew/testdata/*.golden; do
+  rm -f "$style_dir"/*.rb
+  cp "$golden" "$style_dir/mycli.rb"
+  except=()
+  [[ "$(basename "$golden")" == custom.golden ]] && except=(--except-cops FormulaAudit/InstallSteps)
+  echo "$(basename "$golden")"
+  # ${a[@]+...}: an empty array is "unbound" under set -u in bash 3.2.
+  brew style ${except[@]+"${except[@]}"} "$style_tap"
+done
+brew untap --force "$style_tap" >/dev/null
 
 step "brew install"
 brew install --formula "$tap/$formula"

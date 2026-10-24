@@ -246,6 +246,47 @@ func TestRehearsalConfigMatchesRelease(t *testing.T) {
 	}
 }
 
+// TestCompatibilityDocTestsExist keeps docs/compatibility/goreleaser.md
+// honest: every test it cites exists, and every golden case it names
+// (`TestGolden` (`case`)) has a golden file.
+func TestCompatibilityDocTestsExist(t *testing.T) {
+	doc, err := os.ReadFile("docs/compatibility/goreleaser.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defined := map[string]bool{}
+	funcRe := regexp.MustCompile(`(?m)^func ((?:Test|Fuzz)[A-Za-z0-9_]+)\(`)
+	err = filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, "_test.go") {
+			return err
+		}
+		data, err := os.ReadFile(p)
+		for _, m := range funcRe.FindAllSubmatch(data, -1) {
+			defined[string(m[1])] = true
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cited := regexp.MustCompile("`((?:Test|Fuzz)[A-Za-z0-9_]+)`").FindAllSubmatch(doc, -1)
+	if len(cited) < 20 {
+		t.Fatalf("only %d tests cited; is the table still there?", len(cited))
+	}
+	for _, m := range cited {
+		if !defined[string(m[1])] {
+			t.Errorf("docs/compatibility/goreleaser.md cites %s, which does not exist", m[1])
+		}
+	}
+	for _, m := range regexp.MustCompile("`TestGolden` \\(([^)]*)\\)").FindAllSubmatch(doc, -1) {
+		for _, c := range regexp.MustCompile("`([a-z0-9_]+)`").FindAllSubmatch(m[1], -1) {
+			if _, err := os.Stat(filepath.Join("internal/homebrew/testdata", string(c[1])+".golden")); err != nil {
+				t.Errorf("docs/compatibility/goreleaser.md cites golden case %q: %v", c[1], err)
+			}
+		}
+	}
+}
+
 func nodeString(n *yaml.Node) string {
 	out, _ := yaml.Marshal(n)
 	return string(out)
