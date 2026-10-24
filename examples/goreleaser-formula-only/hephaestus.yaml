@@ -1,0 +1,33 @@
+# GoReleaser builds, archives and releases. Hephaestus imports the archives
+# GoReleaser listed in dist/artifacts.json and generates and publishes only
+# the Homebrew formula. Download URLs point at the GitHub Release GoReleaser
+# created (owner/name from GITHUB_REPOSITORY, or set url_template).
+version: 1
+
+project:
+  name: mycli
+  description: Friendly tool for managing widgets
+  homepage: https://github.com/acme/mycli
+  license: MIT
+
+builds:
+  - id: goreleaser
+    goreleaser:
+      artifacts: dist/artifacts.json
+      archives: true
+      ids: [default]
+
+# brews copied from .goreleaser.yaml (see docs/migration/from-goreleaser.md).
+brews:
+  - name: mycli
+    directory: Formula
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    install: |
+      bin.install "mycli"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/mycli --version")
+    repository:
+      owner: acme
+      name: homebrew-tap
+      pull_request:
+        enabled: true

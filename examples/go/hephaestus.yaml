@@ -1,0 +1,63 @@
+# A Go CLI: cross-compiled by the Go toolchain itself (CGO disabled).
+version: 1
+
+project:
+  name: mycli
+  description: Friendly tool for managing widgets
+  homepage: https://github.com/acme/mycli
+  license: MIT
+
+builds:
+  - id: mycli
+    matrix:
+      os: [darwin, linux, windows]
+      arch: [amd64, arm64]
+    command:
+      - go
+      - build
+      - -trimpath
+      - -ldflags
+      - "-s -w -X main.version={{ .Version }}"
+      - -o
+      - "dist/bin/{{ .OS }}_{{ .Arch }}/mycli{{ .Ext }}"
+      - ./cmd/mycli
+    env:
+      GOOS: "{{ .OS }}"
+      GOARCH: "{{ .Arch }}"
+      CGO_ENABLED: "0"
+    output: "dist/bin/{{ .OS }}_{{ .Arch }}/mycli{{ .Ext }}"
+
+archives:
+  - id: default
+    format_overrides:
+      - os: windows
+        format: zip
+    files:
+      - src: "dist/bin/{{ .OS }}_{{ .Arch }}/mycli{{ .Ext }}"
+        dst: "mycli{{ .Ext }}"
+        mode: "0755"
+      - LICENSE
+      - README.md
+      - src: "completions/*"
+        dst: completions/
+        required: false
+
+checksum:
+  name: "{{ .Project }}_checksums.txt"
+
+release:
+  github:
+    owner: acme
+    name: mycli
+    generate_notes: true
+
+brews:
+  - name: mycli
+    directory: Formula
+    install: |
+      bin.install "mycli"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/mycli --version")
+    repository:
+      owner: acme
+      name: homebrew-tap

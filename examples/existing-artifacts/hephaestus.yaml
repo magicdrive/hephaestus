@@ -1,0 +1,45 @@
+# Package binaries that were built elsewhere (another job, another tool) and
+# copied to prebuilt/<os>_<arch>/mycli. The files are verified, hashed and
+# recorded; Hephaestus then archives, checksums and publishes them.
+version: 1
+
+project:
+  name: mycli
+  description: Friendly tool for managing widgets
+  homepage: https://github.com/acme/mycli
+  license: MIT
+
+builds:
+  - id: prebuilt
+    targets:
+      - {os: linux, arch: amd64}
+      - {os: linux, arch: arm64}
+      - {os: darwin, arch: arm64}
+    existing:
+      path: "prebuilt/{{ .OS }}_{{ .Arch }}/mycli"
+      kind: binary
+
+archives:
+  - id: default
+    files:
+      # Workflow artifacts do not keep the executable bit: set the mode.
+      - src: "prebuilt/{{ .OS }}_{{ .Arch }}/mycli"
+        dst: mycli
+        mode: "0755"
+      - LICENSE
+      - README.md
+
+checksum:
+  name: "{{ .Project }}_checksums.txt"
+
+release:
+  github:
+    owner: acme
+    name: mycli
+
+brews:
+  - name: mycli
+    directory: Formula
+    repository:
+      owner: acme
+      name: homebrew-tap

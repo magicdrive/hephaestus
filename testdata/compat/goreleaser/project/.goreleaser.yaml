@@ -1,0 +1,104 @@
+# GoReleaser configuration used to record the compatibility fixtures in
+# testdata/compat/goreleaser/<version>/. Regenerate with
+# scripts/goreleaser-compat-fixture.sh. Nothing is ever published.
+version: 2
+
+project_name: compatcli
+
+builds:
+  - id: compatcli
+    binary: compatcli
+    main: .
+    env:
+      - CGO_ENABLED=0
+    # Reproducibility: no build paths, binary mtimes pinned to the commit.
+    flags: [-trimpath]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+
+  # helper ships only for darwin, so darwin archives carry two binaries and
+  # linux archives carry one.
+  - id: helper
+    binary: helper
+    main: .
+    env:
+      - CGO_ENABLED=0
+    # Reproducibility: no build paths, binary mtimes pinned to the commit.
+    flags: [-trimpath]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [darwin]
+    goarch: [amd64, arm64]
+
+  # amd64-only build feeding the "intel" archive. brews cannot filter by
+  # goarch, so the amd64-only case needs its own build and archive.
+  - id: compatcli-intel
+    binary: compatcli
+    main: .
+    env:
+      - CGO_ENABLED=0
+    # Reproducibility: no build paths, binary mtimes pinned to the commit.
+    flags: [-trimpath]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [darwin, linux]
+    goarch: [amd64]
+
+archives:
+  - id: default
+    ids: [compatcli, helper]
+    formats: [tar.gz]
+    builds_info:
+      mtime: "{{ .CommitDate }}"
+    # darwin archives carry compatcli+helper, linux only compatcli.
+    allow_different_binary_count: true
+
+  - id: intel
+    ids: [compatcli-intel]
+    formats: [tar.gz]
+    builds_info:
+      mtime: "{{ .CommitDate }}"
+    name_template: "{{ .ProjectName }}-intel_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: acme-dist
+    name: compatcli-releases
+
+changelog:
+  disable: true
+
+brews:
+  # No install: records GoReleaser's default install block.
+  - name: compatcli
+    ids: [default]
+    repository:
+      owner: acme
+      name: homebrew-tap
+    homepage: https://example.com/compatcli
+    description: Minimal CLI for GoReleaser compatibility fixtures
+    license: MIT
+    caveats: "Config lives in #{HOMEBREW_PREFIX}/etc/compatcli"
+    test: |
+      system "#{bin}/compatcli", "--version"
+
+  # darwin has amd64 only: records the Rosetta caveat / on_arm handling.
+  - name: compatcli-intel
+    ids: [intel]
+    repository:
+      owner: acme
+      name: homebrew-tap
+    homepage: https://example.com/compatcli
+    description: Minimal CLI for GoReleaser compatibility fixtures (amd64 only)
+    license: MIT
+    caveats: "Config lives in #{HOMEBREW_PREFIX}/etc/compatcli"
+    test: |
+      system "#{bin}/compatcli", "--version"

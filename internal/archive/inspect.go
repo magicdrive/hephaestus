@@ -1,0 +1,435 @@
+package archive
+
+import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"sort"
+	"strings"
+
+	"github.com/magicdrive/hephaestus/internal/manifest"
+	"github.com/magicdrive/hephaestus/internal/pathutil"
+)
+
+// Default inspection limits, used for zero fields of InspectLimits. They
+// match the configuration defaults (limits.*).
+const (
+	DefaultInspectMaxEntries   = 10000
+	DefaultInspectMaxFileSize  = 2 << 30
+	DefaultInspectMaxTotalSize = 4 << 30
+)
+
+// InspectLimits bounds the work Inspect does on an untrusted archive.
+// Zero fields take the defaults above.
+type InspectLimits struct {
+	// MaxEntries bounds the number of members, counting every header.
+	MaxEntries int
+	// MaxFileSize bounds the uncompressed size of one member.
+	MaxFileSize int64
+	// MaxTotalSize bounds the sum of uncompressed member sizes.
+	MaxTotalSize int64
+	// ScanSecrets also scans the content of every file member, while it is
+	// hashed, for private keys (the same content rules as the archives
+	// stage: PEM and PGP private keys, also with escaped line breaks, and
+	// service account key files). A hit fails with an error wrapping
+	// ErrSensitiveContent.
+	ScanSecrets bool
+}
+
+func (l InspectLimits) withDefaults() InspectLimits {
+	if l.MaxEntries <= 0 {
+		l.MaxEntries = DefaultInspectMaxEntries
+	}
+	if l.MaxFileSize <= 0 {
+		l.MaxFileSize = DefaultInspectMaxFileSize
+	}
+	if l.MaxTotalSize <= 0 {
+		l.MaxTotalSize = DefaultInspectMaxTotalSize
+	}
+	return l
+}
+
+// ErrUnsafeArchive is wrapped by every Inspect error caused by the archive's
+// content (as opposed to an I/O failure), so callers can tell a malicious or
+// malformed archive from a read error.
+var ErrUnsafeArchive = errors.New("unsafe or malformed archive")
+
+// ErrSensitiveContent is wrapped by the Inspect error for a member that
+// holds a private key (only with InspectLimits.ScanSecrets).
+var ErrSensitiveContent = errors.New("archive member contains a private key")
+
+// maxTarTrailer bounds the bytes read after a tar archive's end marker.
+// Writers pad to their record size (10 KiB for GNU tar and bsdtar by
+// default); anything beyond 1 MiB is not padding.
+const maxTarTrailer = 1 << 20
+
+// Inspect reads a tar.gz or zip archive and describes its members: path,
+// type ("file" or "dir"), permission mode, and for files the uncompressed
+// size and SHA-256 of the content. The result is sorted by path.
+//
+// Inspect never extracts anything, but it treats the archive as hostile and
+// fails (wrapping ErrUnsafeArchive) on anything an extractor could be
+// tricked by or that a release archive has no reason to contain:
+//
+//   - member names that are absolute, contain ".." or are otherwise not
+//     portable relative paths (pathutil.ValidateRelative); a leading "./"
+//     is tolerated and removed, and a bare "./" root entry is skipped;
+//   - symbolic links, hard links, device files, FIFOs and sparse files;
+//   - setuid, setgid or sticky permission bits;
+//   - two members with the same path, paths that differ only in letter
+//     case, and a file that another member needs as a directory;
+//   - more than lim.MaxEntries members, a member larger than
+//     lim.MaxFileSize, or more than lim.MaxTotalSize bytes in total
+//     (decompression bombs). Sizes are checked against the declared header
+//     size before reading and against the actual bytes while reading;
+//   - anything another extractor could read differently. For tar.gz: any
+//     non-zero byte after the end-of-archive marker (hidden members that
+//     "tar --ignore-zeros" or concatenating readers would extract), more
+//     than 1 MiB of zero padding, a further gzip member or trailing
+//     garbage after the gzip stream. For zip: see checkZipLayout — the
+//     local file headers must match the central directory exactly, the
+//     entries must tile the file with nothing hidden between them, and
+//     data before the first entry (self-extracting or otherwise prefixed
+//     archives), after the end record, or a second end record is
+//     rejected.
+//
+// Parent directories without their own entry are allowed and are not
+// synthesized: the result lists exactly the members present. PAX global
+// headers (written by git archive) carry no member and are ignored.
+//
+// format is "tar.gz" or "zip".
+func Inspect(r io.ReaderAt, size int64, format string, lim InspectLimits) ([]manifest.File, error) {
+	if size < 0 {
+		return nil, fmt.Errorf("%w: negative archive size", ErrUnsafeArchive)
+	}
+	lim = lim.withDefaults()
+	ins := &inspector{lim: lim, byPath: map[string]int{}, folded: map[string]string{}}
+	var err error
+	switch format {
+	case "tar.gz":
+		err = ins.tarGz(io.NewSectionReader(r, 0, size))
+	case "zip":
+		err = ins.zip(r, size)
+	default:
+		return nil, fmt.Errorf("unsupported archive format %q (use tar.gz or zip)", format)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := ins.checkParents(); err != nil {
+		return nil, err
+	}
+	sort.Slice(ins.files, func(i, j int) bool { return ins.files[i].Path < ins.files[j].Path })
+	return ins.files, nil
+}
+
+type inspector struct {
+	lim     InspectLimits
+	files   []manifest.File
+	byPath  map[string]int
+	folded  map[string]string
+	entries int
+	total   int64
+	// abbrev lists raw ustar names that abbreviate a longer extended name.
+	abbrev []string
+}
+
+func unsafeErr(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrUnsafeArchive, fmt.Sprintf(format, args...))
+}
+
+// count enforces the entry limit; it is called for every header.
+func (ins *inspector) count() error {
+	ins.entries++
+	if ins.entries > ins.lim.MaxEntries {
+		return unsafeErr("archive has more than %d entries", ins.lim.MaxEntries)
+	}
+	return nil
+}
+
+// normalize validates a raw member name and returns its clean path, whether
+// it names a directory, and whether it is the archive root (to be skipped).
+func normalize(raw string, isDir bool) (string, bool, bool, error) {
+	name := raw
+	if strings.HasSuffix(name, "/") {
+		isDir = true
+		name = strings.TrimSuffix(name, "/")
+	}
+	if strings.HasPrefix(raw, "/") {
+		return "", isDir, false, unsafeErr("entry %q has an absolute path", raw)
+	}
+	for strings.HasPrefix(name, "./") {
+		name = strings.TrimPrefix(name, "./")
+	}
+	if name == "." && isDir {
+		return "", isDir, true, nil
+	}
+	if err := pathutil.ValidateRelative(name); err != nil {
+		return "", isDir, false, unsafeErr("entry %q: %v", raw, err)
+	}
+	return name, isDir, false, nil
+}
+
+// checkMode rejects special permission bits and returns the permission part.
+func checkMode(raw string, m fs.FileMode) (fs.FileMode, error) {
+	if m&(fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky) != 0 {
+		return 0, unsafeErr("entry %q has setuid, setgid or sticky bits (%s)", raw, m)
+	}
+	return m.Perm(), nil
+}
+
+func (ins *inspector) add(f manifest.File) error {
+	if _, dup := ins.byPath[f.Path]; dup {
+		return unsafeErr("entry %q appears more than once", f.Path)
+	}
+	key := pathutil.FoldKey(f.Path)
+	if other, dup := ins.folded[key]; dup {
+		return unsafeErr("entries %q and %q differ only in letter case and would collide on case-insensitive file systems", other, f.Path)
+	}
+	ins.byPath[f.Path] = len(ins.files)
+	ins.folded[key] = f.Path
+	ins.files = append(ins.files, f)
+	return nil
+}
+
+// reserve enforces the per-file and total size limits for a declared size.
+func (ins *inspector) reserve(name string, declared int64) error {
+	if declared < 0 {
+		return unsafeErr("entry %q has a negative size", name)
+	}
+	if declared > ins.lim.MaxFileSize {
+		return unsafeErr("entry %q is %d bytes, over the %d-byte limit per file", name, declared, ins.lim.MaxFileSize)
+	}
+	if declared > ins.lim.MaxTotalSize-ins.total {
+		return unsafeErr("archive content exceeds %d bytes uncompressed", ins.lim.MaxTotalSize)
+	}
+	ins.total += declared
+	return nil
+}
+
+// hashExact reads exactly declared bytes from r and fails when the content
+// is longer or shorter than declared, or (with ScanSecrets) holds a private
+// key.
+func (ins *inspector) hashExact(name string, r io.Reader, declared int64) (string, error) {
+	h := sha256.New()
+	var w io.Writer = h
+	var ks *keyScanner
+	if ins.lim.ScanSecrets {
+		ks = &keyScanner{}
+		w = io.MultiWriter(h, ks)
+	}
+	n, err := io.Copy(w, io.LimitReader(r, declared+1))
+	if err != nil {
+		return "", fmt.Errorf("entry %q: %w", name, err)
+	}
+	if n != declared {
+		return "", unsafeErr("entry %q holds %d bytes but its header declares %d", name, n, declared)
+	}
+	if ks != nil && ks.found != "" {
+		return "", fmt.Errorf("%w: entry %q contains %s", ErrSensitiveContent, name, ks.found)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// checkTarTrailer reads what follows the end-of-archive marker and accepts
+// only bounded zero padding.
+func checkTarTrailer(r io.Reader) error {
+	buf := make([]byte, 32*1024)
+	var total int64
+	for {
+		n, err := r.Read(buf)
+		for _, b := range buf[:n] {
+			if b != 0 {
+				return unsafeErr("data after the tar end-of-archive marker (hidden members or a concatenated archive)")
+			}
+		}
+		total += int64(n)
+		if total > maxTarTrailer {
+			return unsafeErr("more than %d bytes of padding after the tar end-of-archive marker", maxTarTrailer)
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return unsafeErr("after the tar end-of-archive marker: %v", err)
+		}
+	}
+}
+
+func (ins *inspector) tarGz(r io.Reader) error {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return unsafeErr("not a gzip stream: %v", err)
+	}
+	defer gz.Close()
+	tap := &headerTap{r: gz}
+	tr := tar.NewReader(tap)
+	for {
+		tap.start()
+		hdr, err := tr.Next()
+		tap.on = false
+		if errors.Is(err, io.EOF) {
+			if err := ins.checkAbbreviations(); err != nil {
+				return err
+			}
+			// tar.Reader stops at the end marker; other readers may not.
+			return checkTarTrailer(gz)
+		}
+		if err != nil {
+			return unsafeErr("reading tar: %v", err)
+		}
+		if err := ins.count(); err != nil {
+			return err
+		}
+		if hdr.Typeflag == tar.TypeXGlobalHeader {
+			// Some extractors apply global records to every member.
+			for _, k := range []string{"path", "linkpath", "size"} {
+				if _, ok := hdr.PAXRecords[k]; ok {
+					return unsafeErr("global PAX header sets %q; only per-entry names and sizes are accepted", k)
+				}
+			}
+			continue
+		}
+		abbrev, err := checkRawHeader(tap, hdr)
+		if err != nil {
+			return err
+		}
+		if abbrev != "" {
+			ins.abbrev = append(ins.abbrev, abbrev)
+		}
+		var isDir bool
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			isDir = true
+		case tar.TypeReg, '\x00': // '\x00' is the pre-POSIX regular file flag
+		case tar.TypeSymlink:
+			return unsafeErr("entry %q is a symbolic link to %q; links are not allowed", hdr.Name, hdr.Linkname)
+		case tar.TypeLink:
+			return unsafeErr("entry %q is a hard link to %q; links are not allowed", hdr.Name, hdr.Linkname)
+		case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
+			return unsafeErr("entry %q is a device or FIFO; only files and directories are allowed", hdr.Name)
+		case tar.TypeGNUSparse:
+			return unsafeErr("entry %q is a sparse file; only regular files are allowed", hdr.Name)
+		default:
+			return unsafeErr("entry %q has unsupported tar type %q", hdr.Name, hdr.Typeflag)
+		}
+		name, isDir, skip, err := normalize(hdr.Name, isDir)
+		if err != nil {
+			return err
+		}
+		if isDir != (hdr.Typeflag == tar.TypeDir) {
+			return unsafeErr("entry %q has a directory name but is not a directory", hdr.Name)
+		}
+		if hdr.Mode < 0 || hdr.Mode > 0o7777 {
+			return unsafeErr("entry %q has invalid mode %o", hdr.Name, hdr.Mode)
+		}
+		perm, err := checkMode(hdr.Name, hdr.FileInfo().Mode())
+		if err != nil {
+			return err
+		}
+		if skip {
+			continue
+		}
+		f := manifest.File{Path: name, Type: TypeDir, Mode: fmt.Sprintf("%04o", perm)}
+		if !isDir {
+			if err := ins.reserve(name, hdr.Size); err != nil {
+				return err
+			}
+			f.Type, f.Size = TypeFile, hdr.Size
+			if f.SHA256, err = ins.hashExact(name, tr, hdr.Size); err != nil {
+				return err
+			}
+		}
+		if err := ins.add(f); err != nil {
+			return err
+		}
+	}
+}
+
+func (ins *inspector) zip(r io.ReaderAt, size int64) error {
+	zr, err := zip.NewReader(r, size)
+	// ErrInsecurePath still returns a usable reader; every name is
+	// validated below with a more precise message.
+	if err != nil && !errors.Is(err, zip.ErrInsecurePath) {
+		return unsafeErr("not a zip archive: %v", err)
+	}
+	if len(zr.File) > ins.lim.MaxEntries {
+		return unsafeErr("archive has more than %d entries", ins.lim.MaxEntries)
+	}
+	if err := checkZipLayout(r, size, zr.File, ins.lim.MaxEntries); err != nil {
+		return err
+	}
+	for _, zf := range zr.File {
+		if err := ins.count(); err != nil {
+			return err
+		}
+		mode := zf.Mode()
+		switch {
+		case mode&fs.ModeSymlink != 0:
+			return unsafeErr("entry %q is a symbolic link; links are not allowed", zf.Name)
+		case mode&(fs.ModeDevice|fs.ModeCharDevice|fs.ModeNamedPipe|fs.ModeSocket|fs.ModeIrregular) != 0:
+			return unsafeErr("entry %q is a device, FIFO or socket; only files and directories are allowed", zf.Name)
+		}
+		name, isDir, skip, err := normalize(zf.Name, mode.IsDir())
+		if err != nil {
+			return err
+		}
+		perm, err := checkMode(zf.Name, mode)
+		if err != nil {
+			return err
+		}
+		if skip {
+			continue
+		}
+		f := manifest.File{Path: name, Type: TypeDir, Mode: fmt.Sprintf("%04o", perm)}
+		if !isDir {
+			if zf.UncompressedSize64 > uint64(ins.lim.MaxFileSize) { //nolint:gosec // G115: MaxFileSize is a validated non-negative limit
+				return unsafeErr("entry %q is %d bytes, over the %d-byte limit per file", name, zf.UncompressedSize64, ins.lim.MaxFileSize)
+			}
+			declared := int64(zf.UncompressedSize64) //nolint:gosec // G115: bounded by MaxFileSize (int64) just above
+			if err := ins.reserve(name, declared); err != nil {
+				return err
+			}
+			rc, err := zf.Open()
+			if err != nil {
+				return unsafeErr("entry %q: %v", name, err)
+			}
+			sum, err := ins.hashExact(name, rc, declared)
+			if err == nil {
+				// Drain to EOF so the zip reader verifies the CRC-32.
+				if _, cerr := io.Copy(io.Discard, rc); cerr != nil { //nolint:gosec // G110: hashExact already consumed exactly the declared (size-limited) bytes; archive/zip rejects data beyond the declared size
+					err = unsafeErr("entry %q: %v", name, cerr)
+				}
+			}
+			_ = rc.Close() // read-only; any corruption was already reported via CRC check
+			if err != nil {
+				return err
+			}
+			f.Type, f.Size, f.SHA256 = TypeFile, declared, sum
+		} else if zf.UncompressedSize64 != 0 {
+			return unsafeErr("directory entry %q has content", zf.Name)
+		}
+		if err := ins.add(f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkParents rejects a file that another entry needs as a directory.
+func (ins *inspector) checkParents() error {
+	for _, f := range ins.files {
+		for _, dir := range pathutil.Parents(f.Path) {
+			if i, ok := ins.byPath[dir]; ok && ins.files[i].Type == TypeFile {
+				return unsafeErr("entry %q is a file but %q needs it to be a directory", dir, f.Path)
+			}
+		}
+	}
+	return nil
+}

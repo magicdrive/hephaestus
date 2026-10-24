@@ -1,0 +1,14 @@
+version: 2
+project_name: mycli
+brews:
+  - name: mycli
+    alternative_names:
+      - mycli@{{ .Major }}
+    app: MyCli.app
+    repository:
+      owner: acme
+      name: homebrew-tap
+      token_type: gitlab
+      pull_request:
+        enabled: true
+        check_boxes: true

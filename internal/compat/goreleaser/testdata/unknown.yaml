@@ -1,0 +1,11 @@
+version: 2
+project_name: mycli
+brews:
+  - name: mycli
+    descriptoin: typo
+    repository:
+      owner: acme
+      nmae: homebrew-tap
+    dependencies:
+      - name: git
+        typ: build

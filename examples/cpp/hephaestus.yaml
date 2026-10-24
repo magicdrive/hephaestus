@@ -1,0 +1,56 @@
+# A C++ CLI built with CMake. One CMake toolchain file per target provides the
+# cross compiler (for example clang or zig cc with a --target). For native
+# builds on several runners, see examples/existing-artifacts instead.
+version: 1
+
+project:
+  name: mycli
+  description: Friendly tool for managing widgets
+  homepage: https://github.com/acme/mycli
+  license: BSD-3-Clause
+
+builds:
+  - id: mycli
+    matrix:
+      os: [linux]
+      arch: [amd64, arm64]
+    command: |
+      set -eu
+      build="build/${HEPHAESTUS_OS}_${HEPHAESTUS_ARCH}"
+      cmake -S . -B "$build" -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_TOOLCHAIN_FILE="cmake/toolchains/${HEPHAESTUS_OS}-${HEPHAESTUS_ARCH}.cmake"
+      cmake --build "$build" --parallel
+      cp "$build/mycli" "$HEPHAESTUS_OUTPUT"
+    output: "dist/bin/{{ .OS }}_{{ .Arch }}/mycli"
+
+archives:
+  - id: default
+    wrap_in_directory: true
+    files:
+      - src: "dist/bin/{{ .OS }}_{{ .Arch }}/mycli"
+        dst: bin/mycli
+        mode: "0755"
+      - src: docs/mycli.1
+        dst: share/man/man1/mycli.1
+      - LICENSE
+      - README.md
+
+checksum:
+  name: "{{ .Project }}_checksums.txt"
+
+release:
+  github:
+    owner: acme
+    name: mycli
+
+brews:
+  - name: mycli
+    directory: Formula
+    install: |
+      bin.install "bin/mycli"
+      man1.install "share/man/man1/mycli.1"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/mycli --version")
+    repository:
+      owner: acme
+      name: homebrew-tap

@@ -1,0 +1,59 @@
+name: CI (extended)
+
+on:
+  schedule:
+    - cron: "0 18 * * 0" # Monday 03:00 JST
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-extended-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CGO_ENABLED: "0"
+
+jobs:
+  extended:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-extended')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Shuffled tests, three seeds
+        shell: bash
+        run: for seed in 1 2 3; do go test -count=1 -shuffle="$seed" ./...; done
+      - name: Process and timeout tests repeated
+        shell: bash
+        run: go test -count=10 -run 'Timeout|Cancel|Kill' ./internal/build/
+
+  fuzz:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-extended')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Every fuzz target for 60s
+        run: scripts/fuzz.sh 60s
+      - name: Keep failing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-corpus
+          path: "**/testdata/fuzz/**"

@@ -3,3 +3,8 @@
 CLAUDE.md
 skills/
 .ark/
+/build
+/dist
+*.test
+*.out
+go.work
