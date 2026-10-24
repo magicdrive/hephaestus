@@ -87,7 +87,7 @@ for golden in "$repo"/internal/homebrew/testdata/*.golden; do
   cp "$golden" "$style_dir/mycli.rb"
   except=()
   [[ "$(basename "$golden")" == custom.golden ]] && except=(--except-cops FormulaAudit/InstallSteps)
-  echo "$(basename "$golden")"
+  basename "$golden"
   # ${a[@]+...}: an empty array is "unbound" under set -u in bash 3.2.
   brew style ${except[@]+"${except[@]}"} "$style_tap"
 done

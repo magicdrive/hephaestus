@@ -271,7 +271,7 @@ func TestGoReleaserDefaults(t *testing.T) {
 	})
 	t.Run("direct commit unless pull_request.enabled", func(t *testing.T) {
 		for y, wantPR := range map[string]bool{
-			"version: 2\nbrews:\n  - name: a\n":                                                  false,
+			"version: 2\nbrews:\n  - name: a\n":                                                   false,
 			"version: 2\nbrews:\n  - name: a\n    repository: {pull_request: {draft: true}}\n":    false,
 			"version: 2\nbrews:\n  - name: a\n    repository: {pull_request: {enabled: true}}\n":  true,
 			"version: 2\nbrews:\n  - name: a\n    repository: {pull_request: {enabled: false}}\n": false,

@@ -24,6 +24,13 @@ environment (`GOFLAGS`, `GOPROXY`, `GOSUMDB`, `GOPRIVATE`, `GONOSUMDB`,
 `GOMODCACHE` under `$RUNNER_TEMP`, so variables set and caches restored by
 earlier steps cannot change how Hephaestus itself is built.
 
+The action runs on Linux, macOS and Windows runners (CI runs `action-smoke`
+and `action-boundary` on all three). Its steps use `bash`; on Windows that is
+Git Bash, paths are passed to Go as `D:/a/_temp`-style paths and the binary
+is `hephaestus.exe`. Build commands named `bash` are found by `PATH`; on
+Windows put Git Bash first (`C:\Program Files\Git\bin`) if a WSL `bash`
+could shadow it.
+
 ## Inputs
 
 | Input | Default | Meaning |
@@ -100,7 +107,9 @@ Declare `permissions: contents: read` at the top of the workflow and grant
   runner's OIDC request token; **pass tokens through the action's inputs,
   never through job or workflow `env`**, because a token under any other
   name would still be inherited by the local step. CI checks this boundary
-  on a real runner (`action-boundary` in `ci.yml`). Hephaestus also removes the tokens, the variables
+  on real Linux, macOS and Windows runners (`action-boundary` in `ci.yml`:
+  `/proc` on Linux, `ps -E` on macOS, the build's own environment on
+  Windows). Hephaestus also removes the tokens, the variables
   `repository.token` reads, the runner's `ACTIONS_*` tokens and
   credential-looking variables from the environment of build commands unless
   a build names them in its `env`.

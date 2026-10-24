@@ -105,11 +105,16 @@ runs:
         CGO_ENABLED: "0"
       run: |
         set -euo pipefail
-        gotmp="$(mktemp -d "$RUNNER_TEMP/hephaestus-go.XXXXXXXX")"
+        tmp="$RUNNER_TEMP" src="$ACTION_PATH" bin_ext=""
+        if [[ "$RUNNER_OS" == "Windows" ]]; then
+          # Git Bash tools and the native go.exe both accept D:/a/_temp;
+          # RUNNER_TEMP arrives as D:\a\_temp.
+          tmp="$(cygpath -m "$RUNNER_TEMP")" src="$(cygpath -m "$ACTION_PATH")" bin_ext=".exe"
+        fi
+        gotmp="$(mktemp -d "$tmp/hephaestus-go.XXXXXXXX")"
         export GOCACHE="$gotmp/cache" GOMODCACHE="$gotmp/mod"
-        cd "$ACTION_PATH"
-        bin="$RUNNER_TEMP/hephaestus-bin/hephaestus"
-        [[ "$RUNNER_OS" == "Windows" ]] && bin="$bin.exe"
+        cd "$src"
+        bin="$tmp/hephaestus-bin/hephaestus$bin_ext"
         go build -trimpath -mod=readonly -o "$bin" .
         chmod -R u+w "$gotmp" && rm -rf "$gotmp"
         echo "bin=$bin" >> "$GITHUB_OUTPUT"

@@ -134,7 +134,17 @@ jobs:
         run: scripts/homebrew-e2e.sh
 
   action-smoke:
-    runs-on: ubuntu-latest
+    # The composite action on every runner OS: Git Bash, the .exe suffix
+    # and D:/a/_temp-style paths on Windows; BSD tools (env -u, mktemp) on
+    # macOS.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -154,6 +164,11 @@ jobs:
           echo "status=$STATUS"
           [[ "$STATUS" == "no-op" ]]
           echo "$ARTIFACTS" | jq -e 'length == 5'
+          # Every reported artifact exists where the output says.
+          cd testdata/e2e/fixture
+          echo "$ARTIFACTS" | jq -r '.[].path' | while read -r p; do
+            [[ -f "$p" ]] || { echo "missing $p"; exit 1; }
+          done
       - name: Check configuration
         uses: ./
         with:
@@ -166,7 +181,17 @@ jobs:
     # that fails if any of them is visible to build code: in its own
     # environment, in an ancestor's environment, or through a dumpable
     # hephaestus process.
-    runs-on: ubuntu-latest
+    # Linux reads ancestors' /proc/PID/environ and checks that hephaestus is
+    # not dumpable; macOS reads them with ps -E; Windows can only check the
+    # build's own environment.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     permissions:
       contents: read
       id-token: write # only so that an OIDC request token exists to leak
@@ -178,6 +203,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Prefer Git Bash for the probe's build command
+        if: runner.os == 'Windows'
+        # Hephaestus runs "bash" by PATH lookup; make it Git Bash rather
+        # than a WSL launcher.
+        run: printf '%s\n' 'C:\Program Files\Git\bin' >> "$GITHUB_PATH"
       - name: Run the action with sentinel tokens
         id: heph
         uses: ./

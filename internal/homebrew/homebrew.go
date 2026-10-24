@@ -996,9 +996,9 @@ func platformConds(sel, all []manifest.Artifact) []string {
 				n++
 			}
 		}
-		switch {
-		case n == 0:
-		case n == osCount[goos]:
+		switch n {
+		case 0:
+		case osCount[goos]:
 			out = append(out, osPred(goos))
 		default:
 			for _, a := range sel {
