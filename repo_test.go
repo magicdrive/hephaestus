@@ -378,7 +378,7 @@ func TestDocs_RelativeLinksResolve(t *testing.T) {
 
 // configKeys are the top-level keys that mark a YAML block as Hephaestus
 // configuration (or a fragment of one).
-var configKeys = []string{"version", "project", "builds", "archives", "checksum", "release", "brews", "homebrew", "limits", "env", "dist", "manifest"}
+var configKeys = []string{"version", "project", "builds", "archives", "checksum", "release", "brews", "homebrew", "limits", "env", "dist", "manifest", "preflight"}
 
 func TestDocs_ConfigurationExamplesAreValid(t *testing.T) {
 	fence := regexp.MustCompile("(?s)```ya?ml\n(.*?)```")

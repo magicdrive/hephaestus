@@ -31,6 +31,9 @@ type Config struct {
 	Homebrew  *Brew      `yaml:"homebrew"`
 	Limits    Limits     `yaml:"limits"`
 	Env       []EnvEntry `yaml:"env"`
+	// Preflight configures `hephaestus preflight` (release safety checks
+	// before a tag is pushed); every field is optional.
+	Preflight Preflight `yaml:"preflight"`
 
 	// Root is the directory containing the configuration file. All source
 	// paths are resolved against it. Not read from YAML.
@@ -413,4 +416,29 @@ func containsStr(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// Preflight configures the release preflight (internal/preflight). Empty
+// fields turn the checks that need them off or use the documented default.
+type Preflight struct {
+	// Remote is the git remote releases are pushed to (default "origin").
+	Remote string `yaml:"remote"`
+	// Branch is the branch releases are tagged on (default: the
+	// repository's default branch on GitHub).
+	Branch string `yaml:"branch"`
+	// Workflow is the release workflow file name under .github/workflows
+	// (e.g. "release.yml"); when set it must exist and be active.
+	Workflow string `yaml:"workflow"`
+	// Environment is the deployment environment of the publishing job
+	// (e.g. "release"); when set its deployment policy must allow only
+	// matching tags, and required secrets are looked up in it.
+	Environment string `yaml:"environment"`
+	// Secrets are secret names that must exist (in Environment, else in
+	// the repository). Values are never read.
+	Secrets []string `yaml:"secrets"`
+	// TapTokenSecret is the secret holding the tap token, required when a
+	// formula is published to a tap (default "HOMEBREW_TAP_GITHUB_TOKEN").
+	TapTokenSecret string `yaml:"tap_token_secret"`
+	// Skip lists check IDs that are not run (reported as SKIP).
+	Skip []string `yaml:"skip"`
 }

@@ -105,31 +105,49 @@ archives:
 	}
 }
 
+func TestPreflightSection(t *testing.T) {
+	cfg, err := load("project: {name: x}\npreflight: {remote: upstream, branch: release/1.x, workflow: release.yaml, environment: release, secrets: [SIGNING_KEY], tap_token_secret: TAP, skip: [github.ruleset.branch]}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Preflight
+	if p.Remote != "upstream" || p.Branch != "release/1.x" || p.Workflow != "release.yaml" || p.Environment != "release" ||
+		len(p.Secrets) != 1 || p.TapTokenSecret != "TAP" || len(p.Skip) != 1 {
+		t.Errorf("preflight %+v", p)
+	}
+}
+
 func TestRejects(t *testing.T) {
 	cases := map[string]string{
-		"empty":            "",
-		"not mapping":      "- a\n",
-		"two documents":    "project: {name: x}\n---\nproject: {name: y}\n",
-		"alias":            "a: &x {name: y}\nproject: *x\n",
-		"no name":          "project: {}\n",
-		"bad name":         "project: {name: '../x'}\n",
-		"future version":   "version: 2\nproject: {name: x}\n",
-		"two providers":    "project: {name: x}\nbuilds: [{command: make, existing: {path: a}, output: a, targets: [{os: linux, arch: amd64}]}]\n",
-		"no targets":       "project: {name: x}\nbuilds: [{command: make, output: a}]\n",
-		"bad os":           "project: {name: x}\nbuilds: [{command: make, output: a, targets: [{os: Linux, arch: amd64}]}]\n",
-		"dup target":       "project: {name: x}\nbuilds: [{command: make, output: a, targets: [{os: linux, arch: amd64}], matrix: {os: [linux], arch: [amd64]}}]\n",
-		"bad template":     "project: {name: x}\narchives: [{name: '{{ .Nope }}'}]\n",
-		"unknown build":    "project: {name: x}\narchives: [{builds: [nope]}]\n",
-		"dup archive ids":  "project: {name: x}\narchives: [{id: a}, {id: a}]\n",
-		"missing ids":      "project: {name: x}\narchives: [{}, {}]\n",
-		"bad dist":         "project: {name: x}\ndist: /tmp\n",
-		"bad symlinks":     "project: {name: x}\narchives: [{symlinks: maybe}]\n",
-		"bad size":         "project: {name: x}\nlimits: {max_file_size: 1GB}\n",
-		"bad duration":     "project: {name: x}\nbuilds: [{command: make, output: a, timeout: soon, targets: [{os: linux, arch: amd64}]}]\n",
-		"plist":            "project: {name: x}\nbrews: [{plist: x}]\n",
-		"bad formula name": "project: {name: x}\nbrews: [{name: My_Tool}]\n",
-		"bad dependency":   "project: {name: x}\nbrews: [{dependencies: ['a; system']}]\n",
-		"bad env":          "project: {name: x}\nenv: [NOEQUALS]\n",
+		"empty":                   "",
+		"not mapping":             "- a\n",
+		"two documents":           "project: {name: x}\n---\nproject: {name: y}\n",
+		"alias":                   "a: &x {name: y}\nproject: *x\n",
+		"no name":                 "project: {}\n",
+		"bad name":                "project: {name: '../x'}\n",
+		"future version":          "version: 2\nproject: {name: x}\n",
+		"two providers":           "project: {name: x}\nbuilds: [{command: make, existing: {path: a}, output: a, targets: [{os: linux, arch: amd64}]}]\n",
+		"no targets":              "project: {name: x}\nbuilds: [{command: make, output: a}]\n",
+		"bad os":                  "project: {name: x}\nbuilds: [{command: make, output: a, targets: [{os: Linux, arch: amd64}]}]\n",
+		"dup target":              "project: {name: x}\nbuilds: [{command: make, output: a, targets: [{os: linux, arch: amd64}], matrix: {os: [linux], arch: [amd64]}}]\n",
+		"bad template":            "project: {name: x}\narchives: [{name: '{{ .Nope }}'}]\n",
+		"unknown build":           "project: {name: x}\narchives: [{builds: [nope]}]\n",
+		"dup archive ids":         "project: {name: x}\narchives: [{id: a}, {id: a}]\n",
+		"missing ids":             "project: {name: x}\narchives: [{}, {}]\n",
+		"bad dist":                "project: {name: x}\ndist: /tmp\n",
+		"bad symlinks":            "project: {name: x}\narchives: [{symlinks: maybe}]\n",
+		"bad size":                "project: {name: x}\nlimits: {max_file_size: 1GB}\n",
+		"bad duration":            "project: {name: x}\nbuilds: [{command: make, output: a, timeout: soon, targets: [{os: linux, arch: amd64}]}]\n",
+		"plist":                   "project: {name: x}\nbrews: [{plist: x}]\n",
+		"bad formula name":        "project: {name: x}\nbrews: [{name: My_Tool}]\n",
+		"preflight workflow path": "project: {name: x}\npreflight: {workflow: ../release.yml}\n",
+		"preflight workflow name": "project: {name: x}\npreflight: {workflow: release}\n",
+		"preflight bad secret":    "project: {name: x}\npreflight: {secrets: ['A B']}\n",
+		"preflight bad check ID":  "project: {name: x}\npreflight: {skip: [Git.Branch]}\n",
+		"preflight unknown key":   "project: {name: x}\npreflight: {enviroment: release}\n",
+		"preflight bad remote":    "project: {name: x}\npreflight: {remote: '-x'}\n",
+		"bad dependency":          "project: {name: x}\nbrews: [{dependencies: ['a; system']}]\n",
+		"bad env":                 "project: {name: x}\nenv: [NOEQUALS]\n",
 	}
 	for name, yml := range cases {
 		if _, err := load(yml); err == nil {

@@ -53,7 +53,8 @@ release:
   github:
     owner: magicdrive
     name: hephaestus
-    generate_notes: true
+    # The notes of the version being released; update it before tagging.
+    notes_file: RELEASE_NOTES.md
     draft: true
 
 brews:
@@ -72,3 +73,9 @@ brews:
       name: homebrew-tap-sandbox
       pull_request:
         enabled: true
+
+# Release safety checks before a tag is pushed: hephaestus preflight --tag vX.Y.Z
+# (docs/preflight.md). make publish runs its own checks for this repository.
+preflight:
+  workflow: release.yml
+  environment: release

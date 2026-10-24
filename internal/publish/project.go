@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 
+	"github.com/magicdrive/hephaestus/internal/archive"
 	"github.com/magicdrive/hephaestus/internal/config"
 	"github.com/magicdrive/hephaestus/internal/homebrew"
 	"github.com/magicdrive/hephaestus/internal/manifest"
@@ -110,24 +112,18 @@ func (p *Project) Plan(v Version) (*Plan, error) {
 		}
 	}
 
+	expected, unknown, err := archive.ExpectedArchives(cfg, vars)
+	if err != nil {
+		return nil, err
+	}
+	if len(unknown) > 0 {
+		return nil, fmt.Errorf("archive names are only known after the build: %s", strings.Join(unknown, "; "))
+	}
 	seen := map[string]bool{}
-	for i := range cfg.Archives {
-		a := &cfg.Archives[i]
-		for _, t := range archiveTargets(cfg, a) {
-			format := a.Format
-			for _, o := range a.FormatOverrides {
-				if o.OS == t.OS {
-					format = o.Format
-				}
-			}
-			base, err := tmpl.Render(a.Name, vars.WithTarget(t.OS, t.Arch, t.Arm))
-			if err != nil {
-				return nil, fmt.Errorf("archives[%d].name: %w", i, err)
-			}
-			if name := base + "." + format; !seen[name] {
-				seen[name] = true
-				pl.Archives = append(pl.Archives, name)
-			}
+	for _, e := range expected {
+		if !seen[e.Name] {
+			seen[e.Name] = true
+			pl.Archives = append(pl.Archives, e.Name)
 		}
 	}
 	if len(pl.Archives) == 0 {
@@ -176,26 +172,4 @@ func (pl *Plan) TapSkipped() bool {
 		}
 	}
 	return true
-}
-
-// archiveTargets are the targets an archive is built for: its own targets,
-// or those of the builds it packages.
-func archiveTargets(cfg *config.Config, a *config.Archive) []config.Target {
-	if len(a.Targets) > 0 {
-		return a.Targets
-	}
-	var out []config.Target
-	seen := map[string]bool{}
-	for _, b := range cfg.Builds {
-		if len(a.Builds) > 0 && !slices.Contains(a.Builds, b.ID) {
-			continue
-		}
-		for _, t := range config.ExpandTargets(b.Targets, b.Matrix) {
-			if !seen[t.String()] {
-				seen[t.String()] = true
-				out = append(out, t)
-			}
-		}
-	}
-	return out
 }

@@ -7,11 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/magicdrive/hephaestus/internal/preflight"
 	"github.com/magicdrive/hephaestus/internal/publish"
 )
 
@@ -184,4 +186,40 @@ func TestCI_RunsSnapshotAsOnATagPush(t *testing.T) {
 		}
 	}
 	t.Error("the snapshot job must also run make snapshot with GITHUB_REF_TYPE=tag")
+}
+
+// TestPreflightChecksAreDocumented: every check ID is a row of the table in
+// docs/preflight.md, in execution order, and no row names a missing check.
+func TestPreflightChecksAreDocumented(t *testing.T) {
+	doc := readFile(t, "docs/preflight.md")
+	row := regexp.MustCompile("(?m)^\\| `([a-z][a-z0-9.-]+)` \\| (error|warning) \\|")
+	var documented []string
+	for _, m := range row.FindAllStringSubmatch(doc, -1) {
+		documented = append(documented, m[1])
+	}
+	if strings.Join(documented, " ") != strings.Join(preflight.Checks(), " ") {
+		t.Errorf("docs/preflight.md checks table:\n  %v\nwant (execution order):\n  %v", documented, preflight.Checks())
+	}
+}
+
+// TestReleaseNotes: the release body comes from RELEASE_NOTES.md
+// (release.github.notes_file); its heading and compare link name the same
+// version, so notes are not published under another version by mistake.
+func TestReleaseNotes(t *testing.T) {
+	notes := readFile(t, "RELEASE_NOTES.md")
+	m := regexp.MustCompile(`\A# Hephaestus (v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\n`).FindStringSubmatch(notes)
+	if m == nil {
+		t.Fatal(`RELEASE_NOTES.md must start with "# Hephaestus vX.Y.Z"`)
+	}
+	if !strings.Contains(notes, "/compare/") || !strings.Contains(notes, "..."+m[1]+"\n") {
+		t.Errorf("RELEASE_NOTES.md: the Full Changelog link must end in ...%s", m[1])
+	}
+	if !strings.Contains(readFile(t, "CHANGELOG.md"), "## "+m[1]) {
+		t.Errorf("CHANGELOG.md has no section for %s", m[1])
+	}
+	for _, f := range []string{"hephaestus.yaml", "hephaestus.rehearsal.yaml"} {
+		if !strings.Contains(readFile(t, f), "notes_file: RELEASE_NOTES.md") {
+			t.Errorf("%s must publish RELEASE_NOTES.md", f)
+		}
+	}
 }

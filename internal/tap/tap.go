@@ -326,6 +326,14 @@ func (p *publisher) checkFormulaDir(ctx context.Context, owner, repo, ref string
 	if err != nil {
 		return hint(fmt.Errorf("listing %s@%s to find its formula directory: %w", full, ref, err), full)
 	}
+	return FormulaDirProblem(full, entries, p.p.Path)
+}
+
+// FormulaDirProblem reports why Homebrew would not find a formula written
+// to formulaPath in the tap full whose root lists entries, or why adding it
+// would hide the tap's other formulae; nil when the path is right. It is
+// pure, so the release preflight applies the same rule as the tap stage.
+func FormulaDirProblem(full string, entries []github.DirEntry, formulaPath string) error {
 	dirs := map[string]bool{}
 	var rootFormulae []string
 	for _, e := range entries {
@@ -343,7 +351,7 @@ func (p *publisher) checkFormulaDir(ctx context.Context, owner, repo, ref string
 			break
 		}
 	}
-	target := path.Dir(p.p.Path)
+	target := path.Dir(formulaPath)
 	if target == "." {
 		target = ""
 	}
@@ -353,7 +361,7 @@ func (p *publisher) checkFormulaDir(ctx context.Context, owner, repo, ref string
 		if top == active {
 			return nil
 		}
-		return fmt.Errorf("%s keeps its formulae in %s/, the only directory Homebrew reads once it exists, so %s would never be found: set directory to %q", full, active, p.p.Path, active)
+		return fmt.Errorf("%s keeps its formulae in %s/, the only directory Homebrew reads once it exists, so %s would never be found: set directory to %q", full, active, formulaPath, active)
 	case target == "":
 		return nil
 	case slices.Contains(formulaDirs, top):
@@ -366,7 +374,7 @@ func (p *publisher) checkFormulaDir(ctx context.Context, owner, repo, ref string
 		}
 		return fmt.Errorf("%s keeps its formulae at the repository root (%s); creating %s/ would make Homebrew read only that directory and hide them: set directory to \"\" (the root) or move the existing formulae first", full, strings.Join(shown, ", "), top)
 	default:
-		return fmt.Errorf("%s keeps its formulae at the repository root, where Homebrew reads only top-level *.rb files, so %s would never be found: set directory to \"\" (the root)", full, p.p.Path)
+		return fmt.Errorf("%s keeps its formulae at the repository root, where Homebrew reads only top-level *.rb files, so %s would never be found: set directory to \"\" (the root)", full, formulaPath)
 	}
 }
 
