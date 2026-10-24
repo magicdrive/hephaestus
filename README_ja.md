@@ -72,7 +72,13 @@ tap         Tap へ Pull Request（既定）または直接コミット
 
 **1. インストール** — [インストール](#インストール)を参照。
 
-**2. 設定** — リポジトリのルートに `hephaestus.yaml` を置きます。
+**2. 設定** — リポジトリのルートに `hephaestus.yaml` を置きます。プロジェクトの種類に合ったテンプレート（`go`、`rust`、noarch の Bash/Python/Node CLI 向けの `script`、他所でビルドした実行ファイル向けの `prebuilt`）から始められます。既存のファイルは上書きしません。
+
+```sh
+hephaestus init --template go --repo acme/mycli
+```
+
+手で書く場合は次のとおりです。
 
 ```yaml
 version: 1
@@ -159,6 +165,7 @@ GitHub Actions では Action を使います（固定したコミットから He
 ## 使い方
 
 ```text
+hephaestus init --template go  最初の hephaestus.yaml を書き出す（go, rust, script, prebuilt）
 hephaestus check              設定を検査し、計画を表示する
 hephaestus run                設定されたすべてのステージを実行する（--stages a,b で指定）
 hephaestus build|archive|checksum|release|formula|tap   1 つのステージを実行する

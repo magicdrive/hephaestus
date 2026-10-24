@@ -90,7 +90,16 @@ it continues from the manifest. Details:
 
 **1. Install** — see [Installation](#installation).
 
-**2. Configure** — `hephaestus.yaml` at the repository root:
+**2. Configure** — `hephaestus.yaml` at the repository root. Start from a
+template for your kind of project (`go`, `rust`, `script` for a noarch
+Bash/Python/Node CLI, `prebuilt` for executables built elsewhere); it is
+never written over an existing file:
+
+```sh
+hephaestus init --template go --repo acme/mycli
+```
+
+or write it by hand:
 
 ```yaml
 version: 1
@@ -181,6 +190,7 @@ pin):
 ## Usage
 
 ```text
+hephaestus init --template go  write a starting hephaestus.yaml (go, rust, script, prebuilt)
 hephaestus check              validate the configuration and print the plan
 hephaestus run                run every configured stage (or --stages a,b)
 hephaestus build|archive|checksum|release|formula|tap   run one stage

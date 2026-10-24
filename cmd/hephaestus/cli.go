@@ -29,6 +29,7 @@ Usage:
   hephaestus <command> [flags]
 
 Commands:
+  init        Write a starting hephaestus.yaml (--template go|rust|script|prebuilt)
   check       Validate the configuration and print the resolved plan
   run         Run stages (default: every configured stage)
   build       Run the build stage only
@@ -75,6 +76,8 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 		return preflightCmd(ctx, rest, stdout, stderr, red)
 	case "status":
 		return statusCmd(ctx, rest, stdout, stderr, red)
+	case "init":
+		return initCmd(ctx, rest, stdout, stderr)
 	case "check":
 	case "run":
 	case "build", "archive", "checksum", "release", "formula", "tap":
