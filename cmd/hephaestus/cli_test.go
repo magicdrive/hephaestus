@@ -306,3 +306,46 @@ func TestSnapshotSkipsConfiguredPublishing(t *testing.T) {
 		t.Error("explicit release with --snapshot accepted")
 	}
 }
+
+// TestResumeAfterStageFailure: a failed stage leaves the manifest
+// consistent, a re-run (without --fresh) resumes from it once the cause is
+// fixed, and a manifest of another version is refused unless --fresh.
+func TestResumeAfterStageFailure(t *testing.T) {
+	clearGitHubEnv(t)
+	root := project(t, "")
+	cfg := filepath.Join(root, "hephaestus.yaml")
+	data, _ := os.ReadFile(cfg)
+	broken := strings.Replace(string(data), "      - README.md\n", "      - README.md\n      - NOTICE\n", 1)
+	if err := os.WriteFile(cfg, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errs := runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0", "--stages", "build,archive,checksum")
+	if code != 1 || !strings.Contains(errs, "stage archive") || !strings.Contains(errs, "NOTICE") {
+		t.Fatalf("archive failure: %d\n%s", code, errs)
+	}
+	mpath := filepath.Join(root, "dist", "hephaestus-manifest.json")
+	man, err := os.ReadFile(mpath)
+	if err != nil || strings.Contains(string(man), `"kind": "archive"`) || !strings.Contains(string(man), `"kind": "binary"`) {
+		t.Fatalf("manifest after the failure (err %v):\n%s", err, man)
+	}
+	// Fix the cause and continue with the remaining stages.
+	if err := os.WriteFile(filepath.Join(root, "NOTICE"), []byte("notice\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errs = runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0", "--stages", "archive,checksum")
+	if code != 0 {
+		t.Fatalf("resume: %d\n%s", code, errs)
+	}
+	man, _ = os.ReadFile(mpath)
+	if !strings.Contains(string(man), `"kind": "archive"`) || !strings.Contains(string(man), `"kind": "checksum"`) {
+		t.Fatalf("manifest after the resume:\n%s", man)
+	}
+	// Another version's manifest is never mixed in.
+	code, _, errs = runCLI(t, "run", "--config", cfg, "--tag", "v2.0.0", "--stages", "archive,checksum")
+	if code != 1 || !strings.Contains(errs, "pass --fresh") {
+		t.Fatalf("other version: %d\n%s", code, errs)
+	}
+	if code, _, errs = runCLI(t, "run", "--config", cfg, "--tag", "v2.0.0", "--stages", "build,archive,checksum", "--fresh"); code != 0 {
+		t.Fatalf("--fresh: %d\n%s", code, errs)
+	}
+}

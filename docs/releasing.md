@@ -183,6 +183,9 @@ never merges it. Users get the new version once it is merged.
 | Run failed after publishing | a published release | do not delete it or replace assets; fix forward with a new version |
 | Verification failed after a green run | a published release | investigate the failed check (`make publish-status`); never "fix" a published release in place |
 
+Any repository can inspect a release with `hephaestus status --tag vX.Y.Z`;
+[recovery.md](recovery.md) lists every failure point and its safe recovery.
+
 ## Troubleshooting
 
 - **`ci on commit` fails with "no ci.yml push run"**: the commit was not

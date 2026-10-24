@@ -41,6 +41,7 @@ then review the diff. Fuzz targets: `make fuzz`.
 | `internal/ghaction` | `$GITHUB_OUTPUT` and step summary |
 | `internal/version` | Tag parsing; the one definition of "prerelease" |
 | `internal/preflight` | `hephaestus preflight`: read-only release checks (git, GitHub settings, config, tap) with stable check IDs |
+| `internal/status` | `hephaestus status`: read-only release state and next safe action |
 | `internal/publish`, `internal/cmd/publish` | This repository's release tool behind `make publish` (preflight, tag push, run monitoring, verification); not part of the `hephaestus` command |
 | `repo_test.go` | Workflows, Makefile, action and documentation consistency |
 | `action.yml` | Composite GitHub Action |

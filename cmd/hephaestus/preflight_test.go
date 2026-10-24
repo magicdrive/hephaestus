@@ -170,3 +170,12 @@ func TestPreflightNeverPrintsTheToken(t *testing.T) {
 		t.Error("no request reached the server")
 	}
 }
+
+func TestStatusUsage(t *testing.T) {
+	clearGitHubEnv(t)
+	for _, args := range [][]string{{"status"}, {"status", "--tag", "v1.0.0", "--format", "yaml"}, {"status", "--tag", "v1..0"}} {
+		if code, _, _ := runCLI(t, args...); code != 2 {
+			t.Errorf("%v: code %d", args, code)
+		}
+	}
+}

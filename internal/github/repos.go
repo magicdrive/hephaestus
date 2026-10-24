@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // Repository is the subset of a repository the tap publisher needs.
@@ -254,11 +255,14 @@ func (c *Client) CreateRef(ctx context.Context, owner, repo, ref, sha string) (*
 
 // PullRequest is the subset of a pull request the tap publisher needs.
 type PullRequest struct {
-	Number  int    `json:"number"`
-	State   string `json:"state"`
-	Title   string `json:"title"`
-	HTMLURL string `json:"html_url"`
-	Head    struct {
+	Number int    `json:"number"`
+	State  string `json:"state"`
+	// MergedAt is set once the pull request is merged (State is then
+	// "closed").
+	MergedAt *time.Time `json:"merged_at"`
+	Title    string     `json:"title"`
+	HTMLURL  string     `json:"html_url"`
+	Head     struct {
 		Ref   string `json:"ref"`
 		SHA   string `json:"sha"`
 		Label string `json:"label"`
