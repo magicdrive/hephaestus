@@ -218,6 +218,7 @@ Hephaestus はクロスコンパイルをしません。ターゲットの宣言
 - 何かを送る前に、すべての asset をマニフェストと照合して再ハッシュします。
 - 新しいリリースは **draft として**作成し、asset をアップロードして GitHub が返すサイズとダイジェストで検証してから公開します。不変（immutable）リリースとも両立します。
 - 再実行しても安全です。同一の asset はそのまま、不完全な asset はアップロードし直し、内容の違う asset は `replace_existing_assets: true` がない限りエラーにします。応答が失われた場合は照会し直し、重複して作成することはありません。
+- 公開済みのリリースは編集しません。タイトル・ノート・prerelease フラグは draft のうちに設定して一緒に公開し、再実行で変わる場合は差分を報告するだけです。
 - `prerelease: auto` はセマンティックバージョンのプレリリースを判定します。`make_latest`、`name_template`、`notes`、`notes_file`、`generate_notes`（新規リリースで GitHub の自動生成ノートを使う）に対応し、GitHub Enterprise Server には `api_url` / `upload_url` で対応します。
 
 ## Homebrew Formula

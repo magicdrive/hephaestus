@@ -274,6 +274,9 @@ conditions and modes. Output is byte-for-byte reproducible. Reference:
   uploaded again, a different one is an error unless
   `replace_existing_assets: true`. A lost response is followed by a lookup,
   never by a duplicate create.
+- A published release is never edited: its title, notes and prerelease flag
+  are set while it is a draft and published with it; a re-run that would
+  change them only reports the difference.
 - `prerelease: auto` marks semantic-version prereleases; `make_latest`,
   `name_template`, `notes`, `notes_file` and `generate_notes` (GitHub-generated
   notes for a new release) are supported; GitHub Enterprise Server through

@@ -43,7 +43,45 @@ Exit codes: `0` read, `1` conflict, `2` usage, `3` GitHub could not be read.
 | 9 | **tap pull request after publishing** | the published release | re-run only `hephaestus run --stages formula,tap` (or the failed job): the formula comes from the manifest, an existing branch or pull request with the same content is reused, a branch with other content is refused |
 | 10 | **same tag again** | whatever earlier runs left | identical assets are no-ops; a tag pointing to another commit than the one built is an error before anything is written; a non-reproducible rebuild differs from the draft's assets and stops (`conflict`) |
 | 11 | **two runs at once** | one draft (the lowest id wins) | the release workflow serializes runs per tag (`concurrency`); if two runs still race, the one that created a second draft deletes only its own draft and continues on the winner's |
-| 12 | **re-run on an immutable release** | the published release | identical assets: no-op; anything else (missing or different assets) is an error before any write. Release notes, which GitHub keeps editable, may be updated |
+| 12 | **re-run on an immutable release** | the published release | identical assets: no-op; anything else (missing or different assets) is an error before any write. Title, notes and prerelease flag are never edited (on any published release); a difference is a warning |
+
+## What each state allows
+
+The tag is never moved or deleted in any state; a tag that points to
+another commit than the one built is an error before anything is written.
+
+| Release | May be written | Never written |
+| --- | --- | --- |
+| none | a draft is created (after a lookup, never a blind second create), assets uploaded, then published | — |
+| draft | missing assets uploaded; incomplete leftovers (older than the grace period) deleted; title, notes and prerelease flag updated; published once complete | a differing asset (unless `replace_existing_assets`); publishing with assets not in the manifest; deleting the draft (only a duplicate this run just created) |
+| published, mutable | missing assets uploaded; a differing asset only with `replace_existing_assets` (uploaded under a temporary name first) | title, notes, prerelease flag; unpublishing; deleting the release |
+| published, immutable | nothing: assets are compared read-only | any asset, title, notes or prerelease flag; deleting the release |
+| conflict | nothing | the differing asset |
+
+A difference in title, notes or prerelease flag on a published release is
+logged as a warning; the run continues, so formula and tap can resume.
+
+## How each scenario is verified
+
+| # | Verified by |
+| --- | --- |
+| 1, 2 | CLI integration test: `TestResumeAfterStageFailure` (a stage fails, the re-run resumes from the manifest); build failures: `internal/build` tests |
+| 3 | unit tests: `TestTamperDetected` (checksum), `TestSourceChangedBetweenPlanAndWrite` (archive) |
+| 4 | unit tests: `internal/github` retry tests; `TestCreateFailureDoesNotDuplicateRelease`, `TestRateLimitRetries` |
+| 5 | unit test `TestReusesExistingDraft`; E2E `recovery` |
+| 6 | unit tests: `TestRecoverFromUpload502LeavingStarter`, `TestUploadLostResponseIsVerifiedNotRepeated`, `TestRecentStarterAssetIsNotDeleted` |
+| 7 | unit tests: `TestExistingAssetSameDifferentReplace`, `TestDigestConflictOnPublishedRelease`, `TestImmutablePublishedRelease`; `status` conflict: `internal/status` tests |
+| 8 | **documentation only**: the attestation is a workflow step (`release.yml`), exercised by every real release, not by a test |
+| 9 | E2E `tap-failure` (pull request creation fails after publishing; the full re-run writes nothing to the release and opens the pull request) and `tap-only`; tap unit tests for reused branches and pull requests |
+| 10 | unit tests: `TestRerunIsNoOp`, `TestExistingTagMustPointToBuiltCommit`; E2E `stable` (second run writes nothing) |
+| 11 | unit tests: `TestConcurrentDraftLoserDeletesOnlyItsOwnDraft`, `TestConcurrentDraftWinnerKeepsItsDraft`; the workflow's `concurrency` group is configuration, not tested |
+| 12 | unit tests: `TestImmutablePublishedRelease`, `TestPublishedReleaseIsNeverEdited`, `TestImmutableReleaseRerunWritesNothing`; E2E `immutable` and `immutable-resumes-tap` |
+| lost publish response | unit test `TestPublishLostResponseIsNotPublishedTwice` |
+
+Unit and E2E tests run against a fake GitHub API (`internal/release`,
+`cmd/hephaestus/pipeline_e2e_test.go`). Against the real GitHub API, only
+the normal path is exercised (every published release); failure injection
+is not.
 
 ## When the answer is "release a new version"
 

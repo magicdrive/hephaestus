@@ -73,6 +73,8 @@ type e2eGitHub struct {
 	tags     map[string]string // tag -> commit
 	// failPublish answers every publishing PATCH (draft: false) with 500.
 	failPublish bool
+	// failPulls answers every pull request creation with 403.
+	failPulls bool
 
 	// acme/homebrew-tap: each commit is a full snapshot of the files.
 	branches map[string]string
@@ -511,6 +513,10 @@ func (f *e2eGitHub) serveTap(w http.ResponseWriter, r *http.Request, p []string,
 		e2eReply(w, 200, out)
 
 	case m == "POST" && len(p) == 1 && p[0] == "pulls":
+		if f.failPulls {
+			e2eReply(w, 403, map[string]any{"message": "Resource not accessible by integration"})
+			return
+		}
 		var req github.NewPullRequest
 		_ = json.Unmarshal(body, &req)
 		label := req.Head
@@ -910,5 +916,63 @@ func TestPipelineE2E(t *testing.T) {
 			t.Errorf("tap writes:\n%s", strings.Join(e.gh.requests(e2eTapRepo, true), "\n"))
 		}
 		e.only()
+	})
+
+	t.Run("tap-failure", func(t *testing.T) {
+		// The release is published, then the tap pull request cannot be
+		// created: a full re-run must not write to the release again and
+		// must only finish the tap.
+		e := newE2E(t, "", "")
+		e.gh.failPulls = true
+		code, log := e.run("v1.0.0", "")
+		if code == 0 {
+			t.Fatalf("first run succeeded although the pull request failed\n%s", log)
+		}
+		rel := e.only()
+		if rel.Draft {
+			t.Fatal("the release was not published before the tap stage")
+		}
+		checkAssets(t, rel, e.gh, e.assets())
+		if pulls := e.gh.pullList(); len(pulls) != 0 {
+			t.Fatalf("pulls after the failure: %+v", pulls)
+		}
+
+		e.gh.mu.Lock()
+		e.gh.failPulls = false
+		e.gh.mu.Unlock()
+		e.gh.resetLog()
+		e.mustRun("v1.0.0", "")
+		if w := e.gh.requests(e2eReleaseRepo, true); len(w) != 0 {
+			t.Errorf("re-run wrote to the published release:\n%s", strings.Join(w, "\n"))
+		}
+		if after := e.only(); after.ID != rel.ID || after.Draft {
+			t.Errorf("after the re-run: id %d (was %d) draft=%t", after.ID, rel.ID, after.Draft)
+		}
+		if pulls := e.gh.pullList(); len(pulls) != 1 || pulls[0].head != "acme:tool-1.0.0" {
+			t.Errorf("pulls after the re-run: %+v", pulls)
+		}
+	})
+
+	t.Run("immutable-resumes-tap", func(t *testing.T) {
+		// A complete immutable release whose notes differ from the
+		// configuration: the full run verifies it read-only, leaves the
+		// notes, and continues with the formula and the tap.
+		e := newE2E(t, ", notes: \"changed notes\"", "")
+		e.mustRun("v1.0.0", "build,archive,checksum")
+		e.gh.seedRelease("v1.0.0", e.assets())
+		e.gh.resetLog()
+		log := e.mustRun("v1.0.0", "")
+		if w := e.gh.requests(e2eReleaseRepo, true); len(w) != 0 {
+			t.Errorf("writes to an immutable release:\n%s", strings.Join(w, "\n"))
+		}
+		if rel := e.only(); rel.Body != "" || !rel.Immutable {
+			t.Errorf("immutable release changed: %+v", rel)
+		}
+		if !strings.Contains(log, "never edited") {
+			t.Errorf("notes difference not reported:\n%s", log)
+		}
+		if pulls := e.gh.pullList(); len(pulls) != 1 {
+			t.Errorf("pulls: %+v", pulls)
+		}
 	})
 }

@@ -273,8 +273,10 @@ when the section is present and not disabled.
 Notes: the release body is at most 125,000 characters. With `include:
 [binary]`, binary file names become asset names, so binaries with the same
 name for several targets collide and fail the stage. `notes` and
-`notes_file` are applied on every run (the body is updated when it differs);
-without either, an existing body is left as it is. Publication behavior is
+`notes_file` are applied while the release is a draft (the body is updated
+when it differs) and published with it; without either, an existing body is
+left as it is. A published release's title, notes and prerelease flag are
+never edited: a re-run that would change them logs a warning instead. Publication behavior is
 described in the [README](../README.md#github-releases).
 
 ## brews

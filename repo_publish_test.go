@@ -36,6 +36,9 @@ func TestReleaseWorkflow_TapTokenOnlyWhenTapPublished(t *testing.T) {
 				!strings.Contains(s.Run, "pipefail") || !strings.Contains(s.Run, "tap=(publish|skip)") {
 				t.Errorf("plan step must write a checked internal/cmd/publish plan to $GITHUB_OUTPUT with pipefail: %q", s.Run)
 			}
+			if !strings.Contains(s.Run, "prerelease=true") || !strings.Contains(s.Run, "tap=skip") {
+				t.Errorf("plan step must stop a prerelease whose plan publishes the tap: %q", s.Run)
+			}
 		}
 		token := false
 		for _, v := range s.Env {
@@ -68,6 +71,29 @@ func TestReleaseWorkflow_TapTokenOnlyWhenTapPublished(t *testing.T) {
 	}
 	if !strings.Contains(readFile(t, ".github/workflows/ci.yml"), "  "+publish.RequiredCheck+":") {
 		t.Errorf("ci.yml has no %s job", publish.RequiredCheck)
+	}
+}
+
+// TestOwnConfig_PrereleaseNeverPublishesTap pins this repository's own
+// configuration: a release candidate skips the tap, a stable release
+// publishes it.
+func TestOwnConfig_PrereleaseNeverPublishesTap(t *testing.T) {
+	p, err := publish.LoadProject("hephaestus.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for tag, skip := range map[string]bool{"v1.0.0-rc.1": true, "v1.0.0-beta.2": true, "v1.0.0": false} {
+		v, err := publish.ParseVersion(tag)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pl, err := p.Plan(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pl.Prerelease != skip || pl.TapSkipped() != skip || len(pl.Taps) != 1 {
+			t.Errorf("%s: prerelease %t, tap skipped %t, %d taps; want both %t", tag, pl.Prerelease, pl.TapSkipped(), len(pl.Taps), skip)
+		}
 	}
 }
 

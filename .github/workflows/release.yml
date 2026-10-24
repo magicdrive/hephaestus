@@ -95,6 +95,11 @@ jobs:
           echo "$plan"
           # An unexpected plan would skip both tap steps without failing.
           grep -qxE 'tap=(publish|skip)' <<<"$plan" || { echo "::error::unexpected release plan"; exit 1; }
+          # This repository never publishes a prerelease to the tap; a
+          # configuration change that would do so stops before any write.
+          if grep -qx 'prerelease=true' <<<"$plan" && ! grep -qx 'tap=skip' <<<"$plan"; then
+            echo "::error::a prerelease must not update the tap (brews.skip_upload: auto)"; exit 1
+          fi
           echo "$plan" >> "$GITHUB_OUTPUT"
       - name: Rehearse the formula and tap pull request (read-only)
         # Checks the tap token, the tap's formula directory, a newer formula
