@@ -329,6 +329,12 @@ func generate(in Input, b *config.Brew) (Formula, error) {
 			g.line("    " + s)
 		}
 		switch {
+		case arm == nil && osb.goos == "darwin":
+			// As GoReleaser: Apple Silicon Macs install the Intel build,
+			// which runs under Rosetta 2. Homebrew does not allow url
+			// directly in on_macos, so both CPU blocks name it.
+			warn("no darwin/arm64 archive: Apple Silicon Macs install the darwin/amd64 build, which needs Rosetta 2")
+			arm = intel
 		case arm == nil:
 			g.line("    depends_on arch: :x86_64")
 			warn("no %s/arm64 archive: the formula is installable only on Intel %s", osb.goos, osName(osb.goos))
@@ -344,7 +350,7 @@ func generate(in Input, b *config.Brew) (Formula, error) {
 				continue
 			}
 			g.line("    " + x.block + " do")
-			if err := g.urlStanza(b, vars, x.p); err != nil {
+			if err := g.urlStanza(b, vars, x.p, "      "); err != nil {
 				return f, err
 			}
 			g.line("    end")
@@ -520,7 +526,8 @@ func (g *gen) code(field, src string, vars tmpl.Vars, indent string) (string, er
 	return out, err
 }
 
-func (g *gen) urlStanza(b *config.Brew, vars tmpl.Vars, p *platform) error {
+// urlStanza writes the url and sha256 lines at indent.
+func (g *gen) urlStanza(b *config.Brew, vars tmpl.Vars, p *platform, indent string) error {
 	// Options go on continuation lines aligned under the URL, keys padded to
 	// a table, as in homebrew-core (Layout/HashAlignment).
 	type opt struct{ key, val string }
@@ -558,15 +565,15 @@ func (g *gen) urlStanza(b *config.Brew, vars tmpl.Vars, p *platform) error {
 	if err != nil {
 		return fmt.Errorf("download URL: %w", err)
 	}
-	s := "      url " + qurl
+	s := indent + "url " + qurl
 	for _, o := range opts {
-		s += ",\n          " + o.key + strings.Repeat(" ", width-len(o.key)+1) + o.val
+		s += ",\n" + indent + "    " + o.key + strings.Repeat(" ", width-len(o.key)+1) + o.val
 	}
 	g.line(s)
 	if !manifest.IsSHA256(p.archive.SHA256) {
 		return fmt.Errorf("archive %s has no valid sha256 in the manifest", p.archive.Name)
 	}
-	g.line("      sha256 " + mustQuote(p.archive.SHA256))
+	g.line(indent + "sha256 " + mustQuote(p.archive.SHA256))
 	return nil
 }
 
@@ -832,9 +839,11 @@ func outputPath(c *config.Config, b *config.Brew, vars tmpl.Vars) (string, error
 }
 
 // installCode returns brews[].install (rendered) or the default, followed by
-// extra_install. A single `def install` serves every platform, so a template
-// that renders differently per archive is rejected: use OS.mac? or
-// Hardware::CPU.arm? in Ruby instead.
+// extra_install, as the body of the single `def install`. Like GoReleaser,
+// which writes one install method per archive, every archive gets the code
+// rendered for it: code that renders the same everywhere is written once,
+// and code that differs is wrapped in `if OS.mac? && Hardware::CPU.arm?`
+// style conditions that select the archives it was rendered for.
 func installCode(b *config.Brew, vars tmpl.Vars, archives []manifest.Artifact) (string, error) {
 	var parts []string
 	if b.Install != "" {
@@ -857,67 +866,163 @@ func installCode(b *config.Brew, vars tmpl.Vars, archives []manifest.Artifact) (
 		}
 		parts = append(parts, s)
 	}
-	for i, p := range parts {
-		parts[i] = strings.Join(normalizeText(p), "\n")
-	}
 	return strings.Join(parts, "\n"), nil
 }
 
+// renderPerArchive renders src for every archive. When the results differ,
+// each distinct result is wrapped in a condition selecting the archives it
+// belongs to, in archive order.
 func renderPerArchive(field, src string, vars tmpl.Vars, archives []manifest.Artifact) (string, error) {
-	var out string
-	for i, a := range archives {
+	var order []string
+	groups := map[string][]manifest.Artifact{}
+	for _, a := range archives {
 		av := vars.WithTarget(a.OS, a.Arch, a.Arm)
 		av.ArtifactName, av.ArtifactPath, av.ArtifactExt = a.Name, a.Path, artifactExt(a)
 		s, err := renderCode(field, src, av)
 		if err != nil {
 			return "", err
 		}
-		if i > 0 && s != out {
-			return "", fmt.Errorf("%s renders differently for %s and %s; Hephaestus writes a single def install, so branch in Ruby (OS.mac?, Hardware::CPU.arm?) instead of using per-target template variables", field, archives[0].Name, a.Name)
+		s = strings.Join(normalizeText(s), "\n")
+		if _, ok := groups[s]; !ok {
+			order = append(order, s)
 		}
-		out = s
+		groups[s] = append(groups[s], a)
 	}
-	return out, nil
+	if len(order) == 1 {
+		return order[0], nil
+	}
+	var out []string
+	for _, code := range order {
+		if strings.TrimSpace(code) == "" {
+			continue
+		}
+		for _, cond := range platformConds(groups[code], archives) {
+			out = append(out, "if "+cond)
+			for _, l := range strings.Split(code, "\n") {
+				if l != "" {
+					l = "  " + l
+				}
+				out = append(out, l)
+			}
+			out = append(out, "end")
+		}
+	}
+	return strings.Join(out, "\n"), nil
 }
 
-// defaultInstall installs the executables common to every archive, with
-// paths relative to the directory Homebrew runs install in.
+// defaultInstall installs every executable of every archive, as GoReleaser
+// does, with paths relative to the directory Homebrew runs install in. An
+// executable missing from some archives is installed under a condition
+// selecting the archives that have it.
 func defaultInstall(archives []manifest.Artifact) (string, error) {
-	var common []string
-	for i, a := range archives {
+	in := map[string][]manifest.Artifact{}
+	var names []string
+	for _, a := range archives {
 		if len(a.Executables) == 0 {
 			return "", fmt.Errorf("archive %s lists no executables in the manifest; set brews[].install", a.Name)
 		}
 		t := newArchiveTree(a)
-		set := map[string]bool{}
+		seen := map[string]bool{}
 		for _, e := range a.Executables {
-			if v := t.visible(e); v != "" {
-				set[v] = true
+			v := t.visible(e)
+			if v == "" || seen[v] {
+				continue
 			}
-		}
-		if i == 0 {
-			for e := range set {
-				common = append(common, e)
+			seen[v] = true
+			if _, ok := in[v]; !ok {
+				names = append(names, v)
 			}
-			continue
+			in[v] = append(in[v], a)
 		}
-		keep := common[:0]
-		for _, e := range common {
-			if set[e] {
-				keep = append(keep, e)
-			}
-		}
-		common = keep
 	}
-	if len(common) == 0 {
-		return "", errors.New("no executable is present at the same path in every archive; set brews[].install")
+	if len(names) == 0 {
+		return "", errors.New("no executable is visible in the archives; set brews[].install")
 	}
-	sort.Strings(common)
-	lines := make([]string, len(common))
-	for i, e := range common {
-		lines[i] = "bin.install " + mustQuote(e)
+	sort.Slice(names, func(i, j int) bool {
+		ci, cj := len(in[names[i]]) == len(archives), len(in[names[j]]) == len(archives)
+		if ci != cj {
+			return ci // unconditional lines first
+		}
+		return names[i] < names[j]
+	})
+	var lines []string
+	for _, e := range names {
+		for _, cond := range platformConds(in[e], archives) {
+			l := "bin.install " + mustQuote(e)
+			if cond != "" {
+				l += " if " + cond
+			}
+			lines = append(lines, l)
+		}
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+// platformConds returns Ruby conditions that together select exactly the
+// archives in sel among all: [""] when sel is all of them, one CPU or OS
+// predicate when that suffices, else one OS && CPU conjunction per archive.
+// An OS with a single archive is selected by OS alone, since that archive
+// may also serve the other CPU (Rosetta 2).
+func platformConds(sel, all []manifest.Artifact) []string {
+	if len(sel) == len(all) {
+		return []string{""}
+	}
+	has := map[string]bool{}
+	for _, a := range sel {
+		has[a.Name] = true
+	}
+	exactly := func(pred func(manifest.Artifact) bool) bool {
+		for _, a := range all {
+			if pred(a) != has[a.Name] {
+				return false
+			}
+		}
+		return true
+	}
+	osCount := map[string]int{}
+	for _, a := range all {
+		osCount[a.OS]++
+	}
+	for _, arch := range []string{"arm64", "amd64"} {
+		if exactly(func(a manifest.Artifact) bool { return a.Arch == arch && osCount[a.OS] > 1 }) {
+			return []string{cpuPred(arch)}
+		}
+	}
+	var out []string
+	for _, goos := range []string{"darwin", "linux"} {
+		var n int
+		for _, a := range sel {
+			if a.OS == goos {
+				n++
+			}
+		}
+		switch {
+		case n == 0:
+		case n == osCount[goos]:
+			out = append(out, osPred(goos))
+		default:
+			for _, a := range sel {
+				if a.OS == goos {
+					out = append(out, osPred(goos)+" && "+cpuPred(a.Arch))
+				}
+			}
+		}
+	}
+	return out
+}
+
+func osPred(goos string) string {
+	if goos == "darwin" {
+		return "OS.mac?"
+	}
+	return "OS.linux?"
+}
+
+func cpuPred(arch string) string {
+	if arch == "arm64" {
+		return "Hardware::CPU.arm?"
+	}
+	return "Hardware::CPU.intel?"
 }
 
 // defaultTest asserts that every installed bin entry is executable. It does

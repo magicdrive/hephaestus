@@ -630,6 +630,18 @@ func (c *Config) validateBrew(i int, archiveIDs, names map[string]bool, add func
 			add(fmt.Sprintf("%s.conflicts[%d]", p, j), "%q is not a valid formula name", x)
 		}
 	}
+	if pr := b.Repository.PullRequest; b.PullRequestMode() && b.Repository.Branch != "" {
+		base := ""
+		if pr != nil && pr.Base != nil {
+			base = pr.Base.Branch
+		}
+		switch {
+		case base != "" && base == b.Repository.Branch && (pr.Base.Owner == "" || pr.Base.Owner == b.Repository.Owner && pr.Base.Name == b.Repository.Name):
+			add(p+".repository.branch", "%q is also the pull request base: in pull request mode repository.branch is the head branch; set repository.pull_request.enabled: false to commit to %q directly", b.Repository.Branch, base)
+		case base == "" && commonDefaultBranches[b.Repository.Branch]:
+			c.warnings = append(c.warnings, fmt.Sprintf("%s.repository.branch %q is the pull request head branch (pull request mode is on): if it is the tap's default branch the tap stage fails, before writing; set repository.pull_request.enabled: false to commit to it directly", p, b.Repository.Branch))
+		}
+	}
 	if pr := b.Repository.PullRequest; pr != nil && pr.CheckBoxes {
 		c.warnings = append(c.warnings, p+".repository.pull_request.check_boxes is accepted but has no effect")
 	}
@@ -642,6 +654,10 @@ func (c *Config) validateBrew(i int, archiveIDs, names map[string]bool, add func
 		}
 	}
 }
+
+// commonDefaultBranches are branch names that are usually a repository's
+// default branch.
+var commonDefaultBranches = map[string]bool{"main": true, "master": true, "trunk": true, "develop": true}
 
 // formulaDepRe allows tap-qualified names such as "owner/tap/formula".
 var formulaDepRe = regexp.MustCompile(`^([a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_-]*/)?[a-z0-9][a-z0-9+_.-]*(@[0-9][0-9.]*)?$`)

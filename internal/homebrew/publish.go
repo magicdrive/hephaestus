@@ -75,6 +75,43 @@ var (
 	emailRe      = regexp.MustCompile(`^[^\s@<>]+@[^\s@<>]+$`)
 )
 
+// DescribePublish says, from the configuration alone, how the formula will
+// be published: a direct commit or a pull request, and to which branches.
+// Templates are shown unrendered.
+func DescribePublish(b *config.Brew) string {
+	if b.SkipUpload == "true" {
+		return "not published (skip_upload: true)"
+	}
+	repo := b.Repository.Owner + "/" + b.Repository.Name
+	var s string
+	if !b.PullRequestMode() {
+		branch := b.Repository.Branch
+		if branch == "" {
+			branch = "the default branch"
+		}
+		s = "direct commit to " + branch + " of " + repo
+	} else {
+		head := b.Repository.Branch
+		if head == "" {
+			head = DefaultPRBranch
+		}
+		base, target := "the default branch", repo
+		if pr := b.Repository.PullRequest; pr != nil && pr.Base != nil {
+			if pr.Base.Branch != "" {
+				base = pr.Base.Branch
+			}
+			if pr.Base.Owner != "" {
+				target = pr.Base.Owner + "/" + pr.Base.Name
+			}
+		}
+		s = "pull request from " + repo + "@" + head + " into " + base + " of " + target
+	}
+	if b.SkipUpload == "auto" {
+		s += "; skipped for prereleases"
+	}
+	return s
+}
+
 // ResolvePublish resolves the publication settings of one brews entry.
 //
 // Differences from GoReleaser, by design:
@@ -140,7 +177,7 @@ func ResolvePublish(b *config.Brew, vars tmpl.Vars) (Publish, error) {
 	}
 
 	pr := b.Repository.PullRequest
-	p.PullRequest = pr == nil || pr.Enabled == nil || *pr.Enabled
+	p.PullRequest = b.PullRequestMode()
 	if pr != nil {
 		p.Draft = pr.Draft
 		if pr.Base != nil {

@@ -118,16 +118,13 @@ var (
 	}
 )
 
-// perArtifactVars are template fields GoReleaser sets per artifact. In
-// install/extra_install they would select per-platform code; Hephaestus
-// writes one `def install`, so such templates must render identically for
-// every archive.
-var perArtifactVars = []string{".Os", ".OS", ".Arch", ".Arm", ".Amd64", ".ArtifactName", ".ArtifactPath", ".ArtifactExt", ".Target"}
-
 // LoadBrews reads project_name and brews from a GoReleaser configuration
-// file. Other top-level keys are ignored. The returned entries are not
-// defaulted or validated as Hephaestus configuration; callers merge them into
-// a config.Config and run its ApplyDefaults and Validate.
+// file, reading release.github and github_urls.download for the download
+// URL. Other top-level keys are ignored. The returned entries carry
+// GoReleaser's defaults where they differ from Hephaestus's (see
+// applyGoReleaserDefaults) but are otherwise not defaulted or validated as
+// Hephaestus configuration; callers merge them into a config.Config and run
+// its ApplyDefaults and Validate.
 //
 // Errors cover YAML problems, unknown fields (with a suggestion), GoReleaser
 // Pro fields, fields removed in GoReleaser v2 that cannot be converted, and
@@ -201,6 +198,7 @@ func parse(data []byte) (string, []config.Brew, []string, error) {
 			}
 		}
 	}
+	dl := releaseDownload(l, root)
 	if v := mapValue(root, "homebrew_casks"); v != nil {
 		l.warn("homebrew_casks", v.Line, "is ignored: Hephaestus generates formulae from brews, not casks")
 	}
@@ -227,7 +225,6 @@ func parse(data []byte) (string, []config.Brew, []string, error) {
 			continue
 		}
 		l.check(n, brewFields, p)
-		l.checkPerArtifact(n, p)
 		if len(l.errs) > 0 {
 			continue
 		}
@@ -251,12 +248,96 @@ func parse(data []byte) (string, []config.Brew, []string, error) {
 			}
 			b.Directory, b.Folder = b.Folder, ""
 		}
+		applyGoReleaserDefaults(l, &b, n, p, project, dl)
 		brews = append(brews, b)
 	}
 	if err := l.err(); err != nil {
 		return "", nil, l.warnings, err
 	}
 	return project, brews, l.warnings, nil
+}
+
+// download is where GoReleaser's default url_template points:
+// <github_urls.download>/<release.github.owner>/<release.github.name>.
+type download struct {
+	base, owner, name string
+}
+
+// releaseDownload reads release.github and github_urls.download. GoReleaser
+// fills release.github from the git remote when it is unset; that is the
+// repository Hephaestus releases to by default, so only explicit values
+// matter.
+func releaseDownload(l *loader, root *yaml.Node) download {
+	d := download{base: "https://github.com"}
+	scalar := func(n *yaml.Node, path string) string {
+		if n == nil {
+			return ""
+		}
+		if n.Kind != yaml.ScalarNode {
+			l.fail(path, n.Line, "must be a string")
+			return ""
+		}
+		if err := tmpl.Check(n.Value); err != nil {
+			l.fail(path, n.Line, "template is not supported by Hephaestus: %v", err)
+			return ""
+		}
+		return strings.TrimSpace(n.Value)
+	}
+	if v := scalar(mapValue(mapValue(root, "github_urls"), "download"), "github_urls.download"); v != "" {
+		d.base = strings.TrimRight(v, "/")
+	}
+	gh := mapValue(mapValue(root, "release"), "github")
+	d.owner = scalar(mapValue(gh, "owner"), "release.github.owner")
+	d.name = scalar(mapValue(gh, "name"), "release.github.name")
+	if (d.owner == "") != (d.name == "") {
+		l.fail("release.github", gh.Line, "owner and name must be set together")
+	}
+	return d
+}
+
+// applyGoReleaserDefaults gives a brews entry read from GoReleaser the
+// defaults GoReleaser would apply where Hephaestus's own differ, so that
+// adopting brews_from does not change where or how a formula is published:
+//
+//   - name: GoReleaser's project_name, not Hephaestus's project.name;
+//   - repository.pull_request.enabled: false, so the formula is committed
+//     directly (Hephaestus's own default is a pull request);
+//   - url_template: the release.github repository on github_urls.download,
+//     when either is set.
+//
+// It also warns about caveats that rely on Ruby interpolation, which
+// Hephaestus escapes.
+func applyGoReleaserDefaults(l *loader, b *config.Brew, n *yaml.Node, path, project string, dl download) {
+	if b.Name == "" && project != "" {
+		b.Name = project
+		b.GoReleaserDefaults = append(b.GoReleaserDefaults, "name "+project+" (project_name)")
+	}
+	if b.Repository.PullRequest == nil {
+		b.Repository.PullRequest = &config.BrewPullRequest{}
+	}
+	if b.Repository.PullRequest.Enabled == nil {
+		f := false
+		b.Repository.PullRequest.Enabled = &f
+		b.GoReleaserDefaults = append(b.GoReleaserDefaults, "direct commit (repository.pull_request.enabled is unset)")
+	}
+	if b.URLTemplate == "" {
+		switch {
+		case dl.owner != "":
+			b.URLTemplate = dl.base + "/" + dl.owner + "/" + dl.name + "/releases/download/{{ urlPathEscape .Tag }}/{{ .ArtifactName }}"
+			b.GoReleaserDefaults = append(b.GoReleaserDefaults, "downloads from "+dl.base+"/"+dl.owner+"/"+dl.name+" (release.github)")
+		case dl.base != "https://github.com":
+			// GoReleaser takes the repository from the git remote, which
+			// Hephaestus cannot see.
+			l.fail(path+".url_template", n.Line, "is required: github_urls.download is %s but release.github is not set, so the download repository is not known (GoReleaser takes it from the git remote)", dl.base)
+		}
+	}
+	if strings.Contains(b.Caveats, "#{") {
+		line := n.Line
+		if v := mapValue(n, "caveats"); v != nil {
+			line = v.Line
+		}
+		l.warn(path+".caveats", line, "contains #{...}: GoReleaser writes caveats into an interpolating heredoc, so Ruby evaluates it; Hephaestus escapes it and Homebrew shows the text literally (compute dynamic text in custom_block instead)")
+	}
 }
 
 type loader struct {
@@ -349,23 +430,6 @@ func (l *loader) checkScalar(v *yaml.Node, f field, path string) {
 	case f.tmpl:
 		if err := tmpl.Check(v.Value); err != nil {
 			l.fail(path, v.Line, "template is not supported by Hephaestus: %v (available functions: %s)", err, strings.Join(tmpl.FuncNames(), ", "))
-		}
-	}
-}
-
-// checkPerArtifact warns when install code uses per-artifact template
-// variables, which GoReleaser evaluates per platform.
-func (l *loader) checkPerArtifact(n *yaml.Node, path string) {
-	for _, key := range []string{"install", "extra_install"} {
-		v := mapValue(n, key)
-		if v == nil || v.Kind != yaml.ScalarNode {
-			continue
-		}
-		for _, name := range perArtifactVars {
-			if strings.Contains(v.Value, name) {
-				l.warn(path+"."+key, v.Line, "uses the per-artifact variable %s: Hephaestus writes a single def install, so the template must render identically for every archive (branch in Ruby with OS.mac? / Hardware::CPU.arm? instead)", name)
-				break
-			}
 		}
 	}
 }

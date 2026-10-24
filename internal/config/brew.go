@@ -59,6 +59,19 @@ type Brew struct {
 	// newer than the one being published (e.g. when re-running an older
 	// tag). By default such a formula is left alone. Default false.
 	AllowDowngrade bool `yaml:"allow_downgrade"`
+
+	// GoReleaserDefaults lists the GoReleaser defaults applied to an entry
+	// read through brews_from where Hephaestus's own differ (for check and
+	// dry-run output). Not configurable.
+	GoReleaserDefaults []string `yaml:"-"`
+}
+
+// PullRequestMode reports whether the formula is published through a pull
+// request: Hephaestus's default unless repository.pull_request.enabled is
+// false.
+func (b *Brew) PullRequestMode() bool {
+	pr := b.Repository.PullRequest
+	return pr == nil || pr.Enabled == nil || *pr.Enabled
 }
 
 // VerifyEnabled applies the default.

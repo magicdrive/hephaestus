@@ -205,6 +205,21 @@ brews:
 	if !strings.Contains(errs, "brews_from .goreleaser.yaml:") {
 		t.Errorf("GoReleaser deprecation warning not surfaced:\n%s", errs)
 	}
+	// GoReleaser commits directly unless pull_request.enabled is set, and
+	// check says so.
+	if !strings.Contains(out, "formula tool → o/homebrew-tap: direct commit to the default branch of o/homebrew-tap") ||
+		!strings.Contains(out, "GoReleaser defaults (brews_from): direct commit (repository.pull_request.enabled is unset)") {
+		t.Errorf("publishing mode not shown:\n%s", out)
+	}
+
+	// An unnamed brew is named after project_name, not project.name.
+	unnamed := strings.Replace(strings.Replace(gr, "project_name: tool", "project_name: tool-cli", 1), "  - name: tool\n", "  - description: x\n", 1)
+	unnamed = strings.Replace(unnamed, "    description: Example tool for tests\n", "", 1)
+	os.WriteFile(filepath.Join(root, ".goreleaser.yaml"), []byte(unnamed), 0o644)
+	code, out, errs = runCLI(t, "check", "--config", filepath.Join(root, "hephaestus.yaml"))
+	if code != 0 || !strings.Contains(out, "formula tool-cli → o/homebrew-tap") || !strings.Contains(errs, `project_name "tool-cli" differs from project.name "tool"`) {
+		t.Errorf("project_name: %d\n%s\n%s", code, out, errs)
+	}
 
 	os.WriteFile(filepath.Join(root, ".goreleaser.yaml"), []byte(gr+"    alternative_names: [x]\n"), 0o644)
 	if code, _, errs := runCLI(t, "check", "--config", filepath.Join(root, "hephaestus.yaml")); code != 1 || !strings.Contains(errs, "alternative_names") {

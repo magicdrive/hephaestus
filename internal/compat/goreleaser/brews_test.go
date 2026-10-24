@@ -217,7 +217,9 @@ func TestLoadBrewsInline(t *testing.T) {
 		{"version: 2\nbrews:\n  - name: a\n    name: b\n", "duplicate key", ""},
 		{"version: 2\nbrews:\n  - &x\n    name: a\n  - *x\n", "aliases", ""},
 		{"version: 2\nproject_name: \"{{ .Env.X }}\"\n", "templates are not supported in project_name", ""},
-		{"version: 2\nbrews:\n  - name: a\n    install: bin.install \"a_{{ .Os }}\"\n", "", "per-artifact variable .Os"},
+		{"version: 2\nbrews:\n  - name: a\n    caveats: \"Config: #{etc}/a\"\n", "", "caveats: contains #{...}"},
+		{"version: 2\ngithub_urls: {download: \"https://ghe.example.com\"}\nbrews:\n  - name: a\n", "url_template: is required: github_urls.download", ""},
+		{"version: 2\nrelease: {github: {owner: a}}\n", "owner and name must be set together", ""},
 		{"version: 2\nbrews:\n  - name: a\n    tap: {owner: a, name: b}\n    repository: {owner: a, name: b}\n", "cannot be combined", ""},
 		{"version: 2\nhomebrew_casks:\n  - name: a\n", "", "homebrew_casks: is ignored"},
 		{"", "empty", ""},
@@ -244,4 +246,62 @@ func TestLoadBrewsInline(t *testing.T) {
 	if _, _, _, err := LoadBrews(filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
 		t.Error("missing file accepted")
 	}
+}
+
+// TestGoReleaserDefaults checks that entries read from GoReleaser keep
+// GoReleaser's behavior where Hephaestus's own defaults differ.
+func TestGoReleaserDefaults(t *testing.T) {
+	parse := func(t *testing.T, y string) config.Brew {
+		t.Helper()
+		_, brews, _, err := Parse([]byte(y))
+		if err != nil || len(brews) != 1 {
+			t.Fatalf("Parse: %v, %d brews", err, len(brews))
+		}
+		return brews[0]
+	}
+	t.Run("name is project_name", func(t *testing.T) {
+		b := parse(t, "version: 2\nproject_name: foo-cli\nbrews:\n  - repository: {owner: acme, name: homebrew-tap}\n")
+		if b.Name != "foo-cli" {
+			t.Errorf("name = %q", b.Name)
+		}
+		b = parse(t, "version: 2\nproject_name: foo-cli\nbrews:\n  - name: foo\n")
+		if b.Name != "foo" {
+			t.Errorf("explicit name = %q", b.Name)
+		}
+	})
+	t.Run("direct commit unless pull_request.enabled", func(t *testing.T) {
+		for y, wantPR := range map[string]bool{
+			"version: 2\nbrews:\n  - name: a\n":                                                  false,
+			"version: 2\nbrews:\n  - name: a\n    repository: {pull_request: {draft: true}}\n":    false,
+			"version: 2\nbrews:\n  - name: a\n    repository: {pull_request: {enabled: true}}\n":  true,
+			"version: 2\nbrews:\n  - name: a\n    repository: {pull_request: {enabled: false}}\n": false,
+		} {
+			b := parse(t, y)
+			if b.PullRequestMode() != wantPR {
+				t.Errorf("%q: pull request mode = %v", y, b.PullRequestMode())
+			}
+			if got := homebrew.DescribePublish(&b); wantPR != strings.HasPrefix(got, "pull request") {
+				t.Errorf("%q: described as %q", y, got)
+			}
+		}
+	})
+	t.Run("url_template from release.github", func(t *testing.T) {
+		b := parse(t, "version: 2\nrelease: {github: {owner: acme-dist, name: cli-releases}}\nbrews:\n  - name: a\n")
+		if want := "https://github.com/acme-dist/cli-releases/releases/download/{{ urlPathEscape .Tag }}/{{ .ArtifactName }}"; b.URLTemplate != want {
+			t.Errorf("url_template = %q", b.URLTemplate)
+		}
+		b = parse(t, "version: 2\ngithub_urls: {download: \"https://ghe.example.com/\"}\nrelease: {github: {owner: o, name: r}}\nbrews:\n  - name: a\n")
+		if want := "https://ghe.example.com/o/r/releases/download/{{ urlPathEscape .Tag }}/{{ .ArtifactName }}"; b.URLTemplate != want {
+			t.Errorf("GHE url_template = %q", b.URLTemplate)
+		}
+		b = parse(t, "version: 2\nrelease: {github: {owner: o, name: r}}\nbrews:\n  - name: a\n    url_template: https://cdn.example.com/{{ .ArtifactName }}\n")
+		if b.URLTemplate != "https://cdn.example.com/{{ .ArtifactName }}" {
+			t.Errorf("explicit url_template replaced: %q", b.URLTemplate)
+		}
+		// Without release.github, GoReleaser's default is the repository
+		// Hephaestus releases to, so nothing is set.
+		if b = parse(t, "version: 2\nbrews:\n  - name: a\n"); b.URLTemplate != "" {
+			t.Errorf("url_template = %q", b.URLTemplate)
+		}
+	})
 }

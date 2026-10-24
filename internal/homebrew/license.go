@@ -23,18 +23,18 @@ var spdxIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*\+?$|^(DocumentRef-
 // accepted, so the result is always a safe Ruby expression. Homebrew rejects
 // an SPDX expression written as a plain string ("MIT OR Apache-2.0"), which is
 // why the expression is translated rather than quoted.
+//
+// Homebrew's :public_domain and :cannot_represent are accepted as written.
+// A free-text license is an error with a hint: GoReleaser writes the text
+// verbatim, but Homebrew expects SPDX.
 func licenseDSL(expr string) (string, error) {
-	toks, err := spdxTokens(expr)
-	if err != nil {
-		return "", err
+	switch strings.TrimSpace(expr) {
+	case ":public_domain", ":cannot_represent":
+		return strings.TrimSpace(expr), nil
 	}
-	p := &spdxParser{toks: toks}
-	n, err := p.or()
+	n, err := parseLicense(expr)
 	if err != nil {
-		return "", fmt.Errorf("license %q: %w", expr, err)
-	}
-	if p.pos != len(p.toks) {
-		return "", fmt.Errorf("license %q: unexpected %q", expr, p.toks[p.pos])
+		return "", fmt.Errorf("%w (Homebrew expects an SPDX expression such as \"Apache-2.0\" or \"MIT OR Apache-2.0\"; use LicenseRef-<name> for a custom license, or :cannot_represent; GoReleaser writes free text verbatim)", err)
 	}
 	switch n.op {
 	case "":
@@ -193,4 +193,21 @@ func isSPDXOperator(t string) bool {
 		return true
 	}
 	return false
+}
+
+// parseLicense parses an SPDX license expression.
+func parseLicense(expr string) (*spdxNode, error) {
+	toks, err := spdxTokens(expr)
+	if err != nil {
+		return nil, err
+	}
+	p := &spdxParser{toks: toks}
+	n, err := p.or()
+	if err != nil {
+		return nil, fmt.Errorf("license %q: %w", expr, err)
+	}
+	if p.pos != len(p.toks) {
+		return nil, fmt.Errorf("license %q: unexpected %q", expr, p.toks[p.pos])
+	}
+	return n, nil
 }

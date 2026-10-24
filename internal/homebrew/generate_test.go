@@ -219,6 +219,41 @@ func goldenCases() []goldenCase {
 			wantWarnings: []string{"post_install is deprecated"},
 		},
 		{
+			name: "partial_executables",
+			in: func(t *testing.T) Input {
+				arts := fourPlatforms(false)
+				for i := range arts {
+					if arts[i].OS == "darwin" {
+						arts[i].Files = append(arts[i].Files, file("helper", modeExec))
+						arts[i].Executables = append(arts[i].Executables, "helper")
+					}
+				}
+				return input(baseBrew(), arts...)
+			},
+		},
+		{
+			name: "per_target_install",
+			in: func(t *testing.T) Input {
+				var arts []manifest.Artifact
+				for _, a := range fourPlatforms(false) {
+					a.Files = append(a.Files, file("mycli_"+a.OS+"_"+a.Arch, modeExec))
+					arts = append(arts, a)
+				}
+				b := baseBrew()
+				b.Install = "bin.install \"mycli_{{ .Os }}_{{ .Arch }}\" => \"mycli\"\n"
+				b.ExtraInstall = "doc.install \"README.md\"\n"
+				return input(b, arts...)
+			},
+		},
+		{
+			name: "macos_intel_only",
+			in: func(t *testing.T) Input {
+				arts := fourPlatforms(false)
+				return input(baseBrew(), arts[0], arts[2], arts[3])
+			},
+			wantWarnings: []string{"Apple Silicon Macs install the darwin/amd64 build"},
+		},
+		{
 			name: "url_template",
 			in: func(t *testing.T) Input {
 				b := baseBrew()
@@ -466,22 +501,85 @@ func TestSelectArchives(t *testing.T) {
 	}
 }
 
-func TestInstallPerTargetTemplateRejected(t *testing.T) {
+// TestInstallPerTargetTemplate renders install for every archive, as
+// GoReleaser does, and selects each rendering with a platform condition.
+func TestInstallPerTargetTemplate(t *testing.T) {
+	var arts []manifest.Artifact
+	for _, a := range fourPlatforms(false) {
+		a.Files = append(a.Files, file("mycli_"+a.OS, modeExec))
+		arts = append(arts, a)
+	}
 	b := baseBrew()
 	b.Install = `bin.install "mycli_{{ .Os }}" => "mycli"`
-	_, err := Generate(input(b, fourPlatforms(false)...))
-	if err == nil || !strings.Contains(err.Error(), "renders differently") {
+	f := generateOne(t, input(b, arts...))
+	for _, want := range []string{
+		"    if OS.mac?\n      bin.install \"mycli_darwin\" => \"mycli\"\n    end\n",
+		"    if OS.linux?\n      bin.install \"mycli_linux\" => \"mycli\"\n    end\n",
+	} {
+		if !strings.Contains(string(f.Content), want) {
+			t.Errorf("formula lacks %q:\n%s", want, f.Content)
+		}
+	}
+	// The verifier checks each rendering against the archives it selects.
+	b.Install = `bin.install "mycli_{{ .Arch }}" => "mycli"`
+	if _, err := Generate(input(b, arts...)); err == nil || !strings.Contains(err.Error(), `"mycli_arm64"`) {
 		t.Errorf("err = %v", err)
 	}
 }
 
-func TestDefaultInstallCommonExecutables(t *testing.T) {
+// TestDefaultInstallEveryExecutable checks that, as in GoReleaser, every
+// archive's executables are installed, under a condition when only some
+// archives have them.
+func TestDefaultInstallEveryExecutable(t *testing.T) {
 	arts := fourPlatforms(false)
-	arts[0].Files = append(arts[0].Files, file("extra", modeExec))
-	arts[0].Executables = append(arts[0].Executables, "extra")
+	for i := range arts {
+		if arts[i].OS == "darwin" {
+			arts[i].Files = append(arts[i].Files, file("helper", modeExec))
+			arts[i].Executables = append(arts[i].Executables, "helper")
+		}
+	}
+	arts[3].Files = append(arts[3].Files, file("armtool", modeExec)) // linux/arm64
+	arts[3].Executables = append(arts[3].Executables, "armtool")
 	f := generateOne(t, input(baseBrew(), arts...))
-	if strings.Contains(string(f.Content), `"extra"`) {
-		t.Error("an executable missing from some archives must not be installed by default")
+	want := "  def install\n" +
+		"    bin.install \"mycli\"\n" +
+		"    bin.install \"armtool\" if OS.linux? && Hardware::CPU.arm?\n" +
+		"    bin.install \"helper\" if OS.mac?\n" +
+		"  end\n"
+	if !strings.Contains(string(f.Content), want) {
+		t.Errorf("install block:\n%s", f.Content)
+	}
+}
+
+func TestPlatformConds(t *testing.T) {
+	all := fourPlatforms(false) // darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+	pick := func(arts []manifest.Artifact, idx ...int) []manifest.Artifact {
+		var out []manifest.Artifact
+		for _, i := range idx {
+			out = append(out, arts[i])
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		all  []manifest.Artifact
+		sel  []int
+		want string
+	}{
+		{all, []int{0, 1, 2, 3}, ""},
+		{all, []int{0, 1}, "OS.mac?"},
+		{all, []int{1, 3}, "Hardware::CPU.arm?"},
+		{all, []int{0, 2}, "Hardware::CPU.intel?"},
+		{all, []int{1}, "OS.mac? && Hardware::CPU.arm?"},
+		{all, []int{0, 1, 3}, "OS.mac? | OS.linux? && Hardware::CPU.arm?"},
+		{all, []int{0, 3}, "OS.mac? && Hardware::CPU.intel? | OS.linux? && Hardware::CPU.arm?"},
+		// A single darwin archive also serves Apple Silicon: OS only.
+		{pick(all, 0, 2, 3), []int{0, 1}, "OS.mac? | OS.linux? && Hardware::CPU.intel?"},
+		{pick(all, 0, 2, 3), []int{0}, "OS.mac?"},
+	} {
+		got := strings.Join(platformConds(pick(tc.all, tc.sel...), tc.all), " | ")
+		if got != tc.want {
+			t.Errorf("sel %v: got %q, want %q", tc.sel, got, tc.want)
+		}
 	}
 }
 
@@ -564,5 +662,52 @@ func TestGenerateLicenseAndDescWarnings(t *testing.T) {
 	b.License = "MIT; rm -rf /"
 	if _, err := Generate(input(b, fourPlatforms(false)...)); err == nil {
 		t.Error("invalid license accepted")
+	}
+}
+
+// TestGenerateDirectoryTemplate renders directory as a template (GoReleaser
+// uses it verbatim).
+func TestGenerateDirectoryTemplate(t *testing.T) {
+	b := baseBrew()
+	b.Directory = "Formula/{{ .ProjectName }}"
+	f := generateOne(t, input(b, fourPlatforms(false)...))
+	if f.Path != "dist/homebrew/Formula/mycli/mycli.rb" {
+		t.Errorf("path = %q", f.Path)
+	}
+}
+
+// TestDependencyWarnings checks the documented dependency differences:
+// version is ignored with a warning, and an OS-specific dependency is
+// skipped with a warning when the formula has no archive for that OS.
+func TestDependencyWarnings(t *testing.T) {
+	b := baseBrew()
+	b.Dependencies = []config.BrewDependency{{Name: "git", Version: "2.40"}, {Name: "util-linux", OS: "linux"}, {Name: "pinentry-mac", OS: "mac"}}
+	f := generateOne(t, input(b, fourPlatforms(false)[:2]...)) // macOS only
+	w := strings.Join(f.Warnings, "\n")
+	for _, want := range []string{`dependency git: version "2.40" is ignored`, "dependency util-linux is for Linux but the formula has no Linux archives; skipped"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("missing warning %q in\n%s", want, w)
+		}
+	}
+	c := string(f.Content)
+	if !strings.Contains(c, `  depends_on "git"`+"\n") || strings.Contains(c, "util-linux") || !strings.Contains(c, `    depends_on "pinentry-mac"`) {
+		t.Errorf("dependencies:\n%s", c)
+	}
+}
+
+// TestExtraInstallPerTarget applies the per-archive install rule to
+// extra_install, and keeps it after install.
+func TestExtraInstallPerTarget(t *testing.T) {
+	var arts []manifest.Artifact
+	for _, a := range fourPlatforms(false) {
+		a.Files = append(a.Files, file("doc_"+a.OS+".md", modeRegular))
+		arts = append(arts, a)
+	}
+	b := baseBrew()
+	b.ExtraInstall = `doc.install "doc_{{ .Os }}.md"`
+	f := generateOne(t, input(b, arts...))
+	want := "    bin.install \"mycli\"\n    if OS.mac?\n      doc.install \"doc_darwin.md\"\n    end\n    if OS.linux?\n      doc.install \"doc_linux.md\"\n    end\n"
+	if !strings.Contains(string(f.Content), want) {
+		t.Errorf("install:\n%s", f.Content)
 	}
 }

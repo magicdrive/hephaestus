@@ -319,7 +319,7 @@ brews:
 | `version` | template | the release version | Formula version. Must not start with `v`; must not end in `_<number>`. Omitted from the formula when every URL is a github.com release download URL whose tag is the version. |
 | `dependencies` | list of names or `{name, type, os, version}` | none | `depends_on`. `type`: `build`, `test`, `optional`, `recommended`. `os`: `mac` or `linux` (placed inside `on_macos`/`on_linux`; skipped with a warning when the formula has no archive for that OS). `version` is accepted and ignored with a warning. Names may be tap-qualified (`owner/tap/name`). |
 | `conflicts` | list of formula names | none | `conflicts_with`. |
-| `install` | template (Ruby) | `bin.install` of every executable present at the same path in every archive | Body of the single `def install`. Must render identically for every archive. |
+| `install` | template (Ruby) | `bin.install` of every executable of every archive; one present in only some archives gets a condition (`if OS.mac?`) | Body of the single `def install`, rendered for every archive. Code that renders differently per archive is wrapped in `if OS.mac? && Hardware::CPU.arm?`-style conditions selecting the archives it belongs to. |
 | `extra_install` | template (Ruby) | none | Appended to `install`. Same rule. |
 | `post_install` | template (Ruby) | none | `def post_install` (a warning notes its deprecation in Homebrew). |
 | `caveats` | template | none | `def caveats` with a `<<~EOS` heredoc; the text is escaped. |
@@ -358,7 +358,7 @@ values substituted into them must consist of `A-Z a-z 0-9 . _ + - / @ : ~ = ,
 | `repository.token` | template | `$HOMEBREW_TAP_GITHUB_TOKEN` | Token for this tap only, e.g. `{{ .Env.ACME_TAP_TOKEN }}`. Rendered against the complete environment (credential variables included) and masked in the log. Never write a token literally. |
 | `repository.token_type` | `github` | `github` | Any other value is an error. |
 | `repository.git` | — | — | Rejected: publishing over plain git is not supported. |
-| `repository.pull_request.enabled` | bool | **`true`** | Pull request mode. `false` selects direct mode (commit to `repository.branch` or the default branch). |
+| `repository.pull_request.enabled` | bool | **`true`** (`false` for entries read through `brews_from`, as in GoReleaser) | Pull request mode. `false` selects direct mode (commit to `repository.branch` or the default branch). `hephaestus check` prints each formula's mode. |
 | `repository.pull_request.draft` | bool | `false` | Open the pull request as a draft. |
 | `repository.pull_request.base` | `{owner, name, branch}` or a branch string | the tap repository, its default branch | Pull request target; `owner` and `name` together (e.g. the upstream of a fork). |
 | `repository.pull_request.check_boxes` | bool | — | Accepted with a warning; no effect. |

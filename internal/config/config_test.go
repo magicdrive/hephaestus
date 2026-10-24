@@ -204,3 +204,22 @@ brews: [{ids: [gr]}]
 		t.Error("build that imports no archives accepted as a brew id")
 	}
 }
+
+// TestPullRequestBranchConflicts detects, before publishing, a pull request
+// whose head branch is its base, and warns when the head branch looks like a
+// default branch.
+func TestPullRequestBranchConflicts(t *testing.T) {
+	head := "project: {name: t}\narchives: [{id: default, targets: [{os: linux, arch: amd64}]}]\nbrews:\n  - repository:\n      owner: o\n      name: homebrew-tap\n"
+	_, err := load(head + "      branch: main\n      pull_request: {base: main}\n")
+	if err == nil || !strings.Contains(err.Error(), `"main" is also the pull request base`) {
+		t.Errorf("err = %v", err)
+	}
+	cfg, err := load(head + "      branch: main\n")
+	if err != nil || !strings.Contains(strings.Join(cfg.Warnings(), "\n"), `repository.branch "main" is the pull request head branch`) {
+		t.Errorf("warnings %v, err %v", cfg.Warnings(), err)
+	}
+	cfg, err = load(head + "      branch: main\n      pull_request: {enabled: false}\n")
+	if err != nil || len(cfg.Warnings()) != 0 {
+		t.Errorf("direct commit to main: warnings %v, err %v", cfg.Warnings(), err)
+	}
+}

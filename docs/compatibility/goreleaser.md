@@ -34,7 +34,13 @@ Status values:
    templates are checked against what Hephaestus can render; the resulting
    formulas are appended to `brews` and validated with the rest of the
    configuration. GoReleaser's own deprecation of `brews` is reported as a
-   warning. Tested by `TestBrewsFromGoReleaser` and `TestLoadBrews*`.
+   warning. Where Hephaestus's own defaults differ, entries read this way
+   get **GoReleaser's** defaults, so adopting `brews_from` does not change
+   the formula's name, download URL or publishing mode: `name` defaults to
+   `project_name`, `repository.pull_request.enabled` to `false`, and
+   `url_template` to the `release.github` repository on
+   `github_urls.download`. Tested by `TestBrewsFromGoReleaser`,
+   `TestGoReleaserDefaults` and `TestLoadBrewsValid`.
 
 The two agree except where the table says "adapter:".
 
@@ -42,14 +48,14 @@ The two agree except where the table says "adapter:".
 
 | GoReleaser field | Type | GoReleaser meaning | Hephaestus | Behavior difference | Tests |
 | --- | --- | --- | --- | --- | --- |
-| `name` | string | Formula name; file `<name>.rb`; class name | Supported, differs | Not a template. Must match `^[a-z0-9][a-z0-9+_.-]*(@[0-9][0-9.]*)?$` and start with a letter (Homebrew cannot load a class name starting with a digit). Default `project.name`. | `TestClassName`, `FuzzClassName`, `TestValidateBrewNameStartsWithLetter`, `TestGenerateDefaults` |
+| `name` | string | Formula name; file `<name>.rb`; class name | Supported, differs | Not a template. Must match `^[a-z0-9][a-z0-9+_.-]*(@[0-9][0-9.]*)?$` and start with a letter (Homebrew cannot load a class name starting with a digit). Default in `hephaestus.yaml`: `project.name`. adapter: GoReleaser's `project_name`, as GoReleaser does, so `brews_from` never renames a formula; when `project_name` and `project.name` differ, a warning says that `{{ .ProjectName }}` in templates (commit message, pull request branch) is still `project.name`. | `TestClassName`, `FuzzClassName`, `TestValidateBrewNameStartsWithLetter`, `TestGoReleaserDefaults`, `TestBrewsFromGoReleaser` |
 | `alternative_names` | []string | Extra versioned formulae (Pro) | Not supported | adapter: rejected as Pro-only. | `TestLoadBrewsPro` |
 | `app` | string | DMG app (Pro) | Not supported | adapter: rejected as Pro-only. | `TestLoadBrewsPro` |
 | `templated_files` | — | Pro | Not supported | adapter: rejected as Pro-only. | `TestLoadBrewsPro` |
 | `ids` | []string | Archive or binary ids to include | Supported, differs | Ids of Hephaestus `archives[]` entries, or ids of builds that import archives (`goreleaser` with `archives: true`, `existing` with `kind: archive`) — imported archives carry the build id. Uploadable binaries (`format: binary`) are never used. | `TestSelectArchives`, `TestBrewIDsMayNameImportingBuilds` |
 | `goarm` | string | GOARM to use for 32-bit ARM | Accepted, no effect | 32-bit ARM archives are always skipped (Homebrew does not support them); a warning is printed. | — |
 | `goamd64` | string | GOAMD64 level to use | Accepted, no effect | The manifest has no amd64 level; a value other than `v1` produces a warning. Select the level when importing (`builds[].goreleaser.goamd64`). | — |
-| `url_template` | template | Download URL | Supported, differs | Default: the `download_url` the release stage recorded, else `https://github.com/<owner>/<repo>/releases/download/<tag>/<name>`. GoReleaser's default follows `github_urls.download` (GitHub Enterprise); Hephaestus's constructed default is always github.com, so set `url_template` for GitHub Enterprise Server unless the release stage runs first. Must be `https` without credentials. | `TestGenerateURLs`, `TestGolden` (`url_template`, `non_github_url`) |
+| `url_template` | template | Download URL | Supported, differs | Default in `hephaestus.yaml`: the `download_url` the release stage recorded, else `https://github.com/<owner>/<repo>/releases/download/<tag>/<name>` for the release repository. adapter: GoReleaser's default, `<github_urls.download>/<release.github.owner>/<release.github.name>/releases/download/{{ urlPathEscape .Tag }}/{{ .ArtifactName }}`, whenever `.goreleaser.yaml` sets `release.github` (a distribution repository other than the source) or `github_urls.download` (GitHub Enterprise); `github_urls.download` without `release.github` is an error asking for `url_template`, because GoReleaser takes that repository from the git remote. Must be `https` without credentials. | `TestGenerateURLs`, `TestGolden` (`url_template`, `non_github_url`), `TestGoReleaserDefaults`, `TestGoReleaserCompatibility` |
 | `url_headers` | []string | `headers:` of `url` | Supported | Rendered per archive; each header must be one line; values are escaped Ruby strings. | `TestGolden` (`custom`) |
 | `download_strategy` | string | `using:` of `url` | Supported, differs | Not a template; must be a Ruby class name (`A::B`) or a `:symbol`. | `TestGolden` (`custom`) |
 | `custom_require` | string | `require_relative` | Supported, differs | Not a template; characters `A-Z a-z 0-9 _ . / -` only. | `TestGolden` (`custom`) |
@@ -57,28 +63,28 @@ The two agree except where the table says "adapter:".
 | `commit_author.signing.*` | mapping | GPG/SSH signing (git repositories) | Rejected | Commits go through the GitHub API; GitHub signs API commits made with a GitHub App token. | `TestLoadBrewsUnsupported` |
 | `commit_author.use_github_app_token` | bool | Committer omitted for App-signed commits | Not supported | `hephaestus.yaml`: unknown field. adapter: accepted with a no-op warning. | `TestLoadBrewsUnsupported` |
 | `commit_msg_template` | template | Commit message | Supported | Same default (`Brew formula update for {{ .ProjectName }} version {{ .Tag }}`). Also used as the pull request title. | `TestResolvePublishDirect`, `TestResolvePublishErrors` |
-| `directory` | string | Directory in the tap | Supported, differs | Hephaestus also renders it as a template. The local copy is written to `<dist>/homebrew/<directory>/<name>.rb`. Hephaestus refuses to publish where Homebrew would not find the formula, or where a new `Formula/` would hide formulae at the tap root (GoReleaser writes it anyway). | `TestGenerateDirectoryAndOutput`, `TestResolvePublishDirect`, `TestFormulaDirectory`, `TestFormulaDirectoryBlocksPublishing` |
+| `directory` | string | Directory in the tap | Supported, differs | Hephaestus also renders it as a template (GoReleaser uses it verbatim). The local copy is written to `<dist>/homebrew/<directory>/<name>.rb`. Hephaestus refuses to publish where Homebrew would not find the formula, or where a new `Formula/` would hide formulae at the tap root (GoReleaser writes it anyway). | `TestGenerateDirectoryAndOutput`, `TestGenerateDirectoryTemplate`, `TestResolvePublishDirect`, `TestFormulaDirectory`, `TestFormulaDirectoryBlocksPublishing` |
 | `folder` | string | Removed in GoReleaser v2 (old `directory`) | Supported, differs | Converted to `directory` with a deprecation warning. | `TestDeprecatedGoReleaserNames`, `TestLoadBrewsRemoved` |
-| `caveats` | string | `def caveats` | Supported, differs | Rendered as a template, then written as an escaped `<<~EOS` heredoc (`#{` cannot interpolate). ANSI escapes produce a warning. | `TestGolden` (`custom`), `TestRubyInjection` |
+| `caveats` | string | `def caveats` | Supported, differs | Rendered as a template, then written as an escaped `<<~EOS` heredoc: `#{...}` is shown literally (GoReleaser's heredoc interpolates it, so Ruby evaluates it at install time). adapter: `#{` in caveats is reported with a warning. ANSI escapes produce a warning. | `TestGolden` (`custom`), `TestRubyInjection`, `TestLoadBrewsInline`, `TestGoReleaserCompatibility` |
 | `homepage` | string | `homepage` | Supported, differs | Default `project.homepage` (GoReleaser OSS: empty). Must be an http(s) URL. | `TestGenerateDefaults`, `TestRubyInjection` |
 | `description` | string | `desc` | Supported, differs | Default `project.description`. Homebrew `desc` style rules produce warnings. | `TestLintDesc`, `TestGenerateLicenseAndDescWarnings` |
-| `license` | string | `license` | Supported, differs | Default `project.license`. Not a template. Parsed as an SPDX expression and written in Homebrew's `any_of:`/`all_of:` form. | `TestLicenseDSL`, `TestLicenseRubySyntax`, `TestGenerateLicenseAndDescWarnings` |
+| `license` | string | `license` | Supported, differs | Default `project.license`. Not a template. Parsed as an SPDX expression and written in Homebrew's `any_of:`/`all_of:` form; a single unknown identifier (`Proprietary`) is written as is, like GoReleaser. `:public_domain` and `:cannot_represent` are written as Homebrew symbols. Free text (`Apache License 2.0`) is an error with a hint (GoReleaser writes it verbatim; Homebrew's audit rejects it). | `TestLicenseDSL`, `TestLicenseRubySyntax`, `TestGenerateLicenseAndDescWarnings`, `TestLicenseSymbolsAndFreeText` |
 | `skip_upload` | string | `true` / `auto` | Supported, differs | Not a template: `true`, `false` or `auto` only. | `TestResolvePublishSkip`, `TestSkipUpload` |
 | `custom_block` | string | Inserted into the class | Supported | Rendered; checked as a Ruby code block (see [Templates in code](#templates-in-ruby-code)). | `TestGolden` (`custom`), `TestRubyInjectionInCodeFields` |
-| `dependencies[]` | string or `{name, type, version, os}` | `depends_on` | Supported, differs | Not templates. Sorted build, test, runtime, recommended, optional (GoReleaser: the same groups). `os` dependencies go inside `on_macos`/`on_linux` instead of `if OS.mac?`, and are skipped with a warning when the formula has no archive for that OS. `version` is **ignored with a warning** (GoReleaser writes `=> "version"`, which Homebrew does not treat as a constraint). | `TestGolden` (`custom`), `TestBrewStrictSubstructures` |
+| `dependencies[]` | string or `{name, type, version, os}` | `depends_on` | Supported, differs | Not templates. Sorted build, test, runtime, recommended, optional (GoReleaser: the same groups). `os` dependencies go inside `on_macos`/`on_linux` instead of `if OS.mac?`, and are skipped with a warning when the formula has no archive for that OS. `version` is **ignored with a warning** (GoReleaser writes `=> "version"`, which Homebrew does not treat as a constraint). | `TestGolden` (`custom`), `TestBrewStrictSubstructures`, `TestDependencyWarnings` |
 | `conflicts` | []string | `conflicts_with` | Supported, differs | Not templates; each must be a valid formula name. | `TestGolden` (`custom`) |
 | `service` | string | `service do` | Supported | Code block rules apply. | `TestGolden` (`custom`) |
 | `plist` | — | Removed in GoReleaser v2 | Rejected | Homebrew removed plist blocks; use `service`. | `TestRejects`, `TestLoadBrewsRemoved` |
 | `test` | string | `test do` | Supported, differs | When unset, Hephaestus generates `assert_predicate bin/"<exe>", :executable?` for each installed executable (GoReleaser writes no test). | `TestGolden`, `TestGenerateDefaults` |
-| `install` | string | Install code | Supported, differs | Hephaestus writes **one** `def install` for every platform (GoReleaser: `define_method(:install)` per platform). A template that renders differently per archive is an error; branch in Ruby (`OS.mac?`, `Hardware::CPU.arm?`). Default: `bin.install` of the executables present at the same path in every archive (GoReleaser: each archive's `Binaries`). | `TestInstallPerTargetTemplateRejected`, `TestDefaultInstallCommonExecutables` |
-| `extra_install` | string | Appended to install | Supported, differs | Same single-`install` rule. | `TestGolden` (`custom`) |
+| `install` | string | Install code | Supported, differs | Rendered for every archive, as GoReleaser does. Hephaestus writes **one** `def install` (GoReleaser: `define_method(:install)` per platform): code that renders the same everywhere is written once, and code that differs is wrapped in `if OS.mac? && Hardware::CPU.arm?`-style conditions selecting the archives it was rendered for. Default: `bin.install` of every executable in every archive, as GoReleaser; an executable present in only some archives is installed under a condition selecting them (`bin.install "helper" if OS.mac?`). Every path is checked against the archive it applies to. | `TestInstallPerTargetTemplate`, `TestDefaultInstallEveryExecutable`, `TestPlatformConds`, `TestGolden` (`partial_executables`, `per_target_install`), `TestGoReleaserCompatibility` |
+| `extra_install` | string | Appended to install | Supported, differs | Same per-archive rule, written after `install`. | `TestExtraInstallPerTarget`, `TestGolden` (`wrap_in_directory`, `per_target_install`) |
 | `post_install` | string | `def post_install` | Supported | A warning notes that Homebrew deprecated `def post_install`. | `TestGolden` (`custom`) |
 | `repository.owner` / `.name` | string | Tap repository | Supported | Required for the tap stage, not for the formula stage. | `TestResolvePublishDefaults`, `TestResolvePublishErrors` |
 | `repository.branch` | string | Branch to push to | Supported | Same default in pull request mode (`{{ .ProjectName }}-{{ .Version }}`, GoReleaser v2.17+); direct mode defaults to the tap's default branch. | `TestResolvePublishPullRequest`, `TestDirectCreatesNewFileOnConfiguredBranch` |
 | `repository.token` | string | Token for this repository | Supported | Rendered when publishing. | `TestRepositoryTokenUsesClientFor` |
 | `repository.token_type` | string | `github`/`gitlab`/`gitea` (Pro) | Supported, differs | `hephaestus.yaml`: only `github` (or empty). adapter: rejected as Pro-only. | `TestResolvePublishErrors`, `TestLoadBrewsPro` |
 | `repository.git.*` | mapping | Publish over plain git/SSH | Rejected | Hephaestus publishes only through the GitHub API. | `TestLoadBrewsUnsupported` |
-| `repository.pull_request.enabled` | bool | Open a pull request | Supported, differs | **Default `true`** (GoReleaser: `false`). Set `false` for a direct commit. | `TestResolvePublishDefaults`, `TestResolvePublishDirect` |
+| `repository.pull_request.enabled` | bool | Open a pull request | Supported, differs | Default in `hephaestus.yaml`: **`true`** (GoReleaser: `false`). adapter: GoReleaser's default `false` (a direct commit), so `brews_from` does not change how a formula is published. `hephaestus check` prints each formula's publishing mode and the GoReleaser defaults applied; the tap stage's dry run prints the exact writes. In pull request mode `repository.branch` is the head branch: the same branch as `pull_request.base` is an error, and a head branch named `main`, `master`, `trunk` or `develop` without a base is warned about (the tap stage refuses head = base before writing). | `TestResolvePublishDefaults`, `TestResolvePublishDirect`, `TestGoReleaserDefaults`, `TestBrewsFromGoReleaser`, `TestPullRequestBranchConflicts` |
 | `repository.pull_request.draft` | bool | Draft pull request | Supported | | `TestResolvePublishPullRequest`, `TestPullRequestNew` |
 | `repository.pull_request.base` | `{owner, name, branch}` or string | Pull request target | Supported | A bare string is the branch, as in GoReleaser. `owner` and `name` must be set together. | `TestResolvePublishPullRequest`, `TestCrossRepositoryPullRequest`, `TestBrewStrictSubstructures` |
 | `repository.pull_request.body` | string | Pull request body | Not supported | The body is fixed ("Update the <name> formula to version <v>. Opened by Hephaestus."). adapter: rejected as unsupported. | `TestLoadBrewsUnsupported` |
@@ -108,17 +114,38 @@ and a real `brew audit --strict` / `install` / `test` in
 | Aspect | GoReleaser | Hephaestus |
 | --- | --- | --- |
 | Platform blocks | `on_macos`/`on_linux` with `if Hardware::CPU.intel?` | `on_macos`/`on_linux` containing `on_arm`/`on_intel` |
-| Install | `define_method(:install)` per platform | One `def install` |
+| Install | `define_method(:install)` per platform | One `def install`; code that differs per archive (templates, executables present in only some archives) is wrapped in `if OS.mac? && Hardware::CPU.arm?`-style conditions, so each platform installs the same files as with GoReleaser |
 | 32-bit ARM, 386 | `arm` supported via `goarm` | Skipped with a warning |
 | `is_64_bit?` checks | Emitted for Linux | Never emitted |
 | macOS universal binaries (`goarch: all`) | Supported | Skipped with a warning (only `amd64` and `arm64`) |
-| Only one architecture for an OS | Caveat text for darwin amd64-only | `depends_on arch: :x86_64` / `:arm64` plus a warning |
+| macOS without arm64 | The amd64 package serves every Mac (Rosetta 2), with an Apple Silicon caveat that a user `caveats` overrides | Same: `on_arm` and `on_intel` both name the amd64 archive, plus a generation warning; no caveat |
+| Linux without arm64, or any OS without amd64 | The missing CPU has no `url` (the formula fails to load there) | `depends_on arch: :x86_64` / `:arm64`, so Homebrew explains why, plus a warning |
 | `version` | Always written | Omitted when Homebrew derives the same version from github.com release URLs |
 | Dependency `os` | `if OS.mac?` modifier | Inside `on_macos`/`on_linux` |
 | License expressions | Written verbatim | SPDX parsed into `any_of:`/`all_of:` |
 | Two-pass templating | The whole rendered formula is templated a second time | No second pass; only the fields marked as templates are rendered |
 | Header comment | "generated by GoReleaser" | "generated by Hephaestus" |
 | Selection errors | No archive / several archives per OS+arch | Same two errors |
+
+### Comparison with real GoReleaser output
+
+`testdata/compat/goreleaser/` holds a small project, its `.goreleaser.yaml`
+and what GoReleaser **v2.19.0** produced from it (formulae, `artifacts.json`,
+checksums and archive listings; regenerate with
+`scripts/goreleaser-compat-fixture.sh`). `TestGoReleaserCompatibility` reads
+the same `.goreleaser.yaml` through the adapter, generates formulae from the
+recorded archives and requires, for every platform, the same download URL,
+SHA-256 and installed executables as GoReleaser's formula. The fixture covers
+a distribution repository that differs from the source (`release.github`),
+an executable present only in the macOS archives, a macOS amd64-only formula
+and `#{...}` in caveats. The intentional differences it meets (no `version`
+line, escaped caveats, a direct commit by default) are asserted explicitly.
+
+Not compared byte for byte, by design: the formula layout and Ruby style
+(above), the header comment, `is_64_bit?` checks and GoReleaser's second
+template pass. Not compared at all: GoReleaser's archive bytes (they depend on
+the Go toolchain; only the recorded listings and checksums are used), Pro
+features, and publishing (the fixture is never published).
 
 ### Templates in Ruby code
 
@@ -136,7 +163,7 @@ headers, dependency names, caveats) are always escaped Ruby strings
 
 | Aspect | GoReleaser | Hephaestus |
 | --- | --- | --- |
-| Default mode | Direct push to the default branch | Pull request |
+| Default mode | Direct push to the default branch | Pull request in `hephaestus.yaml`; direct push for entries read through `brews_from`. `hephaestus check` prints the mode of every formula |
 | Identical content | Commits anyway | No commit, no pull request (`TestDirectUpdateAndNoOp`, `TestUnchangedOnBase`) |
 | Existing pull request for the head branch | — | Reused (`TestPullRequestNewFileAndRerunReuses`, `TestCreatePull422ReSearches`) |
 | Force push | — | Never; references are only created (`TestNoRefUpdateAPI`) |

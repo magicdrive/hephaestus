@@ -244,4 +244,5 @@ Each archive is recorded in the artifact manifest (`dist/hephaestus-manifest.jso
 The GitHub Release publisher uploads exactly these files and verifies them
 against `sha256`. The Homebrew formula generator takes URLs and checksums from
 here, and checks that every path the formula's `install` block references
-(for example `bin.install "bin/mycli"`) exists in every archive.
+(for example `bin.install "bin/mycli"`) exists in every archive the call
+applies to (all of them, or those its `if OS.mac?`-style condition selects).

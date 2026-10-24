@@ -42,3 +42,19 @@ func TestLicenseRubySyntax(t *testing.T) {
 	}
 	checkRubySyntax(t, f.Content)
 }
+
+func TestLicenseSymbolsAndFreeText(t *testing.T) {
+	for _, l := range []string{":public_domain", ":cannot_represent"} {
+		if got, err := licenseDSL(l); err != nil || got != l {
+			t.Errorf("%s: %q, %v", l, got, err)
+		}
+	}
+	// A single unknown identifier is written as is, like GoReleaser.
+	if got, err := licenseDSL("Proprietary"); err != nil || got != `"Proprietary"` {
+		t.Errorf("Proprietary: %q, %v", got, err)
+	}
+	_, err := licenseDSL("Apache License 2.0")
+	if err == nil || !strings.Contains(err.Error(), "LicenseRef-<name>") || !strings.Contains(err.Error(), "GoReleaser writes free text verbatim") {
+		t.Errorf("free text: %v", err)
+	}
+}

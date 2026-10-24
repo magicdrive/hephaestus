@@ -14,6 +14,7 @@ import (
 
 	"github.com/magicdrive/hephaestus/internal/compat/goreleaser"
 	"github.com/magicdrive/hephaestus/internal/config"
+	"github.com/magicdrive/hephaestus/internal/homebrew"
 	"github.com/magicdrive/hephaestus/internal/manifest"
 	"github.com/magicdrive/hephaestus/internal/pipeline"
 	"github.com/magicdrive/hephaestus/internal/tmpl"
@@ -219,9 +220,14 @@ func loadBrewsFrom(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("brews_from: %w", err)
 	}
-	_, brews, warnings, err := goreleaser.Parse(data)
+	project, brews, warnings, err := goreleaser.Parse(data)
 	if err != nil {
 		return fmt.Errorf("brews_from %s: %w", cfg.BrewsFrom, err)
+	}
+	if project != "" && project != cfg.Project.Name {
+		// Formula names default to project_name (as in GoReleaser), so the
+		// formula is not renamed; templates still see project.name.
+		warnings = append(warnings, fmt.Sprintf("project_name %q differs from project.name %q: formulae without a name are named %q as in GoReleaser, but {{ .ProjectName }} in templates (commit message, pull request branch) is %q", project, cfg.Project.Name, project, cfg.Project.Name))
 	}
 	for i := range warnings {
 		warnings[i] = "brews_from " + cfg.BrewsFrom + ": " + warnings[i]
@@ -281,7 +287,10 @@ func check(cfg *config.Config, opts *Options) int {
 		fmt.Fprintf(opts.Stdout, "archive %s: %s, %d file entries\n", a.ID, a.Format, len(a.Files))
 	}
 	for _, b := range cfg.Brews {
-		fmt.Fprintf(opts.Stdout, "formula %s → %s/%s\n", b.Name, b.Repository.Owner, b.Repository.Name)
+		fmt.Fprintf(opts.Stdout, "formula %s → %s/%s: %s\n", b.Name, b.Repository.Owner, b.Repository.Name, homebrew.DescribePublish(&b))
+		if len(b.GoReleaserDefaults) > 0 {
+			fmt.Fprintf(opts.Stdout, "  GoReleaser defaults (brews_from): %s\n", strings.Join(b.GoReleaserDefaults, "; "))
+		}
 	}
 	return 0
 }
