@@ -5,6 +5,7 @@
 [English](README.md) · [設定](docs/configuration.md) ·
 [アーカイブ](docs/archives.md) · [GitHub Action](docs/github-action.md) ·
 [GoReleaser 互換性](docs/compatibility/goreleaser.md) ·
+| [Compatibility policy](docs/compatibility/policy.md) | SemVer、安定 API の範囲、非推奨の扱い |
 [アーキテクチャ](ARCHITECTURE.md)
 
 Hephaestus は、どの言語で書かれたコマンドラインツールにも使えるリリース自動化ツールです。ビルドが作った実行ファイルを受け取る（またはターゲットごとにあなたのコマンドを実行してビルドする）と、再現可能なアーカイブにまとめ、チェックサムファイルを書き、GitHub Release を公開し、Homebrew Formula を生成して Tap へ Pull Request で届けます。

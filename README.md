@@ -5,6 +5,7 @@
 [日本語](README_ja.md) · [Configuration](docs/configuration.md) ·
 [Archives](docs/archives.md) · [GitHub Action](docs/github-action.md) ·
 [GoReleaser compatibility](docs/compatibility/goreleaser.md) ·
+| [Compatibility policy](docs/compatibility/policy.md) | SemVer, the stable surface, deprecation |
 [Architecture](ARCHITECTURE.md)
 
 Hephaestus is release automation for command-line tools written in any

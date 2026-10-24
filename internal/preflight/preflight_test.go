@@ -353,3 +353,17 @@ func ExampleChecks() {
 	// tap.branch
 	// tap.pull-request
 }
+
+// TestEveryCheckIsDocumented: check IDs are part of the stable surface
+// (docs/compatibility/policy.md); each one has a row in docs/preflight.md.
+func TestEveryCheckIsDocumented(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "preflight.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range Checks() {
+		if !strings.Contains(string(doc), "`"+id+"`") {
+			t.Errorf("check %s is not documented in docs/preflight.md", id)
+		}
+	}
+}
