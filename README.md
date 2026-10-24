@@ -386,7 +386,7 @@ Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
 | [Architecture overview](docs/architecture/overview.md) | Stages, the Artifact Manifest, ownership, data flow |
 | [Threat model](docs/security/threat-model.md) | Assets, attackers, defenses, residual risk |
 | [Development](docs/development.md) | Make targets, tests, golden files, fuzzing, E2E |
-| [Releasing](docs/releasing.md) | How Hephaestus releases itself |
+| [Releasing](docs/releasing.md) | How Hephaestus releases itself: `make publish vX.Y.Z`, prereleases, recovery |
 | [Repository conventions](docs/architecture/repository-conventions.md) | Conventions shared with Ark and Enma |
 | [Architecture](ARCHITECTURE.md) | Invariants for contributors |
 | [Security policy](SECURITY.md) | Supported versions, reporting |
