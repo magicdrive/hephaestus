@@ -1,8 +1,9 @@
 # v1.0.0 progress
 
 Working record of the road to v1.0.0 ([v1-roadmap.md](v1-roadmap.md)).
-No merges, tags or releases are made by the development agent; each pull
-request is reviewed and merged by the owner.
+The stack was developed without merging; for v1.0.0-rc.1 the owner
+authorized merging it in order and publishing the release candidate (not
+v1.0.0).
 
 ## Pull requests (stacked)
 
@@ -14,7 +15,9 @@ request is reviewed and merged by the owner.
 | [#8](https://github.com/magicdrive/hephaestus/pull/8) | `docs/v1-stable-contract` | #7 | 0, 6 | roadmap, compatibility policy, v0.2.0 regression fixtures |
 | [#9](https://github.com/magicdrive/hephaestus/pull/9) | `test/release-e2e-security` | #8 | 4 | full-pipeline E2E, Linux arm64 / macOS Intel CI, workflow hardening |
 | [#10](https://github.com/magicdrive/hephaestus/pull/10) | `feat/developer-experience` | #9 | 5 | `hephaestus init` templates |
-| — | `test/v1-stabilization` | #10 | 8 | CLI reference, changelog, this record |
+| [#11](https://github.com/magicdrive/hephaestus/pull/11) | `test/v1-stabilization` | #10 | 8 | CLI reference, changelog, this record |
+| [#12](https://github.com/magicdrive/hephaestus/pull/12) | `fix/published-release-immutability` | #11 | RC audit | a published release is never edited; tap-failure and immutable E2E; prerelease tap guard in `release.yml` |
+| #13 | `docs/v1.0.0-rc.1-notes` | #12 | RC | release notes and changelog for v1.0.0-rc.1 |
 
 Merge in order; each base branch is merged into the next, so no rebase is
 needed.
@@ -56,5 +59,5 @@ needed.
 ## Open items
 
 - Machine-readable configuration schema (optional; not planned for 1.0).
-- `config.release-notes`: RELEASE_NOTES.md and CHANGELOG.md must name the
-  v1.0.0 tag before it is pushed (owner's release step).
+- `config.release-notes`: RELEASE_NOTES.md and CHANGELOG.md name
+  v1.0.0-rc.1; they must be updated again for v1.0.0 before that tag.
