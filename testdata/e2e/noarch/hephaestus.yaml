@@ -9,7 +9,10 @@ project:
 
 archives:
   - id: script
-    name: "{{ .Project }}_{{ .Version }}_noarch"
+    # No version in the name: with a file:// url the formula keeps an
+    # explicit version, which brew audit --strict calls redundant when it
+    # can also scan it from the url.
+    name: "{{ .Project }}_noarch"
     targets: [{os: all, arch: all}]
     files:
       - {src: heph-script, dst: heph-script, mode: "0755"}
