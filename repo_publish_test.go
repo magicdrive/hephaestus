@@ -7,11 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/magicdrive/hephaestus/internal/preflight"
 	"github.com/magicdrive/hephaestus/internal/publish"
 )
 
@@ -184,4 +186,18 @@ func TestCI_RunsSnapshotAsOnATagPush(t *testing.T) {
 		}
 	}
 	t.Error("the snapshot job must also run make snapshot with GITHUB_REF_TYPE=tag")
+}
+
+// TestPreflightChecksAreDocumented: every check ID is a row of the table in
+// docs/preflight.md, in execution order, and no row names a missing check.
+func TestPreflightChecksAreDocumented(t *testing.T) {
+	doc := readFile(t, "docs/preflight.md")
+	row := regexp.MustCompile("(?m)^\\| `([a-z][a-z0-9.-]+)` \\| (error|warning) \\|")
+	var documented []string
+	for _, m := range row.FindAllStringSubmatch(doc, -1) {
+		documented = append(documented, m[1])
+	}
+	if strings.Join(documented, " ") != strings.Join(preflight.Checks(), " ") {
+		t.Errorf("docs/preflight.md checks table:\n  %v\nwant (execution order):\n  %v", documented, preflight.Checks())
+	}
 }

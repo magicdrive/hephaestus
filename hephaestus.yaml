@@ -69,3 +69,9 @@ brews:
       name: homebrew-tap
       pull_request:
         enabled: true
+
+# Release safety checks before a tag is pushed: hephaestus preflight --tag vX.Y.Z
+# (docs/preflight.md). make publish runs its own checks for this repository.
+preflight:
+  workflow: release.yml
+  environment: release

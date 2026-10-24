@@ -174,6 +174,7 @@ func (c *Config) Validate() error {
 	if c.Limits.MaxFiles < 0 || c.Limits.MaxFileSize < 0 || c.Limits.MaxTotalSize < 0 {
 		add("limits", "limits must be positive")
 	}
+	c.validatePreflight(add)
 
 	buildIDs := map[string]bool{}
 	for i := range c.Builds {
@@ -661,3 +662,39 @@ var commonDefaultBranches = map[string]bool{"main": true, "master": true, "trunk
 
 // formulaDepRe allows tap-qualified names such as "owner/tap/formula".
 var formulaDepRe = regexp.MustCompile(`^([a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_-]*/)?[a-z0-9][a-z0-9+_.-]*(@[0-9][0-9.]*)?$`)
+
+var (
+	gitNameRe     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$`)
+	workflowRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$`)
+	settingNameRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,254}$`)
+	checkIDRe     = regexp.MustCompile(`^[a-z][a-z0-9.-]*$`)
+)
+
+func (c *Config) validatePreflight(add func(path, format string, args ...any)) {
+	p := &c.Preflight
+	for _, f := range []struct {
+		path, v string
+		re      *regexp.Regexp
+	}{
+		{"preflight.remote", p.Remote, gitNameRe},
+		{"preflight.branch", p.Branch, gitNameRe},
+		{"preflight.workflow", p.Workflow, workflowRe},
+		{"preflight.environment", p.Environment, settingNameRe},
+		{"preflight.tap_token_secret", p.TapTokenSecret, settingNameRe},
+	} {
+		if f.v != "" && (!f.re.MatchString(f.v) || strings.Contains(f.v, "..")) {
+			add(f.path, "%q is not a valid name", f.v)
+		}
+	}
+	for i, s := range p.Secrets {
+		if !settingNameRe.MatchString(s) {
+			add(fmt.Sprintf("preflight.secrets[%d]", i), "%q is not a valid secret name", s)
+		}
+	}
+	// Check IDs are validated by the preflight itself, which knows them.
+	for i, s := range p.Skip {
+		if !checkIDRe.MatchString(s) {
+			add(fmt.Sprintf("preflight.skip[%d]", i), "%q is not a check ID", s)
+		}
+	}
+}

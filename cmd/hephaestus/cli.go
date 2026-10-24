@@ -37,6 +37,7 @@ Commands:
   release     Run the GitHub release stage only
   formula     Run the Homebrew formula stage only
   tap         Run the Homebrew tap publication stage only
+  preflight   Read-only release safety checks before pushing a tag (--tag vX.Y.Z)
   version     Print the version
 
 Run "hephaestus <command> -h" for flags.
@@ -69,6 +70,8 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 	case "version", "--version":
 		fmt.Fprintln(stdout, "hephaestus", Version)
 		return 0
+	case "preflight":
+		return preflightCmd(ctx, rest, stdout, stderr, red)
 	case "check":
 	case "run":
 	case "build", "archive", "checksum", "release", "formula", "tap":
