@@ -5,8 +5,10 @@ package main
 // change that breaks one of those promises fails `go test ./...`.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -115,38 +117,50 @@ func TestReleaseWorkflow_PublishesOnlyAfterEveryGate(t *testing.T) {
 		}
 	}
 
-	rel := readWorkflow(t, ".github/workflows/release.yml")
-	if j := rel.Jobs["ci"]; j == nil || j.Uses != "./.github/workflows/ci.yml" {
-		t.Fatal("release.yml must run ci.yml as its ci job")
-	}
-	for name, j := range rel.Jobs {
-		if name == "ci" {
-			continue
+	for _, f := range releaseWorkflows {
+		rel := readWorkflow(t, f)
+		if j := rel.Jobs["ci"]; j == nil || j.Uses != "./.github/workflows/ci.yml" {
+			t.Fatalf("%s must run ci.yml as its ci job", f)
 		}
-		if !slices.Contains(j.needs(), "ci") {
-			t.Errorf("release job %q does not need ci", name)
-		}
-		verify, publish := -1, -1
-		for i, s := range j.Steps {
-			if strings.Contains(s.Run, "verify-dist.sh") && verify < 0 {
-				verify = i
+		for name, j := range rel.Jobs {
+			if name == "ci" {
+				continue
 			}
-			if strings.Contains(s.Run, "--stages release") && publish < 0 {
-				publish = i
+			if !slices.Contains(j.needs(), "ci") {
+				t.Errorf("%s: job %q does not need ci", f, name)
 			}
-		}
-		if publish >= 0 && (verify < 0 || verify > publish) {
-			t.Errorf("release job %q publishes before verify-dist.sh", name)
+			verify, publish := -1, -1
+			for i, s := range j.Steps {
+				if strings.Contains(s.Run, "verify-dist.sh") && verify < 0 {
+					verify = i
+				}
+				if strings.Contains(s.Run, "--stages release") && publish < 0 {
+					publish = i
+				}
+			}
+			if publish >= 0 && (verify < 0 || verify > publish) {
+				t.Errorf("%s: job %q publishes before verify-dist.sh", f, name)
+			}
 		}
 	}
 }
+
+// releaseWorkflows are the workflows that publish (or rehearse publishing).
+var releaseWorkflows = []string{".github/workflows/release.yml", ".github/workflows/release-rehearsal.yml"}
 
 // TestReleaseWorkflow_BuildsWithoutWriteTokens keeps the build/publish
 // boundary: a job that runs project build commands holds only read access,
 // so build code can neither write to the repository nor request an OIDC
 // token to sign provenance.
 func TestReleaseWorkflow_BuildsWithoutWriteTokens(t *testing.T) {
-	rel := readWorkflow(t, ".github/workflows/release.yml")
+	for _, f := range releaseWorkflows {
+		checkBuildJobsReadOnly(t, f)
+	}
+}
+
+func checkBuildJobsReadOnly(t *testing.T, f string) {
+	t.Helper()
+	rel := readWorkflow(t, f)
 	builds := 0
 	for name, j := range rel.Jobs {
 		runsBuild := false
@@ -160,11 +174,55 @@ func TestReleaseWorkflow_BuildsWithoutWriteTokens(t *testing.T) {
 		}
 		builds++
 		if len(j.Permissions) != 1 || j.Permissions["contents"] != "read" {
-			t.Errorf("job %q runs build commands with permissions %v, want only contents: read", name, j.Permissions)
+			t.Errorf("%s: job %q runs build commands with permissions %v, want only contents: read", f, name, j.Permissions)
 		}
 	}
 	if builds == 0 {
-		t.Error("no release job runs the build stage")
+		t.Errorf("%s: no job runs the build stage", f)
+	}
+}
+
+// TestRehearsalConfigMatchesRelease keeps hephaestus.rehearsal.yaml equal to
+// hephaestus.yaml except for the settings that keep a rehearsal private:
+// a draft release and a sandbox tap.
+func TestRehearsalConfigMatchesRelease(t *testing.T) {
+	load := func(path string) map[string]any {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := yaml.Unmarshal(data, &m); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		return m
+	}
+	rel, reh := load("hephaestus.yaml"), load("hephaestus.rehearsal.yaml")
+	gh := func(m map[string]any) map[string]any {
+		return m["release"].(map[string]any)["github"].(map[string]any)
+	}
+	brew := func(m map[string]any) map[string]any {
+		return m["brews"].([]any)[0].(map[string]any)
+	}
+	repo := func(m map[string]any) map[string]any { return brew(m)["repository"].(map[string]any) }
+
+	if gh(reh)["draft"] != true {
+		t.Error("rehearsal: release.github.draft must be true")
+	}
+	if name := repo(reh)["name"]; name == repo(rel)["name"] || !strings.Contains(fmt.Sprint(name), "sandbox") {
+		t.Errorf("rehearsal: brews[0].repository.name = %v, want a sandbox tap", name)
+	}
+	if brew(reh)["skip_upload"] != "false" {
+		t.Error(`rehearsal: brews[0].skip_upload must be "false"`)
+	}
+	delete(gh(reh), "draft")
+	delete(brew(reh), "skip_upload")
+	delete(brew(rel), "skip_upload")
+	repo(reh)["name"] = repo(rel)["name"]
+	if !reflect.DeepEqual(rel, reh) {
+		a, _ := yaml.Marshal(rel)
+		b, _ := yaml.Marshal(reh)
+		t.Errorf("hephaestus.rehearsal.yaml drifted from hephaestus.yaml:\n--- release\n%s\n--- rehearsal\n%s", a, b)
 	}
 }
 

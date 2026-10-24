@@ -40,6 +40,10 @@ tags, pushes or publishes.
    3. **release** (environment `release`; runs no project build command):
       - `make build` — build Hephaestus itself to publish with;
       - download `dist/` and run `scripts/verify-dist.sh dist` again;
+      - for a stable tag, `hephaestus run --stages formula,tap --dry-run`
+        with the tap token — read-only checks of the token, the tap's
+        formula directory and the pull request branch, before the release
+        becomes public;
       - `actions/attest-build-provenance` — provenance for the archives and
         the checksum file;
       - `hephaestus run --stages release` with `GITHUB_TOKEN` — draft,
@@ -47,11 +51,38 @@ tags, pushes or publishes.
         (`generate_notes: true`);
       - `hephaestus run --stages formula,tap` with
         `HOMEBREW_TAP_GITHUB_TOKEN` — the formula and a pull request on
-        `magicdrive/homebrew-tap`.
+        `magicdrive/homebrew-tap` (skipped for prereleases:
+        `skip_upload: auto`).
 4. Review and merge the tap pull request.
 
 A failed run can be re-run: the release is still a draft (or complete), and
 every step skips what is already in place.
+
+## Rehearsing a release
+
+`.github/workflows/release-rehearsal.yml` (run manually, from the default
+branch) runs the release path against the real GitHub API without
+publishing: the same CI gate and read-only build job, then a publish job in
+the `release-rehearsal` environment with `hephaestus.rehearsal.yaml`. That
+file equals `hephaestus.yaml` (enforced by `repo_test.go`) except that the
+release stays a **draft** (GitHub creates no tag for a draft, and nothing
+is public) and the formula pull request goes to
+`magicdrive/homebrew-tap-sandbox`. Each publishing stage runs twice to show
+that a re-run is a no-op. Provenance attestation is not rehearsed, because
+it writes a public transparency log entry.
+
+| Item | Value |
+| --- | --- |
+| Environment | `release-rehearsal`, deployment restricted to the default branch |
+| Secret in that environment | `HOMEBREW_TAP_GITHUB_TOKEN`: fine-grained token with contents and pull-requests write on `magicdrive/homebrew-tap-sandbox` only |
+| Sandbox tap | `magicdrive/homebrew-tap-sandbox`, formulae at the root like the production tap |
+
+```sh
+gh workflow run release-rehearsal.yml -f version=0.1.0-rehearsal.1
+```
+
+The run summary prints the cleanup commands (delete the draft release,
+close the sandbox pull request and delete its branch).
 
 ## Verifying a release
 

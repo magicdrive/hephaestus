@@ -72,6 +72,18 @@ jobs:
           path: dist
       - name: Verify dist again before publishing anything
         run: scripts/verify-dist.sh dist
+      - name: Rehearse the formula and tap pull request (read-only)
+        # Checks the tap token, the tap's formula directory, a newer formula
+        # on the tap and the pull request branch before the release becomes
+        # public, since a published release cannot be taken back.
+        # Prereleases skip the tap (skip_upload: auto).
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          # Without a token a dry run cannot read the tap and would pass.
+          [[ -n "$HOMEBREW_TAP_GITHUB_TOKEN" ]] || { echo "::error::HOMEBREW_TAP_GITHUB_TOKEN is not set in the release environment"; exit 1; }
+          ./build/hephaestus run --stages formula,tap --dry-run
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

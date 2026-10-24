@@ -1,0 +1,74 @@
+# Release rehearsal configuration (.github/workflows/release-rehearsal.yml).
+# Identical to hephaestus.yaml except (enforced by repo_test.go):
+#   - release.github.draft: true      the release stays a draft: no tag is
+#                                     created and nothing becomes public;
+#   - brews[0].skip_upload: "false"   rehearsal versions are prereleases;
+#   - brews[0].repository.name        a sandbox tap, never the production one.
+version: 1
+
+project:
+  name: hephaestus
+  description: Release automation for CLIs in any language
+  homepage: https://github.com/magicdrive/hephaestus
+  license: MIT
+
+builds:
+  - id: hephaestus
+    matrix:
+      os: [darwin, linux, windows]
+      arch: [amd64, arm64]
+    command:
+      - go
+      - build
+      - -trimpath
+      - -ldflags
+      - "-s -w -X main.version=v{{ .Version }}"
+      - -o
+      - "dist/bin/{{ .OS }}_{{ .Arch }}/hephaestus{{ .Ext }}"
+      - .
+    env:
+      GOOS: "{{ .OS }}"
+      GOARCH: "{{ .Arch }}"
+      CGO_ENABLED: "0"
+    output: "dist/bin/{{ .OS }}_{{ .Arch }}/hephaestus{{ .Ext }}"
+
+archives:
+  - id: hephaestus
+    name: "{{ .Project }}_{{ .Version }}_{{ .OS }}_{{ .Arch }}"
+    format: tar.gz
+    format_overrides:
+      - os: windows
+        format: zip
+    files:
+      - src: "dist/bin/{{ .OS }}_{{ .Arch }}/hephaestus{{ .Ext }}"
+        dst: "hephaestus{{ .Ext }}"
+        mode: "0755"
+      - LICENSE
+      - README.md
+
+checksum:
+  name: "{{ .Project }}_checksums.txt"
+
+release:
+  github:
+    owner: magicdrive
+    name: hephaestus
+    generate_notes: true
+    draft: true
+
+brews:
+  - name: hephaestus
+    ids: [hephaestus]
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    # Keep the sandbox tap's formulae at its root, like
+    # magicdrive/homebrew-tap, so the rehearsal checks the same layout.
+    skip_upload: "false"
+    install: |
+      bin.install "hephaestus"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/hephaestus version")
+    repository:
+      owner: magicdrive
+      name: homebrew-tap-sandbox
+      pull_request:
+        enabled: true
