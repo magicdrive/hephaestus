@@ -3,9 +3,9 @@ package publish
 import (
 	"context"
 	"fmt"
-	"net/url"
-	"regexp"
 	"strings"
+
+	"github.com/magicdrive/hephaestus/internal/github"
 )
 
 // Git is the git access publish needs. Every method is read-only except
@@ -126,34 +126,16 @@ func (g GitCLI) PushTag(ctx context.Context, tag string) error {
 	return err
 }
 
-var (
-	scpRemoteRe = regexp.MustCompile(`^(?:[A-Za-z0-9._-]+@)?([A-Za-z0-9.-]+):([^/].*)$`)
-	repoPathRe  = regexp.MustCompile(`^/*([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/*$`)
-)
-
 // ParseGitHubRemote returns the owner/name of a github.com remote URL in
 // any of the forms git accepts: https://github.com/o/r(.git),
 // ssh://git@github.com[:22]/o/r(.git), git@github.com:o/r(.git).
 func ParseGitHubRemote(raw string) (Repo, error) {
-	var host, path string
-	if u, err := url.Parse(raw); err == nil && u.Scheme != "" && u.Host != "" {
-		switch u.Scheme {
-		case "https", "ssh", "git+ssh", "ssh+git":
-		default:
-			return Repo{}, fmt.Errorf("remote %q: unsupported scheme %s", raw, u.Scheme)
-		}
-		host, path = u.Hostname(), u.Path
-	} else if m := scpRemoteRe.FindStringSubmatch(raw); m != nil {
-		host, path = m[1], m[2]
-	} else {
-		return Repo{}, fmt.Errorf("remote %q is not a GitHub URL", raw)
+	host, owner, name, err := github.ParseRemoteURL(raw)
+	if err != nil {
+		return Repo{}, err
 	}
-	if !strings.EqualFold(host, "github.com") {
+	if host != "github.com" {
 		return Repo{}, fmt.Errorf("remote %q is not on github.com", raw)
 	}
-	m := repoPathRe.FindStringSubmatch(path)
-	if m == nil {
-		return Repo{}, fmt.Errorf("remote %q does not name owner/repository", raw)
-	}
-	return Repo{Owner: m[1], Name: m[2]}, nil
+	return Repo{Owner: owner, Name: name}, nil
 }
