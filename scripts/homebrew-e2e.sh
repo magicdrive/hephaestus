@@ -28,6 +28,8 @@ export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_DEVELOPER=1 HOMEBREW_NO_ASK=1 \
 cleanup() {
   set +e
   brew uninstall --force "$tap/$formula" >/dev/null 2>&1
+  brew uninstall --force "$tap/heph-script" >/dev/null 2>&1
+  rm -rf "$repo/testdata/e2e/noarch/dist"
   brew untap --force "$tap" >/dev/null 2>&1
   brew untap --force "${tap}style" >/dev/null 2>&1
   rm -rf "$work" "$fixture/dist"
@@ -107,6 +109,24 @@ out="$("$prefix/bin/heph-fixture" --version)"
 
 step "brew uninstall"
 brew uninstall "$tap/$formula"
+
+step "Noarch: a Bash script, one archive for every platform"
+noarch="$repo/testdata/e2e/noarch"
+cd "$noarch"
+rm -rf dist
+E2E_URL_BASE="file://$noarch/dist" "$heph" run --stages archive,checksum,formula --tag "$tag" --fresh
+listing="$(tar -tzf "dist/heph-script_${version}_noarch.tar.gz" | sort | tr '\n' ' ')"
+[[ "$listing" == "README.md completions/ completions/heph-script.bash heph-script heph-script.1 " ]] || { echo "noarch archive: $listing"; exit 1; }
+grep -q '^  url "file://' dist/homebrew/heph-script.rb && ! grep -q 'on_macos\|on_linux' dist/homebrew/heph-script.rb
+cp dist/homebrew/heph-script.rb "$tapdir/Formula/heph-script.rb"
+cat "$tapdir/Formula/heph-script.rb"
+brew audit --strict --formula "$tap/heph-script"
+brew install --formula "$tap/heph-script"
+brew test "$tap/heph-script"
+[[ -x "$prefix/bin/heph-script" && -f "$(brew --prefix "$tap/heph-script")/share/man/man1/heph-script.1" ]]
+[[ -e "$prefix/etc/bash_completion.d/heph-script" ]]
+brew uninstall "$tap/heph-script"
+rm -rf dist
 
 echo
 echo "Homebrew E2E passed for $tag on $os/$arch"

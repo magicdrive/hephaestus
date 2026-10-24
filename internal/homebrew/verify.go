@@ -404,7 +404,11 @@ func verifyInstall(name, body string, archives []manifest.Artifact) ([]string, e
 		}
 	}
 	missing := map[string][]string{} // archive name -> problems
-	for _, c := range analyzeInstall(body) {
+	calls := analyzeInstall(body)
+	for _, a := range archives {
+		missing[a.Name] = append(missing[a.Name], duplicateInstalls(calls, a)...)
+	}
+	for _, c := range calls {
 		where := fmt.Sprintf("install line %d", c.line)
 		if c.reason != "" {
 			warnings = append(warnings, fmt.Sprintf("formula %s: cannot verify %s.install on %s: %s", name, receiverName(c.receiver), where, c.reason))
@@ -439,6 +443,11 @@ func verifyInstall(name, body string, archives []manifest.Artifact) ([]string, e
 			}
 		}
 	}
+	for n, ps := range missing {
+		if len(ps) == 0 {
+			delete(missing, n)
+		}
+	}
 	if len(missing) == 0 {
 		return warnings, nil
 	}
@@ -448,7 +457,7 @@ func verifyInstall(name, body string, archives []manifest.Artifact) ([]string, e
 	}
 	sort.Strings(names)
 	var b strings.Builder
-	fmt.Fprintf(&b, "formula %s: install references paths that are missing from archives:", name)
+	fmt.Fprintf(&b, "formula %s: install cannot succeed for every archive:", name)
 	for _, n := range names {
 		for _, p := range missing[n] {
 			fmt.Fprintf(&b, "\n  %s: %s", n, p)
@@ -471,4 +480,50 @@ func appliesTo(preds []platformPred, a manifest.Artifact) bool {
 		}
 	}
 	return true
+}
+
+// duplicateInstalls finds install calls that cannot all succeed for archive
+// a, or that overwrite each other: Pathname#install moves its source, so a
+// source (or a directory containing it) installed twice is gone the second
+// time, and two installs to one destination clobber each other.
+func duplicateInstalls(calls []installCall, a manifest.Artifact) []string {
+	type use struct {
+		where, receiver string
+	}
+	var problems []string
+	srcs := map[string]use{}  // cleaned source -> first install
+	dests := map[string]use{} // receiver/name -> first install
+	var order []string
+	for _, c := range calls {
+		if c.reason != "" || c.receiver == "" || !appliesTo(c.platforms, a) {
+			continue
+		}
+		where := fmt.Sprintf("install line %d", c.line)
+		for _, src := range c.srcs {
+			p := path.Clean(src)
+			if prev, ok := srcs[p]; ok {
+				problems = append(problems, fmt.Sprintf("%q is installed twice (%s.install, %s and %s.install, %s); the first install moves it, so the second fails: install it once and use install_symlink for another location", src, prev.receiver, prev.where, c.receiver, where))
+				continue
+			}
+			for _, q := range order {
+				if strings.HasPrefix(p, q+"/") || strings.HasPrefix(q, p+"/") {
+					prev := srcs[q]
+					problems = append(problems, fmt.Sprintf("%q (%s.install, %s) overlaps %q (%s.install, %s): installing a directory moves everything in it", src, c.receiver, where, q, prev.receiver, prev.where))
+				}
+			}
+			srcs[p] = use{where, c.receiver}
+			order = append(order, p)
+			name := path.Base(p)
+			if d, ok := c.dests[src]; ok {
+				name = d
+			}
+			dest := c.receiver + "/" + name
+			if prev, ok := dests[dest]; ok {
+				problems = append(problems, fmt.Sprintf("two installs write %s (%s and %s): the second overwrites the first", dest, prev.where, where))
+				continue
+			}
+			dests[dest] = use{where, c.receiver}
+		}
+	}
+	return problems
 }

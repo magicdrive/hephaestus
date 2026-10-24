@@ -1,0 +1,32 @@
+# End-to-end fixture: an architecture-independent CLI (a Bash script),
+# packaged once (os: all, arch: all) and installed through one formula url.
+version: 1
+project:
+  name: heph-script
+  description: Noarch fixture for Hephaestus end-to-end tests
+  homepage: https://github.com/magicdrive/hephaestus
+  license: MIT
+
+archives:
+  - id: script
+    name: "{{ .Project }}_{{ .Version }}_noarch"
+    targets: [{os: all, arch: all}]
+    files:
+      - {src: heph-script, dst: heph-script, mode: "0755"}
+      - {src: heph-script.1, dst: heph-script.1, mode: "0644"}
+      - {src: completions/heph-script.bash, dst: completions/heph-script.bash, mode: "0644"}
+      - {src: README.md, dst: README.md, mode: "0644"}
+
+brews:
+  - name: heph-script
+    url_template: "{{ .Env.E2E_URL_BASE }}/{{ .ArtifactName }}"
+    dependencies: [bash]
+    install: |
+      bin.install "heph-script"
+      man1.install "heph-script.1"
+      bash_completion.install "completions/heph-script.bash" => "heph-script"
+    test: |
+      assert_match "heph-script", shell_output("#{bin}/heph-script --version")
+    repository:
+      owner: magicdrive
+      name: homebrew-tap
