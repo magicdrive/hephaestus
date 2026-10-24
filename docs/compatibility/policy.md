@@ -9,7 +9,7 @@ change. Anything not listed here is internal and may change in any release.
 | Surface | Stable | Not covered |
 | --- | --- | --- |
 | **Configuration** (`hephaestus.yaml`, `version: 1`) | every documented key, its type, default and meaning ([configuration.md](../configuration.md), [archives.md](../archives.md)); a valid v1 file stays valid and produces the same artifacts | the wording of error messages; the order of warnings |
-| **CLI** | command names, documented flags, exit codes of `preflight` (0/1/2/3) and `status` (0/1/2/3), `run`'s 0 success / 1 failure / 2 usage | human-readable output text (use `--format json`) |
+| **CLI** | command names, documented flags, exit codes of `preflight` (0/1/2/3) and `status` (0/1/2/3), `run`'s 0 success / 1 failure / 2 invalid flags | human-readable output text (use `--format json`) |
 | **JSON reports** | `preflight --format json` / `--report` (`schema_version: 1`), `status --format json`: existing fields keep name, type and meaning; check IDs keep their meaning | new fields, new check IDs, new status values for `status` assets/taps (consumers must ignore unknown ones) |
 | **Artifact Manifest** (`dist/hephaestus-manifest.json`, `schema_version`) | existing fields; a manifest written by 1.x is readable by later 1.x | fields added |
 | **GitHub Action** (`action.yml`) | input and output names, their meaning, the `command` values | the internal steps; how the binary is obtained |
