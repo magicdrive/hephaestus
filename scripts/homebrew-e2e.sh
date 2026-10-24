@@ -115,7 +115,7 @@ noarch="$repo/testdata/e2e/noarch"
 cd "$noarch"
 rm -rf dist
 E2E_URL_BASE="file://$noarch/dist" "$heph" run --stages archive,checksum,formula --tag "$tag" --fresh
-listing="$(tar -tzf "dist/heph-script_${version}_noarch.tar.gz" | sort | tr '\n' ' ')"
+listing="$(tar -tzf "dist/heph-script_noarch.tar.gz" | sort | tr '\n' ' ')"
 [[ "$listing" == "README.md completions/ completions/heph-script.bash heph-script heph-script.1 " ]] || { echo "noarch archive: $listing"; exit 1; }
 grep -q '^  url "file://' dist/homebrew/heph-script.rb && ! grep -q 'on_macos\|on_linux' dist/homebrew/heph-script.rb
 cp dist/homebrew/heph-script.rb "$tapdir/Formula/heph-script.rb"
