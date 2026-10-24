@@ -276,6 +276,7 @@ func newServer(t *testing.T) (*fakeServer, *github.Client) {
 		},
 		base + "/commits/" + headSHA + "/status":                  jsonRoute(map[string]any{"state": "pending", "total_count": 0}),
 		base + "/actions/workflows/release.yml":                   jsonRoute(map[string]any{"path": ".github/workflows/release.yml", "state": "active"}),
+		base + "/environments":                                    jsonRoute(map[string]any{"total_count": 1, "environments": []any{map[string]any{"name": "release"}}}),
 		base + "/environments/release":                            jsonRoute(map[string]any{"name": "release", "deployment_branch_policy": map[string]any{"protected_branches": false, "custom_branch_policies": true}}),
 		base + "/environments/release/deployment-branch-policies": jsonRoute(map[string]any{"total_count": 1, "branch_policies": []any{map[string]any{"name": "v*", "type": "tag"}}}),
 		base + "/environments/release/secrets":                    jsonRoute(map[string]any{"total_count": 1, "secrets": []any{map[string]any{"name": "HOMEBREW_TAP_GITHUB_TOKEN"}}}),
@@ -349,5 +350,34 @@ func TestGitHubErrorsAreUnknown(t *testing.T) {
 				t.Errorf("%d: %s %q %q", code, r.Status, r.Message, r.Remediation)
 			}
 		})
+	}
+}
+
+// TestCheckRunsAcrossPages: the old success of a check on page 1 must not
+// hide its newer failure on page 2, and every run is requested
+// (filter=all), not the API's completed_at-based "latest".
+func TestCheckRunsAcrossPages(t *testing.T) {
+	srv, c := newServer(t)
+	var queries []string
+	srv.routes["/repos/acme/tool/commits/"+headSHA+"/check-runs"] = func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "2" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"total_count": 2, "check_runs": []any{
+				map[string]any{"id": 2, "name": "ci-gate", "status": "completed", "conclusion": "failure", "app": map[string]any{"id": 15368, "slug": "github-actions"}}}})
+			return
+		}
+		w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?filter=all&page=2>; rel="next"`, r.Host, r.URL.Path))
+		_ = json.NewEncoder(w).Encode(map[string]any{"total_count": 2, "check_runs": []any{
+			map[string]any{"id": 1, "name": "ci-gate", "status": "completed", "conclusion": "success", "app": map[string]any{"id": 15368, "slug": "github-actions"}}}})
+	}
+	f := newFixture(t, "v1.2.0")
+	f.in.GitHub = c
+	r := result(t, f.run(t, false), "github.ci")
+	if r.Status != Fail || !strings.Contains(r.Message, "ci-gate [github-actions] (failure)") {
+		t.Errorf("github.ci = %s %q", r.Status, r.Message)
+	}
+	if len(queries) != 2 || !strings.Contains(queries[0], "filter=all") {
+		t.Errorf("queries %v", queries)
 	}
 }

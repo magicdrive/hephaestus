@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 // Read-only lookups of repository settings and commit status, used by the
@@ -30,6 +31,19 @@ func (c *Client) GetEnvironment(ctx context.Context, owner, repo, name string) (
 		return nil, err
 	}
 	return &e, nil
+}
+
+// ListEnvironments returns the repository's deployment environments.
+func (c *Client) ListEnvironments(ctx context.Context, owner, repo string) ([]Environment, error) {
+	if err := checkRepo(owner, repo); err != nil {
+		return nil, err
+	}
+	return listWrapped(ctx, c, repoURL(c.api, owner, repo, pageQuery(), "environments"),
+		func(p *struct {
+			Environments []Environment `json:"environments"`
+		}) []Environment {
+			return p.Environments
+		})
 }
 
 // DeploymentPolicy is a custom deployment branch or tag policy.
@@ -140,22 +154,35 @@ func (c *Client) GetRuleset(ctx context.Context, owner, repo string, id int64) (
 
 // CheckRun is a check run on a commit.
 type CheckRun struct {
-	Name       string `json:"name"`
-	Status     string `json:"status"`     // queued, in_progress, completed, ...
-	Conclusion string `json:"conclusion"` // success, failure, neutral, cancelled, skipped, timed_out, action_required, stale
-	HTMLURL    string `json:"html_url"`
-	App        *struct {
+	// ID grows with creation: a re-run attempt has a higher ID than the
+	// run it replaces.
+	ID          int64      `json:"id"`
+	Name        string     `json:"name"`
+	Status      string     `json:"status"`     // queued, in_progress, completed, ...
+	Conclusion  string     `json:"conclusion"` // success, failure, neutral, cancelled, skipped, timed_out, action_required, stale
+	StartedAt   *time.Time `json:"started_at"`
+	CompletedAt *time.Time `json:"completed_at"`
+	HTMLURL     string     `json:"html_url"`
+	CheckSuite  *struct {
+		ID int64 `json:"id"`
+	} `json:"check_suite"`
+	App *struct {
 		ID   int64  `json:"id"`
 		Slug string `json:"slug"`
 	} `json:"app"`
 }
 
-// ListCheckRuns returns the check runs of a commit.
+// ListCheckRuns returns every check run of a commit, superseded attempts
+// included (filter=all): the API's default filter=latest selects by
+// completed_at, which hides a newer run that has not completed yet behind
+// an older completed one. Callers pick the latest run themselves.
 func (c *Client) ListCheckRuns(ctx context.Context, owner, repo, sha string) ([]CheckRun, error) {
 	if err := checkRepo(owner, repo); err != nil {
 		return nil, err
 	}
-	return listWrapped(ctx, c, repoURL(c.api, owner, repo, pageQuery(), "commits", sha, "check-runs"),
+	q := pageQuery()
+	q.Set("filter", "all")
+	return listWrapped(ctx, c, repoURL(c.api, owner, repo, q, "commits", sha, "check-runs"),
 		func(p *struct {
 			CheckRuns []CheckRun `json:"check_runs"`
 		}) []CheckRun {

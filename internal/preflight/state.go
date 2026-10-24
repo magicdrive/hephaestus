@@ -20,6 +20,7 @@ type GitHub interface {
 	GetCombinedStatus(ctx context.Context, owner, repo, sha string) (*github.CombinedStatus, error)
 	GetWorkflow(ctx context.Context, owner, repo, file string) (*github.Workflow, error)
 	GetEnvironment(ctx context.Context, owner, repo, name string) (*github.Environment, error)
+	ListEnvironments(ctx context.Context, owner, repo string) ([]github.Environment, error)
 	ListDeploymentPolicies(ctx context.Context, owner, repo, env string) ([]github.DeploymentPolicy, error)
 	ListEnvironmentSecretNames(ctx context.Context, owner, repo, env string) ([]string, error)
 	ListRepositorySecretNames(ctx context.Context, owner, repo string) ([]string, error)

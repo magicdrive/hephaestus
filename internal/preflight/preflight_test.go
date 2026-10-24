@@ -96,7 +96,7 @@ func TestScenarios(t *testing.T) {
 		{"drafts invisible without a token", "v1.2.0", func(f *fixture) { f.in.TokenPresent = false }, "github.release", Warn, "drafts are only listed"},
 		{"ci failed", "v1.2.0", func(f *fixture) { f.gh.runs[1].Conclusion = "failure" }, "github.ci", Fail, "test (failure)"},
 		{"ci pending", "v1.2.0", func(f *fixture) { f.gh.runs[1].Status = "in_progress" }, "github.ci", Fail, "still running"},
-		{"required check missing", "v1.2.0", func(f *fixture) { f.gh.runs = f.gh.runs[1:] }, "github.ci", Fail, "required checks ci-gate"},
+		{"required check missing", "v1.2.0", func(f *fixture) { f.gh.runs = f.gh.runs[1:] }, "github.ci", Fail, "ci-gate: not reported"},
 		{"external status failed", "v1.2.0", func(f *fixture) {
 			f.gh.status.TotalCount = 1
 			f.gh.status.Statuses = append(f.gh.status.Statuses, struct {
@@ -116,6 +116,12 @@ func TestScenarios(t *testing.T) {
 		{"secret missing", "v1.2.0", func(f *fixture) { f.gh.envSecrets = nil }, "github.secrets", Fail, "HOMEBREW_TAP_GITHUB_TOKEN"},
 		{"secret in the repository", "v1.2.0", func(f *fixture) { f.gh.envSecrets, f.gh.repoSecret = nil, []string{"HOMEBREW_TAP_GITHUB_TOKEN"} }, "github.secrets", Pass, "present"},
 		{"extra required secret", "v1.2.0", func(f *fixture) { f.in.Secrets = []string{"SIGNING_KEY"} }, "github.secrets", Fail, "SIGNING_KEY"},
+		{"secret found in an unconfigured environment", "v1.2.0", func(f *fixture) { f.in.Config.Preflight.Environment = "" }, "github.secrets", Pass, "present"},
+		{"secret missing everywhere", "v1.2.0", func(f *fixture) { f.in.Config.Preflight.Environment, f.gh.envSecrets = "", nil }, "github.secrets", Fail, "missing secrets"},
+		{"environments unreadable", "v1.2.0", func(f *fixture) {
+			f.in.Config.Preflight.Environment = ""
+			f.gh.errs["ListEnvironments"] = apiErr(403, "no")
+		}, "github.secrets", Unknown, "environments"},
 		{"secrets need admin", "v1.2.0", func(f *fixture) {
 			f.gh.errs["ListEnvironmentSecretNames"] = apiErr(403, "Resource not accessible by integration")
 		}, "github.secrets", Unknown, "403"},

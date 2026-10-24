@@ -454,24 +454,23 @@ func checkGitHubCI(s *state) outcome {
 	if err != nil {
 		return apiOutcome("commit status of "+shortSHA(s.head), err)
 	}
-	type result struct{ state, url string }
-	got := map[string]result{} // latest result per check name
-	var failed, pending []string
-	for _, r := range runs {
-		st := r.Conclusion
-		if r.Status != "completed" {
-			st = "pending"
-		}
-		got[r.Name] = result{st, r.HTMLURL}
+	groups := latestCheckRuns(runs)
+	var failed, pending, ambiguous, seen []string
+	for _, g := range groups {
+		seen = append(seen, g.describe())
 		switch {
-		case st == "pending":
-			pending = append(pending, r.Name)
-		case slices.Contains(failedConclusions, st):
-			failed = append(failed, r.Name+" ("+st+")")
+		case g.ambiguous:
+			ambiguous = append(ambiguous, g.describe())
+		case g.outcome == "pending":
+			pending = append(pending, g.label())
+		case slices.Contains(failedConclusions, g.outcome) || g.outcome == "unknown":
+			failed = append(failed, g.label()+" ("+g.outcome+")")
 		}
 	}
+	// The combined status already holds the latest status of each context.
+	statuses := map[string]string{}
 	for _, st := range status.Statuses {
-		got[st.Context] = result{state: st.State}
+		statuses[st.Context] = st.State
 		switch st.State {
 		case "pending":
 			pending = append(pending, st.Context)
@@ -479,29 +478,28 @@ func checkGitHubCI(s *state) outcome {
 			failed = append(failed, st.Context+" ("+st.State+")")
 		}
 	}
-	var required []string
+	e := ev{"commit": s.head, "check_runs": len(runs), "checks": seen, "statuses": status.TotalCount}
+
+	var required []requiredCheck
 	if sets, err := s.getRulesets(); err == nil {
 		if b, _, err := s.defaultBranch(); err == nil {
-			for _, rs := range activeCovering(sets, "branch", "refs/heads/"+b, b) {
-				for _, rule := range rs.Rules {
-					for _, c := range rule.Parameters.RequiredStatusChecks {
-						if !slices.Contains(required, c.Context) {
-							required = append(required, c.Context)
-						}
-					}
-				}
-			}
+			required = requiredChecks(sets, b)
+		}
+	} else {
+		e["required_checks_unknown"] = err.Error()
+	}
+	var reqShown, missing, reqAmbiguous []string
+	for _, rc := range required {
+		reqShown = append(reqShown, rc.String())
+		switch res, why := requiredOutcome(rc, groups, statuses); res {
+		case "success":
+		case "ambiguous":
+			reqAmbiguous = append(reqAmbiguous, why)
+		default:
+			missing = append(missing, why)
 		}
 	}
-	var missing []string
-	for _, c := range required {
-		if r, ok := got[c]; !ok || r.state != "success" {
-			missing = append(missing, c)
-		}
-	}
-	sort.Strings(failed)
-	sort.Strings(pending)
-	e := ev{"commit": s.head, "check_runs": len(runs), "statuses": status.TotalCount, "required": required}
+	e["required"] = reqShown
 	switch {
 	case len(failed) > 0:
 		e["failed"] = failed
@@ -511,12 +509,18 @@ func checkGitHubCI(s *state) outcome {
 		return fail(fmt.Sprintf("%s still running on %s", strings.Join(pending, ", "), shortSHA(s.head)), "wait for CI to finish", e)
 	case len(missing) > 0:
 		e["missing"] = missing
-		return fail(fmt.Sprintf("required checks %s did not succeed on %s", strings.Join(missing, ", "), shortSHA(s.head)),
+		return fail("required checks did not succeed: "+strings.Join(missing, "; "),
 			"push the commit through the normal CI and wait for the required checks", e)
-	case len(runs)+status.TotalCount == 0:
+	case len(ambiguous)+len(reqAmbiguous) > 0:
+		e["ambiguous"] = append(ambiguous, reqAmbiguous...)
+		o := unknownf("cannot tell which run is the latest for %s", strings.Join(append(ambiguous, reqAmbiguous...), "; "))
+		o.evidence, o.fix = e, "re-run the check so that one run is clearly the latest"
+		return o
+	case len(groups)+status.TotalCount == 0:
 		return warn("no CI results on "+shortSHA(s.head), "run CI on the commit before tagging", e)
 	}
-	return pass(fmt.Sprintf("%s succeeded on %s", plural(len(got), "check", "checks"), shortSHA(s.head)), e)
+	n := len(groups) + len(statuses)
+	return pass(fmt.Sprintf("%s succeeded on %s", plural(n, "check", "checks"), shortSHA(s.head)), e)
 }
 
 func checkGitHubWorkflow(s *state) outcome {
@@ -598,13 +602,29 @@ func checkGitHubSecrets(s *state) outcome {
 		return skip(why)
 	}
 	have := map[string]string{}
-	if env := s.settings.environment; env != "" {
+	// The configured environment, or, when none is configured, every
+	// environment (the secret may live in any of them).
+	envs := []string{s.settings.environment}
+	if envs[0] == "" {
+		list, err := s.in.GitHub.ListEnvironments(s.ctx, s.owner, s.repo)
+		if err != nil {
+			return apiOutcome("environments", err)
+		}
+		envs = envs[:0]
+		for _, e := range list {
+			envs = append(envs, e.Name)
+		}
+		sort.Strings(envs)
+	}
+	for _, env := range envs {
 		names, err := s.in.GitHub.ListEnvironmentSecretNames(s.ctx, s.owner, s.repo, env)
 		if err != nil {
 			return apiOutcome("secret names of environment "+env, err)
 		}
 		for _, n := range names {
-			have[n] = "environment " + env
+			if _, ok := have[n]; !ok {
+				have[n] = "environment " + env
+			}
 		}
 	}
 	names, err := s.in.GitHub.ListRepositorySecretNames(s.ctx, s.owner, s.repo)

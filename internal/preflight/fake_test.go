@@ -179,6 +179,15 @@ func (f *fakeGH) GetEnvironment(context.Context, string, string, string) (*githu
 	}
 	return f.env, nil
 }
+func (f *fakeGH) ListEnvironments(context.Context, string, string) ([]github.Environment, error) {
+	if err := f.hit("ListEnvironments"); err != nil {
+		return nil, err
+	}
+	if f.env == nil {
+		return nil, nil
+	}
+	return []github.Environment{*f.env}, nil
+}
 func (f *fakeGH) ListDeploymentPolicies(context.Context, string, string, string) ([]github.DeploymentPolicy, error) {
 	return f.policies, f.hit("ListDeploymentPolicies")
 }
