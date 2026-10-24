@@ -43,10 +43,12 @@ jobs:
         run: shellcheck scripts/*.sh testdata/e2e/boundary/probe.sh
 
   test:
+    # Linux amd64 and arm64, macOS arm64, Windows amd64. macOS Intel runs
+    # in ci-extended.yml (weekly, or with the ci-extended label).
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
