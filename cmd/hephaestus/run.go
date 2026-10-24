@@ -105,7 +105,11 @@ var executeFn = execute
 
 func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report) error {
 	tag := opts.Tag
-	if tag == "" && os.Getenv("GITHUB_REF_TYPE") == "tag" {
+	// A tag push supplies the tag through the environment, but an explicit
+	// --snapshot asks for no tag: CI that runs snapshots (also when a
+	// release workflow calls it on a tag push) must not pick it up. Only an
+	// explicit --tag conflicts with --snapshot.
+	if tag == "" && !opts.Snapshot && os.Getenv("GITHUB_REF_TYPE") == "tag" {
 		tag = os.Getenv("GITHUB_REF_NAME")
 	}
 	var info version.Info
