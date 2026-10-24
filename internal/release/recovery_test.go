@@ -91,10 +91,10 @@ func TestPublishLostResponseIsNotPublishedTwice(t *testing.T) {
 	}
 }
 
-// TestImmutableReleaseOnlyNotesChange: a re-run against a complete
-// immutable release never touches assets; only metadata that GitHub keeps
-// editable (the notes) may be updated.
-func TestImmutableReleaseOnlyNotesChange(t *testing.T) {
+// TestImmutableReleaseRerunWritesNothing: a re-run against a complete
+// immutable release, even with different notes configured, writes nothing:
+// no asset, no notes, no publish.
+func TestImmutableReleaseRerunWritesNothing(t *testing.T) {
 	f := newFakeGitHub(t)
 	fx := newFixture(t)
 	fx.gh().Notes = "new notes"
@@ -104,13 +104,11 @@ func TestImmutableReleaseOnlyNotesChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, w := range f.writes() {
-		if !strings.HasPrefix(w, "PATCH ") {
-			t.Errorf("wrote %s to an immutable release", w)
-		}
+	if w := f.writes(); len(w) != 0 {
+		t.Errorf("wrote to an immutable release: %v", w)
 	}
 	wantStatuses(t, res, all(StatusUnchanged))
-	if got := f.byTag(tag)[0]; got.Body != "new notes" || got.Draft || len(got.assets) != 3 {
+	if got := f.byTag(tag)[0]; got.Body != "old notes" || got.Draft || len(got.assets) != 3 || !res.NoOp {
 		t.Errorf("release %+v", got)
 	}
 }

@@ -27,6 +27,10 @@
 //     draft: true). A failure leaves the release a draft and returns an
 //     error; the next run resumes where this one stopped.
 //
+// A published release's title, notes and prerelease flag are never edited:
+// they are set while the release is a draft and published with it. A
+// re-run that would change them only reports the difference.
+//
 // Replacing an asset of a published, mutable release
 // (replace_existing_assets) uploads the new content under a temporary name
 // (<name>.hephaestus-tmp) and verifies it, then deletes the old asset and
@@ -1078,9 +1082,30 @@ func (r *runner) uploadOnce(ctx context.Context, releaseID int64, l *local) (*gi
 	return nil, verifyError{"upload verification failed: " + problem}
 }
 
-// finalize sets the title, notes and prerelease flag and publishes the
-// release when configured, writing only what differs.
+// finalize sets the title, notes and prerelease flag of a draft and
+// publishes it when configured, writing only what differs. A published
+// release (mutable or immutable) is never edited: what differs from this
+// run's configuration is reported and left as it was published.
 func (r *runner) finalize(ctx context.Context, rel *github.Release) (*github.Release, error) {
+	if !rel.Draft {
+		var drift []string
+		if rel.Name != r.name {
+			drift = append(drift, "name")
+		}
+		if r.bodySet && rel.Body != r.body {
+			drift = append(drift, "notes")
+		}
+		if rel.Prerelease != r.prerelease {
+			drift = append(drift, fmt.Sprintf("prerelease (published %t, configured %t)", rel.Prerelease, r.prerelease))
+		}
+		if len(drift) > 0 {
+			r.logf("warning: release %s is published; its %s differ from this run's configuration and are left as published (a published release is never edited)", r.tag, strings.Join(drift, ", "))
+		}
+		if r.cfg.Draft {
+			r.logf("release %s is already published; draft: true does not unpublish it", r.tag)
+		}
+		return rel, nil
+	}
 	var req github.ReleaseRequest
 	var changes []string
 	if rel.Name != r.name {
@@ -1095,7 +1120,7 @@ func (r *runner) finalize(ctx context.Context, rel *github.Release) (*github.Rel
 		req.Prerelease = github.Bool(r.prerelease)
 		changes = append(changes, fmt.Sprintf("prerelease=%t", r.prerelease))
 	}
-	publish := rel.Draft && !r.cfg.Draft
+	publish := !r.cfg.Draft
 	if publish {
 		req.Draft = github.Bool(false)
 		// make_latest is applied only when publishing: changing "latest" on
@@ -1106,9 +1131,6 @@ func (r *runner) finalize(ctx context.Context, rel *github.Release) (*github.Rel
 		if r.target != "" && rel.TargetCommitish != r.target {
 			req.TargetCommitish = r.target
 		}
-	}
-	if !rel.Draft && r.cfg.Draft {
-		r.logf("release %s is already published; draft: true does not unpublish it", r.tag)
 	}
 	if !publish && len(changes) == 0 {
 		return rel, nil
@@ -1123,7 +1145,7 @@ func (r *runner) finalize(ctx context.Context, rel *github.Release) (*github.Rel
 	}
 	if r.in.DryRun {
 		cp := *rel
-		cp.Draft = rel.Draft && !publish
+		cp.Draft = !publish
 		return &cp, nil
 	}
 	r.writes++

@@ -929,20 +929,95 @@ func TestNotesFileNamePrereleaseAndTargetCommitish(t *testing.T) {
 	}
 }
 
-func TestUpdatesChangedNotesOnPublishedRelease(t *testing.T) {
+// TestPublishedReleaseIsNeverEdited: changed notes, title or prerelease
+// flag in the configuration never edit a published release, mutable or
+// immutable; the difference is reported and the run succeeds, so later
+// stages (formula, tap) can resume.
+func TestPublishedReleaseIsNeverEdited(t *testing.T) {
+	complete := map[string]string{linuxName: defaultFiles[linuxName], darwinName: defaultFiles[darwinName], checksumName: defaultFiles[checksumName]}
+	for _, immutable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("immutable=%t", immutable), func(t *testing.T) {
+			f := newFakeGitHub(t)
+			fx := newFixture(t)
+			rel := f.addRelease(tag, false, immutable, complete)
+			rel.Body, rel.Name = "old notes", "old title"
+			fx.gh().Notes = "new notes"
+			fx.gh().Prerelease = "true"
+			lb := &logBuf{t: t}
+			in := fx.input(f.client(t))
+			in.Log = lb
+			res, err := Run(context.Background(), in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w := f.writes(); len(w) != 0 {
+				t.Fatalf("wrote to a published release: %v", w)
+			}
+			wantStatuses(t, res, all(StatusUnchanged))
+			got := f.byTag(tag)[0]
+			if !res.NoOp || !res.Published || got.Body != "old notes" || got.Name != "old title" || got.Prerelease || got.Draft {
+				t.Fatalf("result %+v, release %+v", res, got.Release)
+			}
+			for _, want := range []string{"name, notes, prerelease", "never edited"} {
+				if !strings.Contains(lb.String(), want) {
+					t.Errorf("log does not report %q:\n%s", want, lb.String())
+				}
+			}
+		})
+	}
+}
+
+// TestDigestConflictOnPublishedRelease: an existing asset whose digest
+// differs from the local build stops the run on a published mutable
+// release too, without touching the asset or the release.
+func TestDigestConflictOnPublishedRelease(t *testing.T) {
 	f := newFakeGitHub(t)
 	fx := newFixture(t)
-	f.addRelease(tag, false, true, map[string]string{linuxName: defaultFiles[linuxName], darwinName: defaultFiles[darwinName], checksumName: defaultFiles[checksumName]})
+	// Same size, other content: only the digest tells them apart.
+	other := strings.Repeat("x", len(defaultFiles[linuxName]))
+	f.addRelease(tag, false, false, map[string]string{linuxName: other, darwinName: defaultFiles[darwinName], checksumName: defaultFiles[checksumName]})
+	res, err := Run(context.Background(), fx.input(f.client(t)))
+	if err == nil || !strings.Contains(err.Error(), "sha256:") || !strings.Contains(err.Error(), "left as it was") {
+		t.Fatalf("err = %v", err)
+	}
+	if w := f.writes(); len(w) != 0 {
+		t.Fatalf("wrote despite the conflict: %v", w)
+	}
+	wantStatuses(t, res, map[string]string{linuxName: StatusFailed, darwinName: StatusUnchanged, checksumName: StatusUnchanged})
+	for _, a := range f.byTag(tag)[0].assets {
+		if a.Name == linuxName && string(a.data) != other {
+			t.Fatal("the published asset was modified")
+		}
+	}
+}
+
+// TestDraftNotesAreUpdatedBeforePublishing: a draft is still being
+// prepared, so its notes and title follow the configuration and are
+// published with it in one request.
+func TestDraftNotesAreUpdatedBeforePublishing(t *testing.T) {
+	f := newFakeGitHub(t)
+	fx := newFixture(t)
+	rel := f.addRelease(tag, true, false, nil)
+	rel.Body = "old notes"
 	fx.gh().Notes = "new notes"
+	var patches []map[string]any
+	f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+		if r.Method == http.MethodPatch {
+			var m map[string]any
+			_ = json.Unmarshal(body, &m)
+			patches = append(patches, m)
+		}
+		return false
+	}
 	res, err := Run(context.Background(), fx.input(f.client(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w := f.writes(); len(w) != 1 || !strings.HasPrefix(w[0], "PATCH ") {
-		t.Fatalf("writes %v", w)
+	if len(patches) != 1 || patches[0]["body"] != "new notes" || patches[0]["draft"] != false {
+		t.Fatalf("patches %v", patches)
 	}
-	if res.NoOp || f.byTag(tag)[0].Body != "new notes" {
-		t.Fatalf("result %+v", res)
+	if got := f.byTag(tag)[0]; got.Body != "new notes" || got.Draft || !res.Published {
+		t.Fatalf("release %+v", got.Release)
 	}
 }
 
