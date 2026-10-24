@@ -21,7 +21,10 @@ uploads or writes to GitHub itself.
 | Locally | `git`, an authenticated `gh` (`gh auth status`), Go, GNU Make (3.81 or later) |
 
 `make publish-check` verifies every row it can read (secret names only, never
-values).
+values). The generic, read-only `hephaestus preflight --tag vX.Y.Z`
+([preflight.md](preflight.md)) runs the same kind of checks for any
+repository that releases with Hephaestus; `make publish` keeps its own
+checks for this repository.
 
 ## Cutting a release
 

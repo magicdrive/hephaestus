@@ -161,6 +161,7 @@ GitHub Actions では Action を使います（固定したコミットから He
 hephaestus check              設定を検査し、計画を表示する
 hephaestus run                設定されたすべてのステージを実行する（--stages a,b で指定）
 hephaestus build|archive|checksum|release|formula|tap   1 つのステージを実行する
+hephaestus preflight --tag vX.Y.Z   タグを push する前の読み取り専用リリースチェック
 hephaestus version
 ```
 
@@ -292,6 +293,7 @@ Formula はマニフェストから生成します。URL は公開したリリ�
 | [Architecture overview](docs/architecture/overview.md) | ステージ、Artifact Manifest、所有権、データの流れ |
 | [Threat model](docs/security/threat-model.md) | 資産、攻撃者、対策、残余リスク |
 | [Development](docs/development.md) | make ターゲット、テスト、golden ファイル、fuzz、E2E |
+| [Release preflight](docs/preflight.md) | `hephaestus preflight --tag vX.Y.Z`：タグを push する前の読み取り専用チェック |
 | [Releasing](docs/releasing.md) | Hephaestus 自身のリリース手順（`make publish vX.Y.Z`、プレリリース、失敗時の復旧） |
 | [Repository conventions](docs/architecture/repository-conventions.md) | Ark・Enma と共有する規約 |
 | [Architecture](ARCHITECTURE.md) | コントリビューター向けの不変条件 |

@@ -47,6 +47,7 @@ config ──► pipeline.Check ──► build ──► archive ──► chec
 | `internal/pathutil`, `internal/glob` | Lexical path validation; glob matching and walking | Touch the file system (pathutil) |
 | `internal/compat/goreleaser` | Classify GoReleaser `brews` keys | Silently drop a key |
 | `internal/ghaction` | Step outputs and summary | Let a value inject another output |
+| `internal/preflight` | Read-only release safety checks with stable IDs, PASS/FAIL/WARN/SKIP/UNKNOWN, text and JSON reports | Write to git or GitHub; run repository code; read a secret value |
 | `internal/publish` | Release Hephaestus itself (`make publish`): preflight, annotated tag push, follow and verify the release run | Publish, upload or write to GitHub; move, delete or force-push a tag |
 | `cmd/hephaestus` | Flags, stage loop, report | Contain stage logic |
 
@@ -191,6 +192,14 @@ improvement and is not.
     `TestReleaseWorkflow_TapTokenOnlyWhenTapPublished`,
     `TestPrereleaseTapNeedsNoToken`, `TestMakefile_Publish`.
     Danger: "just re-tag it" after a failed release.
+
+16. **The preflight only reads.** It reaches GitHub through an interface of
+    GET methods and git through an allowlist of read-only subcommands run
+    with `--no-optional-locks`; it runs no repository code. A check that
+    could not be made is UNKNOWN, never FAIL, and never PASS.
+    Authority: `internal/preflight` package comment, `GitCLI.run`.
+    Tests: `TestRealGitIsReadOnly`, `TestGitCLIRefusesWrites`,
+    `TestGitHubIsReadOnly`, `TestPreflightNeverPrintsTheToken`.
 
 ## 3. Verifying a change
 

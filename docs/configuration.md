@@ -88,6 +88,7 @@ brews:
 | `homebrew` | mapping | none | A single formula, same fields as one `brews` entry; appended to `brews`. |
 | `brews_from` | relative path | none | A GoReleaser configuration (e.g. `.goreleaser.yaml`) whose `brews` entries are read, checked field by field and appended to `brews`. See [GoReleaser compatibility](compatibility/goreleaser.md). |
 | `limits` | mapping | see [limits](#limits) | Resource bounds for archives and imports. |
+| `preflight` | mapping | none | Settings of `hephaestus preflight`. See [preflight](#preflight). |
 
 `dist`, `manifest`, `builds[].dir`, `release.github.notes_file` and
 `builds[].goreleaser.artifacts` must be clean relative paths: no absolute
@@ -387,6 +388,29 @@ limits:
   max_file_size: 512MiB
   max_total_size: 1GiB
   max_files: 2000
+```
+
+## preflight
+
+Settings of [`hephaestus preflight`](preflight.md), the read-only release
+safety checks run before a tag is pushed. Every field is optional; the
+matching command-line flags override them.
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `remote` | string | `origin` | Git remote releases are pushed to |
+| `branch` | string | the GitHub default branch | Branch releases are tagged on |
+| `workflow` | file name | none | Release workflow under `.github/workflows` (e.g. `release.yml`); when set, `github.workflow` checks it is active |
+| `environment` | string | none | Environment of the publishing job; when set, `github.environment` checks its deployment policy and secrets are looked up in it |
+| `secrets` | list of names | none | Secret names that must exist (values are never read) |
+| `tap_token_secret` | string | `HOMEBREW_TAP_GITHUB_TOKEN` | Secret holding the tap token, required when a formula is published to a tap |
+| `skip` | list of check IDs | none | Checks not to run; an unknown ID is an error |
+
+```yaml
+preflight:
+  workflow: release.yml
+  environment: release
+  skip: [github.ruleset.branch]
 ```
 
 ## Templates
