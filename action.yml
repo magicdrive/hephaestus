@@ -132,6 +132,21 @@ runs:
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
         INPUT_FRESH: ${{ inputs.fresh }}
         HEPHAESTUS_BIN: ${{ steps.build.outputs.bin }}
+        # A step inherits the job's and the workflow's env. Blank the tokens
+        # a caller commonly sets there (and the OIDC request token), so no
+        # process of this step, which build code can inspect, holds them.
+        # Tokens under other names are removed from build commands'
+        # environment by Hephaestus but stay visible in this step's shell:
+        # do not set publishing tokens in job or workflow env.
+        GITHUB_TOKEN: ""
+        GH_TOKEN: ""
+        GITHUB_PAT: ""
+        GH_ENTERPRISE_TOKEN: ""
+        GITHUB_ENTERPRISE_TOKEN: ""
+        HOMEBREW_TAP_GITHUB_TOKEN: ""
+        ACTIONS_RUNTIME_TOKEN: ""
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+        ACTIONS_ID_TOKEN_REQUEST_URL: ""
       run: |
         set -euo pipefail
         case "$INPUT_COMMAND" in

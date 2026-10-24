@@ -665,9 +665,10 @@ archives:
 			}
 			cmd = exec.Command("unzip", "-q", filepath.Join(root, a.Path), "-d", dir)
 		} else {
-			// Relative -f: GNU tar (Git for Windows) reads "C:\\..." as
-			// a remote host:path.
-			cmd = exec.Command("tar", "-xzf", filepath.Base(a.Path), "-C", dir)
+			// GNU tar from Git for Windows reads "C:..." in -f as a
+			// remote host:path and mangles backslashes: relative -f,
+			// slash-separated -C.
+			cmd = exec.Command("tar", "-xzf", filepath.Base(a.Path), "-C", filepath.ToSlash(dir))
 			cmd.Dir = filepath.Join(root, filepath.Dir(a.Path))
 		}
 		if out, err := cmd.CombinedOutput(); err != nil {

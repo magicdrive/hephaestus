@@ -1,0 +1,12 @@
+# Credential-boundary probe for the GitHub Action (ci.yml action-smoke).
+# The build "command" is probe.sh, which fails when a release, tap or OIDC
+# token is visible to build code.
+version: 1
+project:
+  name: heph-boundary
+
+builds:
+  - id: probe
+    targets: [{os: linux, arch: amd64}]
+    command: [bash, probe.sh]
+    output: dist/bin/probe

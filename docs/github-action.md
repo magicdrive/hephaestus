@@ -94,7 +94,13 @@ Declare `permissions: contents: read` at the top of the workflow and grant
   `archive`, `checksum` and the local phase of `run` (`--phase local`) in a
   step whose environment has no token at all, and `release`, `formula`,
   `tap` and the publish phase of `run` (`--phase publish`) in a separate
-  step that gets them. Hephaestus also removes the tokens, the variables
+  step that gets them. Steps inherit the job's and the workflow's `env`, so
+  the local step blanks `GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_PAT`,
+  `HOMEBREW_TAP_GITHUB_TOKEN`, the GitHub Enterprise token names and the
+  runner's OIDC request token; **pass tokens through the action's inputs,
+  never through job or workflow `env`**, because a token under any other
+  name would still be inherited by the local step. CI checks this boundary
+  on a real runner (`action-boundary` in `ci.yml`). Hephaestus also removes the tokens, the variables
   `repository.token` reads, the runner's `ACTIONS_*` tokens and
   credential-looking variables from the environment of build commands unless
   a build names them in its `env`.
