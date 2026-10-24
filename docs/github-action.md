@@ -35,10 +35,12 @@ could shadow it.
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `command` | `run` | `run`, `check`, `build`, `archive`, `checksum`, `release`, `formula` or `tap`. Any other value fails the step. |
+| `command` | `run` | `run`, `check`, `build`, `archive`, `checksum`, `release`, `formula`, `tap` or `preflight`. Any other value fails the step. |
 | `stages` | `""` | With `command: run`: comma-separated stages (`build,archive,checksum,release,formula,tap`) or `all`. Empty runs every stage the configuration declares. Ignored by other commands. |
 | `config` | `""` | Configuration file, relative to `working-directory`. Empty: `hephaestus.yaml` (or `.yml`, `.hephaestus.yaml`, `.hephaestus.yml`). |
 | `tag` | `""` | Release tag. Empty: the pushed tag (`github.ref_name` when the workflow runs for a tag). |
+| `strict` | `"false"` | With `command: preflight`: `"true"` treats `WARN` and `UNKNOWN` checks as failures. |
+| `offline` | `"false"` | With `command: preflight`: `"true"` runs only the checks that need no network. |
 | `snapshot` | `"false"` | `"true"` builds without a tag (version `0.0.0-SNAPSHOT`). Configured release and tap stages are skipped; naming them in `stages` is an error. |
 | `dry-run` | `"false"` | `"true"` plans release and tap writes without performing them (reads still use the tokens when given). |
 | `fresh` | `"false"` | `"true"` ignores an existing manifest instead of continuing from it. |
@@ -65,6 +67,9 @@ the list above.
 | `formula-paths` | Newline-separated, project-relative paths of generated formulae. |
 | `formula-commit-sha` | Newline-separated tap commit SHAs written by this run. |
 | `pull-request-url` | Newline-separated tap pull request URLs (opened or reused). |
+| `preflight-status` | With `command: preflight`: `pass`, `warn`, `unknown` or `fail`. |
+| `preflight-exit-code` | With `command: preflight`: `0` pass, `1` fail (or strict `WARN`/`UNKNOWN`), `2` usage, `3` some checks unknown. The step fails on any non-zero code. |
+| `preflight-report` | With `command: preflight`: path of the JSON report ([schema](preflight.md#json-report)). |
 
 The step also writes a Markdown summary (stages, artifacts with SHA-256,
 release assets and their status, formulae, tap results, warnings). Known
@@ -130,6 +135,40 @@ Declare `permissions: contents: read` at the top of the workflow and grant
   is a heuristic: keep credentials under recognizable names.
 - Set `github-token: ""` on steps that do not publish (pull request CI,
   snapshot builds).
+
+## Release preflight
+
+`command: preflight` runs [`hephaestus preflight`](preflight.md) — read-only
+release safety checks — before you push a tag, e.g. in a manually dispatched
+"prepare release" workflow:
+
+```yaml
+permissions:
+  contents: read
+  actions: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: magicdrive/hephaestus@<full-commit-sha>
+        id: preflight
+        with:
+          command: preflight
+          tag: ${{ inputs.tag }}
+          strict: "true"
+```
+
+It writes the human-readable report to the log, an annotation for every
+`FAIL`, `WARN` and `UNKNOWN`, a summary table, and the JSON report to the
+file in the `preflight-report` output. The step's exit code is the
+command's. The token (`github-token`) is only read with; checks that need
+more than the workflow token can read (secret names, rulesets) are
+`UNKNOWN`, which fails with `strict: "true"`. The preflight runs no
+repository code, so this step may hold the token.
 
 ## Separate build and publish jobs
 

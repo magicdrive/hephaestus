@@ -7,7 +7,7 @@ branding:
 
 inputs:
   command:
-    description: "hephaestus command: run, check, build, archive, checksum, release, formula or tap."
+    description: "hephaestus command: run, check, build, archive, checksum, release, formula, tap or preflight."
     default: run
   stages:
     description: "With command=run: comma-separated stages (build,archive,checksum,release,formula,tap) or all. Default: every configured stage."
@@ -16,8 +16,14 @@ inputs:
     description: Path to the configuration file, relative to working-directory.
     default: ""
   tag:
-    description: Release tag. Defaults to the pushed tag (github.ref_name on tag events).
+    description: Release tag. Defaults to the pushed tag (github.ref_name on tag events). Required with command=preflight (the tag about to be pushed).
     default: ""
+  strict:
+    description: 'With command=preflight: treat WARN and UNKNOWN checks as failures.'
+    default: "false"
+  offline:
+    description: 'With command=preflight: run only the checks that need no network.'
+    default: "false"
   snapshot:
     description: Build without a tag (no release or tap publication).
     default: "false"
@@ -68,6 +74,15 @@ outputs:
   pull-request-url:
     description: Newline-separated tap pull request URLs.
     value: ${{ steps.publish.outputs.pull-request-url || steps.local.outputs.pull-request-url }}
+  preflight-status:
+    description: "With command=preflight: pass, warn, unknown or fail."
+    value: ${{ steps.preflight.outputs.status }}
+  preflight-exit-code:
+    description: "With command=preflight: 0 pass, 1 fail (or strict WARN/UNKNOWN), 2 usage, 3 unknown."
+    value: ${{ steps.preflight.outputs.exit-code }}
+  preflight-report:
+    description: "With command=preflight: path of the JSON report."
+    value: ${{ steps.preflight.outputs.report }}
 
 runs:
   using: composite
@@ -125,7 +140,7 @@ runs:
     # continuing from the manifest in dist/.
     - name: Run hephaestus (local stages)
       id: local
-      if: inputs.command != 'release' && inputs.command != 'formula' && inputs.command != 'tap'
+      if: inputs.command != 'release' && inputs.command != 'formula' && inputs.command != 'tap' && inputs.command != 'preflight'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -213,3 +228,41 @@ runs:
           args+=(--phase publish)
         fi
         "$HEPHAESTUS_BIN" "${args[@]}"
+    # The preflight only reads (GET requests, read-only git) and runs no
+    # repository code, so it may hold the read token. Its exit code is the
+    # step's: 0 pass, 1 fail, 2 usage, 3 some checks unknown.
+    - name: Run hephaestus (preflight)
+      id: preflight
+      if: inputs.command == 'preflight'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_STRICT: ${{ inputs.strict }}
+        INPUT_OFFLINE: ${{ inputs.offline }}
+        HEPHAESTUS_BIN: ${{ steps.build.outputs.bin }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        HOMEBREW_TAP_GITHUB_TOKEN: ""
+      run: |
+        set -euo pipefail
+        tmp="$RUNNER_TEMP"
+        if [[ "$RUNNER_OS" == Windows ]]; then tmp="$(cygpath -m "$RUNNER_TEMP")"; fi
+        report="$tmp/hephaestus-preflight.json"
+        rm -f "$report"
+        args=(preflight --tag "$INPUT_TAG" --report "$report")
+        [[ -n "$INPUT_CONFIG" ]] && args+=(--config "$INPUT_CONFIG")
+        [[ "$INPUT_STRICT" == true ]] && args+=(--strict)
+        [[ "$INPUT_OFFLINE" == true ]] && args+=(--offline)
+        set +e
+        "$HEPHAESTUS_BIN" "${args[@]}"
+        code=$?
+        set -e
+        status=""
+        if [[ -f "$report" ]]; then
+          status="$(jq -r .status "$report" | tr -d '\r')"
+          echo "report=$report" >> "$GITHUB_OUTPUT"
+        fi
+        echo "status=$status" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        exit "$code"

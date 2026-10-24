@@ -26,6 +26,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/magicdrive/hephaestus/internal/github"
+	"github.com/magicdrive/hephaestus/internal/preflight"
 	"github.com/magicdrive/hephaestus/internal/publish"
 )
 
@@ -159,6 +161,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		Out: stdout, In: os.Stdin, Interactive: isTerminal(os.Stdin),
 		Now: time.Now, Sleep: publish.Sleep,
 	}
+	d.Generic = genericPreflight(p, *configPath)
 	opts := publish.Options{Yes: *yes, DiscoverTimeout: *discover, WatchTimeout: *watchTimeout, Poll: *poll}
 
 	switch cmd {
@@ -226,4 +229,23 @@ func summarize(w io.Writer, v publish.Version, o *publish.Outcome) {
 func isTerminal(f *os.File) bool {
 	fi, err := f.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// genericPreflight runs the generic release preflight (strict) with the gh
+// token, read-only, as an additional gate of check and publish.
+func genericPreflight(p *publish.Project, configPath string) func(ctx context.Context, tag string) (*preflight.Report, error) {
+	return func(ctx context.Context, tag string) (*preflight.Report, error) {
+		out, err := publish.ExecRunner(ctx, "gh", "auth", "token", "--hostname", "github.com")
+		if err != nil {
+			return nil, fmt.Errorf("gh auth token: %w", err)
+		}
+		token := strings.TrimSpace(string(out))
+		c, err := github.New(github.Options{Token: token, UserAgent: "hephaestus-publish"})
+		if err != nil {
+			return nil, err
+		}
+		in := preflight.Input{Tag: tag, Config: p.Cfg, ConfigPath: configPath, TokenPresent: token != "",
+			Git: preflight.GitCLI{Dir: p.Cfg.Root}, GitHub: c}
+		return preflight.Run(ctx, in, true, "publish")
+	}
 }

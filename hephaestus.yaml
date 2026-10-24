@@ -76,3 +76,4 @@ brews:
 preflight:
   workflow: release.yml
   environment: release
+  changelog: CHANGELOG.md

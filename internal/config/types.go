@@ -441,4 +441,7 @@ type Preflight struct {
 	TapTokenSecret string `yaml:"tap_token_secret"`
 	// Skip lists check IDs that are not run (reported as SKIP).
 	Skip []string `yaml:"skip"`
+	// Changelog is a project-relative file that must mention the tag (or
+	// its version) before the tag is pushed, e.g. CHANGELOG.md.
+	Changelog string `yaml:"changelog"`
 }

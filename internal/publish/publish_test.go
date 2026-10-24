@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/magicdrive/hephaestus/internal/preflight"
 )
 
 func TestParseVersion(t *testing.T) {
@@ -555,4 +557,44 @@ func newHarnessShared(t *testing.T, h *harness) *harness {
 	n := newHarness(t)
 	n.git.dir = h.git.dir
 	return n
+}
+
+// TestGenericPreflightGate: the generic strict preflight is an additional
+// gate; its failure (or UNKNOWN) stops publish before anything is tagged.
+func TestGenericPreflightGate(t *testing.T) {
+	report := func(status string, checks ...preflight.Result) *preflight.Report {
+		r := &preflight.Report{Status: status, Strict: true, Summary: map[preflight.Status]int{}, Checks: checks}
+		for _, c := range checks {
+			r.Summary[c.Status]++
+		}
+		return r
+	}
+	for _, tc := range []struct {
+		name string
+		rep  *preflight.Report
+		err  error
+		ok   bool
+		want string
+	}{
+		{"pass", report(preflight.OverallPass, preflight.Result{ID: "git.worktree", Status: preflight.Pass}), nil, true, "generic preflight"},
+		{"fail", report(preflight.OverallFail, preflight.Result{ID: "config.release-notes", Status: preflight.Fail, Message: "RELEASE_NOTES.md does not mention v0.1.0-rc.1"}), nil, false, "config.release-notes"},
+		{"unknown is a failure in strict mode", report(preflight.OverallUnknown, preflight.Result{ID: "github.secrets", Status: preflight.Unknown, Message: "403"}), nil, false, "github.secrets"},
+		{"error", nil, errors.New("gh auth token: not logged in"), false, "not logged in"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			var asked string
+			h.d.Generic = func(_ context.Context, tag string) (*preflight.Report, error) { asked = tag; return tc.rep, tc.err }
+			o, _ := publishRun(t, h, "v0.1.0-rc.1", fastOpts)
+			if asked != "v0.1.0-rc.1" {
+				t.Errorf("generic preflight asked for %q", asked)
+			}
+			if (o.State == Completed) != tc.ok || !strings.Contains(h.out.String(), tc.want) {
+				t.Fatalf("outcome %+v\n%s", o, h.out)
+			}
+			if !tc.ok && len(h.git.created)+len(h.git.pushed) != 0 {
+				t.Error("a tag was created despite the generic preflight")
+			}
+		})
+	}
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -247,7 +249,7 @@ archives:
   - name: "{{ .Project }}_{{ .Version }}_{{ .OS }}_{{ .Arch }}"
 checksum: {name: "{{ .Project }}_checksums.txt"}
 release:
-  github: {owner: acme, name: tool}
+  github: {owner: acme, name: tool, notes_file: NOTES.md}
 brews:
   - name: tool
     skip_upload: auto
@@ -275,6 +277,7 @@ type fixture struct {
 func newFixture(t *testing.T, tag string) *fixture {
 	f := &fixture{git: newFakeGit(), gh: newFakeGH()}
 	f.in = Input{Tag: tag, Config: loadConfig(t, testConfig), ConfigPath: "hephaestus.yaml", TokenPresent: true, Git: f.git, GitHub: f.gh}
+	writeNotes(t, f, "# tool "+tag+"\n\nChanges.\n")
 	return f
 }
 
@@ -296,4 +299,12 @@ func result(t *testing.T, r *Report, id string) Result {
 	}
 	t.Fatalf("no check %s", id)
 	return Result{}
+}
+
+// writeNotes writes the fixture's release notes file (NOTES.md).
+func writeNotes(t *testing.T, f *fixture, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(f.in.Config.Root, "NOTES.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }

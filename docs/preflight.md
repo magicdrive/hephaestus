@@ -32,6 +32,7 @@ and `hephaestus.yaml`.
 | `--secret NAME` | `preflight.secrets` | Secret names that must exist (repeatable) |
 | `--tap-token-secret` | `preflight.tap_token_secret`, then `HOMEBREW_TAP_GITHUB_TOKEN` | Secret name of the tap token, required when a formula is published to a tap |
 | `--skip ID` | `preflight.skip` | Check IDs to skip (repeatable or comma-separated) |
+| `--report FILE` | none | Also write the JSON report to FILE (with any `--format`) |
 | `--token-env` | `GITHUB_TOKEN` | Environment variable holding the token (`GH_TOKEN` when empty) |
 
 The same settings can live in the configuration, so CI needs only `--tag`:
@@ -41,8 +42,14 @@ preflight:
   workflow: release.yml
   environment: release
   secrets: [SIGNING_KEY]
+  changelog: CHANGELOG.md
   skip: [github.ruleset.branch]
 ```
+
+In GitHub Actions (`GITHUB_ACTIONS=true`) the text format also emits an
+annotation for every `FAIL`, `WARN` and `UNKNOWN` and appends a summary
+table to the job summary; the [action](github-action.md#release-preflight)
+runs it with `command: preflight`.
 
 ## Results
 
@@ -84,6 +91,7 @@ IDs are stable; they appear in the JSON report and in `--skip`.
 | `config.load` | error | `hephaestus.yaml` loads and validates | — |
 | `config.assets` | error | Planned archive and checksum names are valid and unique (case-insensitively, as GitHub compares them) | — |
 | `config.release` | error | GitHub release settings for this tag (prerelease, `draft: true` warns) | — |
+| `config.release-notes` | error | `release.github.notes_file` (and `preflight.changelog`, if set) exists, is not empty and names the tag or its version as a whole version: `v1.2.0` is not satisfied by `v1.2.0-rc.1` or `v1.2.01`, so notes left from an earlier version or a candidate are caught | — |
 | `config.formula` | error | Each formula's tap publication resolves for this tag (skipped for prereleases with `skip_upload: auto`) | — |
 | `github.repository` | error | The repository exists and is not archived | GitHub |
 | `github.release` | error | No release or draft exists for the tag (drafts need a token with push access to be seen; without one this warns) | GitHub |

@@ -179,6 +179,33 @@ jobs:
         with:
           command: check
           working-directory: testdata/e2e/fixture
+      - name: Release preflight (offline)
+        # A pull request checks out a detached merge commit, so git.branch
+        # fails: this checks that the action reports, not that it passes.
+        id: preflight
+        continue-on-error: true
+        uses: ./
+        with:
+          command: preflight
+          tag: v9.9.9
+          offline: "true"
+          working-directory: testdata/e2e/fixture
+      - name: Check preflight outputs
+        env:
+          STATUS: ${{ steps.preflight.outputs.preflight-status }}
+          CODE: ${{ steps.preflight.outputs.preflight-exit-code }}
+          REPORT: ${{ steps.preflight.outputs.preflight-report }}
+          OUTCOME: ${{ steps.preflight.outcome }}
+        run: |
+          echo "status=$STATUS code=$CODE outcome=$OUTCOME report=$REPORT"
+          jq -e '.schema_version == 1 and .offline == true and (.checks | length) > 20' "$REPORT"
+          [[ "$(jq -r .status "$REPORT" | tr -d '\r')" == "$STATUS" ]]
+          case "$STATUS" in
+            pass|warn) [[ "$CODE" == 0 && "$OUTCOME" == success ]] ;;
+            fail) [[ "$CODE" == 1 && "$OUTCOME" == failure ]] ;;
+            *) echo "unexpected status"; exit 1 ;;
+          esac
+          jq -e '[.checks[] | select(.group == "github")] | all(.status == "SKIP")' "$REPORT"
 
   action-boundary:
     # Runs the action on a real runner with sentinel tokens in the job env,

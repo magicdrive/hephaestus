@@ -405,6 +405,7 @@ matching command-line flags override them.
 | `secrets` | list of names | none | Secret names that must exist (values are never read) |
 | `tap_token_secret` | string | `HOMEBREW_TAP_GITHUB_TOKEN` | Secret holding the tap token, required when a formula is published to a tap |
 | `skip` | list of check IDs | none | Checks not to run; an unknown ID is an error |
+| `changelog` | relative path | none | A changelog that must name the tag (or its version) before tagging, checked by `config.release-notes` with `release.github.notes_file` |
 
 ```yaml
 preflight:

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/magicdrive/hephaestus/internal/config"
+	"github.com/magicdrive/hephaestus/internal/ghaction"
 	"github.com/magicdrive/hephaestus/internal/github"
 	"github.com/magicdrive/hephaestus/internal/preflight"
 )
@@ -33,7 +34,7 @@ func (l *stringList) Set(v string) error {
 // git and GitHub checks still run.
 func preflightCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *redactor) int {
 	var in preflight.Input
-	var format, tokenEnv string
+	var format, tokenEnv, reportPath string
 	var strict bool
 	var secrets, skips stringList
 	fs := flag.NewFlagSet("preflight", flag.ContinueOnError)
@@ -42,6 +43,7 @@ func preflightCmd(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	fs.StringVar(&in.ConfigPath, "config", "", "configuration file (default: hephaestus.yaml in the current directory)")
 	fs.StringVar(&in.Repo, "repo", "", "owner/name of the release repository (default: release.github, then the git remote)")
 	fs.StringVar(&format, "format", "text", "output format: text or json")
+	fs.StringVar(&reportPath, "report", "", "also write the JSON report to this file")
 	fs.BoolVar(&strict, "strict", false, "treat WARN and UNKNOWN as failures")
 	fs.BoolVar(&in.Offline, "offline", false, "skip every check that needs the network (GitHub API, git ls-remote)")
 	fs.StringVar(&in.Remote, "remote", "", "git remote releases are pushed to (default: preflight.remote, then origin)")
@@ -115,13 +117,46 @@ func preflightCmd(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		fmt.Fprintf(stderr, "hephaestus preflight: %v\n", err)
 		return preflight.ExitUsage
 	}
+	if reportPath != "" {
+		if err := writeReport(reportPath, rep, red); err != nil {
+			fmt.Fprintf(stderr, "hephaestus preflight: --report: %v\n", err)
+			return preflight.ExitFail
+		}
+	}
 	if format == "json" {
 		if err := rep.WriteJSON(stdout); err != nil {
 			fmt.Fprintf(stderr, "hephaestus preflight: %v\n", err)
 			return preflight.ExitFail
 		}
-	} else {
-		rep.WriteText(stdout)
+		return rep.ExitCode()
+	}
+	rep.WriteText(stdout)
+	// In GitHub Actions: annotations on the run page and a summary table.
+	// Annotations are workflow commands on stdout, so never with JSON.
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		var rows [][]string
+		for _, c := range rep.Checks {
+			// Through stdout, which redacts known secrets.
+			switch c.Status {
+			case preflight.Fail:
+				fmt.Fprint(stdout, ghaction.Annotation("error", "preflight "+c.ID, c.Message))
+			case preflight.Warn, preflight.Unknown:
+				fmt.Fprint(stdout, ghaction.Annotation("warning", "preflight "+c.ID+" "+string(c.Status), c.Message))
+			}
+			rows = append(rows, []string{string(c.Status), c.ID, c.Message})
+		}
+		_ = ghaction.AppendSummary(red.redact(fmt.Sprintf("### Release preflight: %s %s — %s\n\n%s\n", rep.Repository, rep.Tag, strings.ToUpper(rep.Status),
+			ghaction.Table([]string{"Status", "Check", "Detail"}, rows))))
 	}
 	return rep.ExitCode()
+}
+
+// writeReport writes the JSON report to path (created or truncated), with
+// known secrets redacted like every other output.
+func writeReport(path string, rep *preflight.Report, red *redactor) error {
+	var b strings.Builder
+	if err := rep.WriteJSON(&b); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(red.redact(b.String())), 0o644) //nolint:gosec // G306: a report, not a secret
 }
