@@ -40,7 +40,7 @@ Exit codes: `0` written, `1` the file exists or cannot be written, `2` usage.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--tag` | `$GITHUB_REF_NAME` on tag pushes | release tag |
-| `--snapshot` | off | build without a tag (`0.0.0-SNAPSHOT`); release and tap stages are skipped, and refused when named |
+| `--snapshot` | off | build without a tag (`0.0.0-SNAPSHOT`); release, formula and tap stages (they need a tag) are skipped, and refused when named |
 | `--stages` (`run`) | every configured stage | comma-separated stages, or `all` |
 | `--phase` (`run`) | — | `local` (build, archive, checksum) or `publish` (release, formula, tap) |
 | `--fresh` | off | ignore an existing manifest instead of continuing from it |

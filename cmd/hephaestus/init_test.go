@@ -59,7 +59,17 @@ func TestInitTemplatesProduceReleases(t *testing.T) {
 					t.Skip("go is not installed")
 				}
 			}
-			if code, out, errs := runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0", "--stages", tc.stages); code != 0 {
+			if tc.kind != "go" {
+				// The next step init prints: a snapshot of every configured
+				// stage that needs no tag (no formula, release or tap).
+				if code, out, errs := runCLI(t, "run", "--config", cfg, "--snapshot"); code != 0 {
+					t.Fatalf("run --snapshot: %d\n%s%s", code, out, errs)
+				}
+				if _, err := os.Stat(filepath.Join(dir, "dist", "homebrew", "mycli.rb")); err == nil {
+					t.Error("run --snapshot generated a formula")
+				}
+			}
+			if code, out, errs := runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0", "--fresh", "--stages", tc.stages); code != 0 {
 				t.Fatalf("run: %d\n%s%s", code, out, errs)
 			}
 			for _, name := range tc.want {
@@ -68,7 +78,7 @@ func TestInitTemplatesProduceReleases(t *testing.T) {
 				}
 			}
 			formula, _ := os.ReadFile(filepath.Join(dir, "dist", "homebrew", "mycli.rb"))
-			if !strings.Contains(string(formula), `bin.install "mycli"`) || !strings.Contains(string(formula), "https://github.com/acme/mycli/releases/download/v1.0.0/") {
+			if !strings.Contains(string(formula), `bin.install "mycli"`) || !strings.Contains(string(formula), `system bin/"mycli", "--version"`) || !strings.Contains(string(formula), "https://github.com/acme/mycli/releases/download/v1.0.0/") {
 				t.Errorf("formula:\n%s", formula)
 			}
 		})

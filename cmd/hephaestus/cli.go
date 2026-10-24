@@ -93,7 +93,7 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 	fs.StringVar(&opts.ConfigPath, "config", "", "configuration file (default: hephaestus.yaml in the current directory)")
 	fs.StringVar(&opts.Tag, "tag", "", "release tag (default: $GITHUB_REF_NAME on tag pushes)")
 	fs.StringVar(&opts.Commit, "commit", "", "commit SHA (default: $GITHUB_SHA)")
-	fs.BoolVar(&opts.Snapshot, "snapshot", false, "build without a tag (version 0.0.0-SNAPSHOT); configured release and tap stages are skipped, and refused when named in --stages")
+	fs.BoolVar(&opts.Snapshot, "snapshot", false, "build without a tag (version 0.0.0-SNAPSHOT); configured release, formula and tap stages are skipped, and refused when named in --stages")
 	fs.BoolVar(&opts.DryRun, "dry-run", false, "plan release and tap publication without writing to GitHub")
 	fs.BoolVar(&opts.Fresh, "fresh", false, "ignore an existing manifest instead of continuing from it")
 	fs.StringVar(&opts.Repo, "repo", "", "owner/name of the release repository (default: config, then $GITHUB_REPOSITORY)")
@@ -138,9 +138,10 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 	if stages == "" {
 		list = configuredStages(cfg)
 		if opts.Snapshot {
-			// A snapshot never publishes: without explicit stages it runs
-			// every configured stage except release and tap.
-			list = slices.DeleteFunc(list, func(s pipeline.Stage) bool { return s == pipeline.Release || s == pipeline.Tap })
+			// A snapshot never publishes and has no tag: without explicit
+			// stages it runs every configured stage except release, formula
+			// (its URLs and version come from the tag) and tap.
+			list = slices.DeleteFunc(list, needsTag)
 		}
 		if len(list) == 0 {
 			fmt.Fprintln(stderr, "error: the configuration declares no stages")

@@ -41,7 +41,7 @@ could shadow it.
 | `tag` | `""` | Release tag. Empty: the pushed tag (`github.ref_name` when the workflow runs for a tag). |
 | `strict` | `"false"` | With `command: preflight`: `"true"` treats `WARN` and `UNKNOWN` checks as failures. |
 | `offline` | `"false"` | With `command: preflight`: `"true"` runs only the checks that need no network. |
-| `snapshot` | `"false"` | `"true"` builds without a tag (version `0.0.0-SNAPSHOT`). Configured release and tap stages are skipped; naming them in `stages` is an error. |
+| `snapshot` | `"false"` | `"true"` builds without a tag (version `0.0.0-SNAPSHOT`). Configured release, formula and tap stages (they need a tag) are skipped; naming them in `stages` is an error. |
 | `dry-run` | `"false"` | `"true"` plans release and tap writes without performing them (reads still use the tokens when given). |
 | `fresh` | `"false"` | `"true"` ignores an existing manifest instead of continuing from it. |
 | `working-directory` | `.` | Directory to run in (the project root when the configuration is there). |
