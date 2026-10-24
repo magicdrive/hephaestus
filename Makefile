@@ -1,8 +1,9 @@
 # Makefile for hephaestus
 #
 # Tool versions here are the ones CI uses; TestMakefile_ToolVersionsMatchCI
-# keeps them equal. Releases are cut by pushing a tag (see docs/releasing.md),
-# never from this Makefile.
+# keeps them equal. Releases are published only by the release workflow on a
+# tag push; `make publish vX.Y.Z` checks, creates and pushes that tag and
+# follows the workflow (see docs/releasing.md).
 
 BUILD_DIR = $(CURDIR)/build
 BINARY_NAME = hephaestus
@@ -101,6 +102,74 @@ dev-tools:
 goreg:
 	git ls-files '*.go' | grep -v '/testdata/' | xargs -I GOFILE goreg -w GOFILE
 
+# Release Hephaestus (docs/releasing.md):
+#   make publish v1.2.3          (or VERSION=v1.2.3, or tag=v1.2.3)
+#   make publish-check v1.2.3    preflight only
+#   make publish-status v1.2.3   what exists for a version
+#   make publish-watch v1.2.3    follow an already pushed tag
+# The version given as a goal is a no-op goal (.DEFAULT). It reaches the publish
+# tool through the environment, never through a shell command line, and the
+# tool validates it. YES=1 on the command line skips the prompt.
+PUBLISH = go run ./internal/cmd/publish
+PUBLISH_TARGETS = publish publish-check publish-status publish-watch publish-help
+
+ifneq ($(filter $(PUBLISH_TARGETS),$(MAKECMDGOALS)),)
+PUBLISH_GOAL := $(firstword $(MAKECMDGOALS))
+PUBLISH_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
+ifeq ($(filter $(PUBLISH_TARGETS),$(PUBLISH_GOAL)),)
+$(error publish targets come first and alone: make publish v1.2.3)
+endif
+ifneq ($(filter $(PUBLISH_TARGETS),$(PUBLISH_ARGS)),)
+$(error give one publish target at a time)
+endif
+ifneq ($(word 2,$(PUBLISH_ARGS)),)
+$(error one version is expected, got: $(PUBLISH_ARGS))
+endif
+ifeq ($(PUBLISH_GOAL),publish-help)
+ifneq ($(PUBLISH_ARGS),)
+$(error publish-help takes no version)
+endif
+endif
+export HEPHAESTUS_PUBLISH_ARGS := $(PUBLISH_ARGS)
+export HEPHAESTUS_PUBLISH_VERSION := $(if $(filter command line,$(origin VERSION)),$(VERSION))
+export HEPHAESTUS_PUBLISH_TAG := $(if $(filter command line,$(origin tag)),$(tag))
+PUBLISH_YES := $(if $(and $(filter command line,$(origin YES)),$(filter 1,$(YES))),-yes)
+ifneq ($(PUBLISH_ARGS),)
+ifeq ($(filter v0% v1% v2% v3% v4% v5% v6% v7% v8% v9% 0% 1% 2% 3% 4% 5% 6% 7% 8% 9%,$(PUBLISH_ARGS)),)
+$(error "$(PUBLISH_ARGS)" is not a version: make $(PUBLISH_GOAL) v1.2.3)
+endif
+# The version goal has no rule of its own: it is the publish target's
+# argument. (No other target starts with v<digit>, so none is shadowed.)
+.DEFAULT:
+	@:
+endif
+endif
+
+# Check, tag, push and follow a release
+.PHONY: publish
+publish:
+	@$(PUBLISH) publish -from-make $(PUBLISH_YES)
+
+# Release preflight only (no tag, no push, no GitHub writes)
+.PHONY: publish-check
+publish-check:
+	@$(PUBLISH) check -from-make
+
+# Show what exists for a version (read-only)
+.PHONY: publish-status
+publish-status:
+	@$(PUBLISH) status -from-make
+
+# Follow the release run of an already pushed tag and verify the release
+.PHONY: publish-watch
+publish-watch:
+	@$(PUBLISH) watch -from-make
+
+# Show how releasing works and its safety rules
+.PHONY: publish-help
+publish-help:
+	@$(PUBLISH) help
+
 .PHONY: help
 help:
 	@echo "Makefile commands:"
@@ -120,4 +189,9 @@ help:
 	@echo "  make clean          - Remove build artifacts"
 	@echo "  make dev-tools      - Install development tools"
 	@echo "  make goreg          - Order imports with goreg"
+	@echo "  make publish vX.Y.Z        - Release: preflight, confirm, tag, push, follow, verify"
+	@echo "  make publish-check vX.Y.Z  - Release preflight only"
+	@echo "  make publish-status vX.Y.Z - Show the release state of a version"
+	@echo "  make publish-watch vX.Y.Z  - Follow an already pushed release tag"
+	@echo "  make publish-help          - How releasing works"
 	@echo "  make help           - Show this message"

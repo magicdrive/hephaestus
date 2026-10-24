@@ -47,6 +47,7 @@ config ──► pipeline.Check ──► build ──► archive ──► chec
 | `internal/pathutil`, `internal/glob` | Lexical path validation; glob matching and walking | Touch the file system (pathutil) |
 | `internal/compat/goreleaser` | Classify GoReleaser `brews` keys | Silently drop a key |
 | `internal/ghaction` | Step outputs and summary | Let a value inject another output |
+| `internal/publish` | Release Hephaestus itself (`make publish`): preflight, annotated tag push, follow and verify the release run | Publish, upload or write to GitHub; move, delete or force-push a tag |
 | `cmd/hephaestus` | Flags, stage loop, report | Contain stage logic |
 
 ## 2. Invariants
@@ -176,6 +177,20 @@ improvement and is not.
     every action input and output is documented; workflows pin actions and
     gate publication on the full CI and `verify-dist.sh`.
     Authority: `repo_test.go`.
+
+15. **A tag push is the only release trigger, and a pushed tag is final.**
+    `make publish` pushes one annotated tag, never forced, only after a
+    preflight that requires the exact commit's CI to be green, and then only
+    observes: the release workflow is the sole publisher. A version is a
+    prerelease exactly when `version.Info.IsPrerelease` says so; the release
+    stage, `skip_upload: auto` and the workflow's tap steps (through
+    `publish plan`) all use it, and a prerelease's tap steps get no tap
+    token.
+    Authority: `internal/publish` (`Publish`, `Preflight`), `release.yml`.
+    Tests: `TestPublishRefusals`, `TestGitCLI`, `TestGHCLIIsReadOnly`,
+    `TestReleaseWorkflow_TapTokenOnlyWhenTapPublished`,
+    `TestPrereleaseTapNeedsNoToken`, `TestMakefile_Publish`.
+    Danger: "just re-tag it" after a failed release.
 
 ## 3. Verifying a change
 

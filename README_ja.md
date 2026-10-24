@@ -292,7 +292,7 @@ Formula はマニフェストから生成します。URL は公開したリリ�
 | [Architecture overview](docs/architecture/overview.md) | ステージ、Artifact Manifest、所有権、データの流れ |
 | [Threat model](docs/security/threat-model.md) | 資産、攻撃者、対策、残余リスク |
 | [Development](docs/development.md) | make ターゲット、テスト、golden ファイル、fuzz、E2E |
-| [Releasing](docs/releasing.md) | Hephaestus 自身のリリース手順 |
+| [Releasing](docs/releasing.md) | Hephaestus 自身のリリース手順（`make publish vX.Y.Z`、プレリリース、失敗時の復旧） |
 | [Repository conventions](docs/architecture/repository-conventions.md) | Ark・Enma と共有する規約 |
 | [Architecture](ARCHITECTURE.md) | コントリビューター向けの不変条件 |
 | [Security policy](SECURITY.md) | サポート対象のバージョン、報告方法 |

@@ -15,11 +15,14 @@ type Info struct {
 	Minor      string
 	Patch      string
 	Prerelease string // "rc.1"
+	Build      string // build metadata after "+", e.g. "build.5"
 }
 
 var (
-	tagRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
-	semverRe = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$`)
+	tagRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
+	// semverRe is SemVer 2.0.0 without the leading "v": dot-separated,
+	// non-empty pre-release and build identifiers.
+	semverRe = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$`)
 )
 
 // Parse validates a tag. Tags need not be semantic versions, but when they
@@ -30,10 +33,16 @@ func Parse(tag string) (Info, error) {
 	}
 	info := Info{Tag: tag, Version: strings.TrimPrefix(tag, "v")}
 	if m := semverRe.FindStringSubmatch(info.Version); m != nil {
-		info.Major, info.Minor, info.Patch, info.Prerelease = m[1], m[2], m[3], m[4]
+		info.Major, info.Minor, info.Patch, info.Prerelease, info.Build = m[1], m[2], m[3], m[4], m[5]
 	}
 	return info, nil
 }
 
+// IsSemver reports whether the tag is a semantic version (with or without a
+// leading "v").
+func (i Info) IsSemver() bool { return i.Major != "" }
+
 // IsPrerelease reports whether the tag is a semantic-version prerelease.
+// This is the single definition of "prerelease" for a tag: the release
+// stage (prerelease: auto) and skip_upload: auto both use it.
 func (i Info) IsPrerelease() bool { return i.Prerelease != "" }

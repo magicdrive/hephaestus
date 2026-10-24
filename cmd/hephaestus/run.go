@@ -177,7 +177,7 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 		ChecksumDisabled: cfg.Checksum.Disable, HasGitHubRelease: cfg.Release.GitHub.IsEnabled(),
 		HasBrews: len(cfg.Brews) > 0, BrewsHaveURL: brewsHave(cfg, func(b config.Brew) bool { return b.URLTemplate != "" }),
 		BrewsHaveTap: brewsHave(cfg, func(b config.Brew) bool { return b.Repository.Owner != "" && b.Repository.Name != "" }),
-		SkipTapIf:    brewsHave(cfg, func(b config.Brew) bool { return b.SkipUpload == "true" }),
+		SkipTapIf:    brewsHave(cfg, func(b config.Brew) bool { return skipsTap(b, vars) }),
 		Tag:          info.Tag, Token: token != "", DryRun: opts.DryRun,
 		TapToken: tapToken != "" || brewsHave(cfg, func(b config.Brew) bool { return b.Repository.Token != "" }),
 	}
@@ -378,6 +378,15 @@ func archivesSelfFed(cfg *config.Config) bool {
 		}
 	}
 	return len(cfg.Archives) > 0
+}
+
+// skipsTap reports whether the tap stage will skip b for this version
+// (skip_upload: true, or auto on a prerelease), so it needs no tap token.
+// A brew whose publish settings do not resolve is not skipped: the tap
+// stage reports the error.
+func skipsTap(b config.Brew, vars tmpl.Vars) bool {
+	p, err := homebrew.ResolvePublish(&b, vars)
+	return err == nil && p.Skip
 }
 
 func brewsHave(cfg *config.Config, pred func(config.Brew) bool) bool {

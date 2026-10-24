@@ -79,6 +79,7 @@ import (
 	"github.com/magicdrive/hephaestus/internal/github"
 	"github.com/magicdrive/hephaestus/internal/manifest"
 	"github.com/magicdrive/hephaestus/internal/tmpl"
+	"github.com/magicdrive/hephaestus/internal/version"
 )
 
 // Limits imposed by GitHub.
@@ -114,7 +115,6 @@ var (
 	assetNameRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
 	repoNameRe  = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 	fullSHARe   = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
-	semverRe    = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 )
 
 // Input configures Run.
@@ -274,10 +274,10 @@ func validateTag(tag string) error {
 }
 
 // IsPrerelease reports whether tag is a semantic version with a
-// pre-release part (v1.0.0-rc.1).
+// pre-release part (v1.0.0-rc.1), as version.Info.IsPrerelease defines it.
 func IsPrerelease(tag string) bool {
-	m := semverRe.FindStringSubmatch(tag)
-	return m != nil && m[4] != ""
+	info, err := version.Parse(tag)
+	return err == nil && info.IsPrerelease()
 }
 
 func (r *runner) prepareText() error {

@@ -48,7 +48,7 @@ Reference snapshots: Ark at `50dc11e`, Enma at `4097a59` (2026-10-23).
 
 | Element | Source | Reason |
 | --- | --- | --- |
-| `make publish tag=…` (tag and push from a developer machine) | Ark, Enma | Releases must come only from a tag push gated by CI. The Makefile never tags or pushes. |
+| `make publish tag=…` as a bare `git tag && git push` | Ark, Enma, goreg, kjak | Kept the command (`make publish vX.Y.Z`; `tag=` is accepted too) but not its implementation: the release still comes only from the tag push gated by CI. `make publish` runs a read-only preflight (branch, clean worktree, sync with origin, tag absent locally and remotely, CI green on the exact commit, tag ruleset, environment), asks, pushes one annotated tag without force, then follows and verifies the release run ([releasing.md](../releasing.md)). |
 | One personal access token for both the release and the tap | Ark, Enma (`PERSONAL_GITHUB_TOKEN`) | Least privilege: the release uses the workflow's `GITHUB_TOKEN`; only the tap step receives `HOMEBREW_TAP_GITHUB_TOKEN`, scoped to the tap repository, inside a `release` environment. |
 | GoReleaser for our own releases (`version: '~> v1'` / deprecated `brews`) | Ark, Enma | Hephaestus releases itself with Hephaestus (`hephaestus.yaml`). Dogfooding exercises every stage on every release. |
 | Per-platform `make` cross-builds | Ark | Duplicates the release configuration (and Ark's copy has an `LDFAGS` typo that drops the version). The build matrix lives in `hephaestus.yaml` only; `make snapshot` uses it. |

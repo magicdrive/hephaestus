@@ -23,6 +23,7 @@ Homebrew only for the end-to-end test.
 | `make clean` | Remove `./build` |
 | `make dev-tools` | Install `goreg` |
 | `make goreg` | Order imports (std, third party, `github.com/magicdrive`, local) |
+| `make publish vX.Y.Z` | Release Hephaestus ([releasing.md](releasing.md)); also `publish-check`, `publish-status`, `publish-watch`, `publish-help` |
 
 `GOLANGCI_LINT_VERSION` and `GOVULNCHECK_VERSION` in the Makefile must equal
 the values in `.github/workflows/ci.yml`; `TestMakefile_ToolVersionsMatchCI`

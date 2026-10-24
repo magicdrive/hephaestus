@@ -148,6 +148,30 @@ func TestPreflightErrors(t *testing.T) {
 	}
 }
 
+// TestPrereleaseTapNeedsNoToken: with skip_upload: auto a prerelease never
+// reaches the tap, so the tap stage must succeed without a tap token (the
+// release workflow does not pass one for prereleases), while a stable
+// version still requires it.
+func TestPrereleaseTapNeedsNoToken(t *testing.T) {
+	clearGitHubEnv(t)
+	root := project(t, "release:\n  github: {owner: o, name: r}\nbrews: [{skip_upload: auto, repository: {owner: o, name: homebrew-tap}}]\n")
+	cfg := filepath.Join(root, "hephaestus.yaml")
+	code, _, errs := runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0-rc.1", "--stages", "build,archive,checksum,formula,tap")
+	if code != 0 || !strings.Contains(errs, "skipped: skip_upload is auto and 1.0.0-rc.1 is a prerelease") {
+		t.Fatalf("prerelease without a tap token: code %d\n%s", code, errs)
+	}
+	code, _, errs = runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0", "--stages", "build,archive,checksum,formula,tap", "--fresh")
+	if code != 1 || !strings.Contains(errs, "GITHUB_TOKEN cannot write") {
+		t.Errorf("stable without a tap token: code %d\n%s", code, errs)
+	}
+	// A tag that is not SemVer (a trailing dot) is no prerelease, so it
+	// needs the token too.
+	code, _, errs = runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0-rc.", "--stages", "build,archive,checksum,formula,tap", "--fresh")
+	if code != 1 || !strings.Contains(errs, "GITHUB_TOKEN cannot write") {
+		t.Errorf("non-SemVer tag without a tap token: code %d\n%s", code, errs)
+	}
+}
+
 func TestDryRunReleaseNeedsNoToken(t *testing.T) {
 	clearGitHubEnv(t)
 	root := project(t, "release:\n  github: {owner: o, name: r}\n")

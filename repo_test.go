@@ -30,10 +30,14 @@ type workflowJob struct {
 	Needs       yaml.Node         `yaml:"needs"`
 	Uses        string            `yaml:"uses"`
 	Permissions map[string]string `yaml:"permissions"`
+	Environment string            `yaml:"environment"`
 	Steps       []struct {
-		Name string `yaml:"name"`
-		Uses string `yaml:"uses"`
-		Run  string `yaml:"run"`
+		ID   string            `yaml:"id"`
+		Name string            `yaml:"name"`
+		If   string            `yaml:"if"`
+		Uses string            `yaml:"uses"`
+		Run  string            `yaml:"run"`
+		Env  map[string]string `yaml:"env"`
 	} `yaml:"steps"`
 }
 
