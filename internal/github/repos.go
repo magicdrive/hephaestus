@@ -92,6 +92,47 @@ func (c *Client) GetContents(ctx context.Context, owner, repo, path, ref string)
 	return &FileContent{Path: r.Path, SHA: r.SHA, Content: data}, nil
 }
 
+// DirEntry is one entry of a directory listing.
+type DirEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// Type is "file", "dir", "symlink" or "submodule".
+	Type string `json:"type"`
+}
+
+// ListDirectory lists a directory at ref (up to 1,000 entries, the contents
+// API limit). An empty path is the repository root; an empty ref means the
+// default branch. A missing directory is an error matching ErrNotFound.
+func (c *Client) ListDirectory(ctx context.Context, owner, repo, path, ref string) ([]DirEntry, error) {
+	if err := checkRepo(owner, repo); err != nil {
+		return nil, err
+	}
+	segs := []string{"contents"}
+	if path != "" {
+		p, err := splitPath("path", path)
+		if err != nil {
+			return nil, err
+		}
+		segs = append(segs, p...)
+	}
+	var q url.Values
+	if ref != "" {
+		q = url.Values{"ref": {ref}}
+	}
+	var raw json.RawMessage
+	if err := c.doJSON(ctx, http.MethodGet, repoURL(c.api, owner, repo, q, segs...), nil, &raw); err != nil {
+		return nil, err
+	}
+	if t := bytes.TrimSpace(raw); len(t) == 0 || t[0] != '[' {
+		return nil, fmt.Errorf("github: %q is not a directory", path)
+	}
+	var out []DirEntry
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("github: invalid directory listing: %w", err)
+	}
+	return out, nil
+}
+
 // CommitAuthor identifies a commit author or committer.
 type CommitAuthor struct {
 	Name  string `json:"name"`

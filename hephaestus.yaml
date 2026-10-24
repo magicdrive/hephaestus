@@ -56,7 +56,10 @@ brews:
   - name: hephaestus
     ids: [hephaestus]
     commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
-    directory: Formula
+    # magicdrive/homebrew-tap keeps its formulae at the repository root;
+    # creating Formula/ there would hide them from Homebrew.
+    # Prereleases (v1.2.3-rc.1) never update the tap.
+    skip_upload: auto
     install: |
       bin.install "hephaestus"
     test: |

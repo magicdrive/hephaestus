@@ -245,7 +245,7 @@ func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) 
 	case r.Method == "GET" && len(rest) == 0:
 		reply(w, 200, map[string]any{"full_name": full, "name": parts[1], "default_branch": repo.defaultBranch})
 
-	case len(rest) >= 2 && rest[0] == "contents":
+	case len(rest) >= 1 && rest[0] == "contents":
 		path := strings.Join(rest[1:], "/")
 		switch r.Method {
 		case "GET":
@@ -260,6 +260,10 @@ func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) 
 			}
 			content, ok := f.commits[sha][path]
 			if !ok {
+				if list := dirListing(f.commits[sha], path); list != nil {
+					reply(w, 200, list)
+					return
+				}
 				notFound(w)
 				return
 			}
@@ -405,6 +409,34 @@ func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) 
 		f.t.Errorf("fake GitHub: unhandled %s %s", r.Method, r.URL.Path)
 		notFound(w)
 	}
+}
+
+// dirListing answers a contents request for a directory ("" is the root),
+// or returns nil when dir holds nothing.
+func dirListing(files map[string]string, dir string) []any {
+	prefix := ""
+	if dir != "" {
+		prefix = dir + "/"
+	}
+	seen := map[string]bool{}
+	var out []any
+	for p := range files {
+		rest, ok := strings.CutPrefix(p, prefix)
+		if !ok {
+			continue
+		}
+		name, _, nested := strings.Cut(rest, "/")
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		typ := "file"
+		if nested {
+			typ = "dir"
+		}
+		out = append(out, map[string]any{"name": name, "path": prefix + name, "type": typ})
+	}
+	return out
 }
 
 func (f *fakeGitHub) pullJSON(p *fakePull) map[string]any {

@@ -50,7 +50,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -304,6 +306,70 @@ func (p *publisher) current(ctx context.Context, owner, repo, branch string) (*g
 	return fc, nil
 }
 
+// formulaDirs are the directories Homebrew looks for formulae in before the
+// tap's root, in order (Tap#formula_dir). The first one that exists is the
+// tap's only formula directory: formulae anywhere else are never found.
+// Sharding into subdirectories works only under these directories; at the
+// root, only top-level *.rb files are formulae.
+var formulaDirs = []string{"Formula", "HomebrewFormula"}
+
+// checkFormulaDir makes sure Homebrew will find the formula at p.p.Path in
+// the tap as it is on ref, and that adding it does not hide the tap's other
+// formulae: creating Formula/ in a tap that keeps formulae at its root
+// makes Homebrew read only Formula/.
+func (p *publisher) checkFormulaDir(ctx context.Context, owner, repo, ref string) error {
+	full := owner + "/" + repo
+	entries, err := p.c.ListDirectory(ctx, owner, repo, "", ref)
+	if errors.Is(err, github.ErrNotFound) {
+		entries, err = nil, nil // an empty repository
+	}
+	if err != nil {
+		return hint(fmt.Errorf("listing %s@%s to find its formula directory: %w", full, ref, err), full)
+	}
+	dirs := map[string]bool{}
+	var rootFormulae []string
+	for _, e := range entries {
+		switch {
+		case e.Type == "dir":
+			dirs[e.Name] = true
+		case e.Type == "file" && strings.HasSuffix(e.Name, ".rb"):
+			rootFormulae = append(rootFormulae, e.Name)
+		}
+	}
+	active := ""
+	for _, d := range formulaDirs {
+		if dirs[d] {
+			active = d
+			break
+		}
+	}
+	target := path.Dir(p.p.Path)
+	if target == "." {
+		target = ""
+	}
+	top, _, _ := strings.Cut(target, "/")
+	switch {
+	case active != "":
+		if top == active {
+			return nil
+		}
+		return fmt.Errorf("%s keeps its formulae in %s/, the only directory Homebrew reads once it exists, so %s would never be found: set directory to %q", full, active, p.p.Path, active)
+	case target == "":
+		return nil
+	case slices.Contains(formulaDirs, top):
+		if len(rootFormulae) == 0 {
+			return nil // a new tap, or one without formulae yet
+		}
+		shown := rootFormulae
+		if len(shown) > 5 {
+			shown = append(shown[:5:5], "...")
+		}
+		return fmt.Errorf("%s keeps its formulae at the repository root (%s); creating %s/ would make Homebrew read only that directory and hide them: set directory to \"\" (the root) or move the existing formulae first", full, strings.Join(shown, ", "), top)
+	default:
+		return fmt.Errorf("%s keeps its formulae at the repository root, where Homebrew reads only top-level *.rb files, so %s would never be found: set directory to \"\" (the root)", full, p.p.Path)
+	}
+}
+
 func (p *publisher) defaultBranch(ctx context.Context, owner, repo string) (string, error) {
 	r, err := p.c.GetRepository(ctx, owner, repo)
 	if err != nil {
@@ -392,6 +458,9 @@ func (p *publisher) direct(ctx context.Context) error {
 		}
 	}
 	p.res.Branch = branch
+	if err := p.checkFormulaDir(ctx, owner, repo, branch); err != nil {
+		return err
+	}
 	wrote, existed, err := p.commit(ctx, owner, repo, branch, true)
 	if errors.Is(err, errDowngrade) {
 		p.skipDowngrade()
@@ -429,6 +498,9 @@ func (p *publisher) pullRequest(ctx context.Context) error {
 	}
 	if !cross && base == head {
 		return fmt.Errorf("the head branch %q is the base branch; set repository.branch to a different branch", head)
+	}
+	if err := p.checkFormulaDir(ctx, baseOwner, baseRepo, base); err != nil {
+		return err
 	}
 
 	// 1. Already on the base branch: nothing to propose.

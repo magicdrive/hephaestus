@@ -362,7 +362,7 @@ values substituted into them must consist of `A-Z a-z 0-9 . _ + - / @ : ~ = ,
 | `repository.pull_request.draft` | bool | `false` | Open the pull request as a draft. |
 | `repository.pull_request.base` | `{owner, name, branch}` or a branch string | the tap repository, its default branch | Pull request target; `owner` and `name` together (e.g. the upstream of a fork). |
 | `repository.pull_request.check_boxes` | bool | — | Accepted with a warning; no effect. |
-| `directory` | template | tap root | Directory of the formula inside the tap (commonly `Formula`). |
+| `directory` | template | tap root | Directory of the formula inside the tap (commonly `Formula`). Before writing, the tap stage checks it against the tap the way Homebrew reads it (the first of `Formula/`, `HomebrewFormula/` and the root that exists is the only formula directory; at the root only top-level `*.rb` files count) and refuses a formula Homebrew would not find, or a new `Formula/` that would hide formulae kept at the root. |
 | `folder` | — | — | Deprecated GoReleaser name of `directory`; converted with a warning. |
 | `tap` | — | — | Deprecated GoReleaser name of `repository`; converted with a warning. |
 | `commit_msg_template` | template | `Brew formula update for {{ .ProjectName }} version {{ .Tag }}` | Commit message (and pull request title). |

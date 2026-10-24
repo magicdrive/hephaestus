@@ -13,6 +13,7 @@ import (
 
 	"github.com/magicdrive/hephaestus/internal/config"
 	"github.com/magicdrive/hephaestus/internal/github"
+	"github.com/magicdrive/hephaestus/internal/homebrew"
 	"github.com/magicdrive/hephaestus/internal/manifest"
 	"github.com/magicdrive/hephaestus/internal/tmpl"
 )
@@ -581,5 +582,58 @@ func TestNoRefUpdateAPI(t *testing.T) {
 	}
 	if strings.Contains(string(gh), "func (c *Client) UpdateRef") || strings.Contains(string(gh), "\"force\"") {
 		t.Fatal("the GitHub client gained a reference update")
+	}
+}
+
+// TestFormulaDirectory follows Homebrew's Tap#formula_dir: the first of
+// Formula/, HomebrewFormula/ and the root that exists is the only place
+// formulae are read from.
+func TestFormulaDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		path  string
+		want  string // "" means accepted
+	}{
+		{"new tap", nil, "Formula/tool.rb", ""},
+		{"tap without formulae", map[string]string{"README.md": "x"}, "Formula/tool.rb", ""},
+		{"root tap", map[string]string{"ark.rb": "x", "README.md": "x"}, "tool.rb", ""},
+		{"Formula tap", map[string]string{"Formula/ark.rb": "x", "legacy.rb": "x"}, "Formula/tool.rb", ""},
+		{"sharded", map[string]string{"Formula/a/ark.rb": "x"}, "Formula/t/tool.rb", ""},
+		{"Formula/ would hide root formulae", map[string]string{"ark.rb": "x", "enma.rb": "x"}, "Formula/tool.rb", "hide them"},
+		{"HomebrewFormula/ would hide root formulae", map[string]string{"ark.rb": "x"}, "HomebrewFormula/tool.rb", "hide them"},
+		{"root formula in a Formula tap", map[string]string{"Formula/ark.rb": "x"}, "tool.rb", `set directory to "Formula"`},
+		{"HomebrewFormula wins over the root", map[string]string{"HomebrewFormula/ark.rb": "x"}, "Formula/tool.rb", `set directory to "HomebrewFormula"`},
+		{"subdirectory of a root tap", map[string]string{"ark.rb": "x"}, "pkg/tool.rb", "never be found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake(t, token)
+			f.addRepo(tapRepo, "main", tc.files)
+			p := &publisher{c: f.client(t, token), p: homebrew.Publish{Path: tc.path}}
+			err := p.checkFormulaDir(context.Background(), "acme", "homebrew-tap", "main")
+			if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestFormulaDirectoryBlocksPublishing checks that a misplaced formula is
+// refused before anything is written, in both modes.
+func TestFormulaDirectoryBlocksPublishing(t *testing.T) {
+	for _, direct := range []bool{false, true} {
+		f := newFake(t, token)
+		f.addRepo(tapRepo, "main", map[string]string{"ark.rb": "class Ark < Formula\nend\n"})
+		fx := newFixture(t)
+		if direct {
+			fx.direct()
+		}
+		res, err := Run(context.Background(), fx.input(f.client(t, token)))
+		if err == nil || len(res) != 1 || res[0].Status != StatusFailed || !strings.Contains(err.Error(), "hide them") {
+			t.Fatalf("direct=%v: %+v, %v", direct, res, err)
+		}
+		if w := f.writes(); len(w) != 0 {
+			t.Fatalf("direct=%v: writes %v", direct, w)
+		}
 	}
 }
