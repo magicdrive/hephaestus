@@ -108,6 +108,18 @@ func Warning(msg string) {
 	}
 }
 
+// Annotation formats an annotation workflow command ("error", "warning" or
+// "notice") with a title, for the caller to write to stdout (through its
+// own redaction).
+func Annotation(kind, title, msg string) string {
+	return fmt.Sprintf("::%s title=%s::%s\n", kind, escapeProperty(title), Escape(msg))
+}
+
+// escapeProperty escapes a workflow command property value.
+func escapeProperty(s string) string {
+	return strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A", ":", "%3A", ",", "%2C").Replace(s)
+}
+
 // Escape escapes a workflow command value.
 func Escape(s string) string {
 	return strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A").Replace(s)

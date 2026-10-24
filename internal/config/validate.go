@@ -691,6 +691,11 @@ func (c *Config) validatePreflight(add func(path, format string, args ...any)) {
 			add(fmt.Sprintf("preflight.secrets[%d]", i), "%q is not a valid secret name", s)
 		}
 	}
+	if p.Changelog != "" {
+		if err := pathutil.ValidateRelative(p.Changelog); err != nil {
+			add("preflight.changelog", "%q: %v", p.Changelog, err)
+		}
+	}
 	// Check IDs are validated by the preflight itself, which knows them.
 	for i, s := range p.Skip {
 		if !checkIDRe.MatchString(s) {

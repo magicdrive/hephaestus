@@ -146,6 +146,21 @@ func TestPreflightNeverPrintsTheToken(t *testing.T) {
 			t.Errorf("%s strict: code %d, want 1", format, code)
 		}
 	}
+	// In GitHub Actions: annotations, the step summary and --report.
+	t.Setenv("GITHUB_ACTIONS", "true")
+	report := filepath.Join(t.TempDir(), "preflight.json")
+	code, out, errs := runCLI(t, "preflight", "--tag", "v1.0.0", "--report", report, "--skip", "git.head.pushed,tag.remote,tag.order")
+	summary, _ := os.ReadFile(os.Getenv("GITHUB_STEP_SUMMARY"))
+	rep, _ := os.ReadFile(report)
+	for name, s := range map[string]string{"stdout": out, "stderr": errs, "summary": string(summary), "report": string(rep)} {
+		if strings.Contains(s, token) {
+			t.Errorf("%s contains the token", name)
+		}
+	}
+	if code != 3 || !strings.Contains(out, "::warning title=preflight github.repository UNKNOWN::") ||
+		!strings.Contains(string(summary), "Release preflight: acme/tool v1.0.0") || !json.Valid(rep) {
+		t.Errorf("actions output: code %d\n%s\nsummary %s\nreport %s", code, out, summary, rep)
+	}
 	for _, m := range methods {
 		if m != http.MethodGet {
 			t.Errorf("%s request", m)

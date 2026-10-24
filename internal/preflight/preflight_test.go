@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,8 +82,29 @@ func TestScenarios(t *testing.T) {
 			f.in.Config = loadConfig(t, strings.Replace(testConfig, `checksum: {name: "{{ .Project }}_checksums.txt"}`, `checksum: {name: "TOOL_1.2.0_LINUX_AMD64.tar.gz"}`, 1))
 		}, "config.assets", Fail, "case-insensitively"},
 		{"draft release", "v1.2.0", func(f *fixture) {
-			f.in.Config = loadConfig(t, strings.Replace(testConfig, "{owner: acme, name: tool}", "{owner: acme, name: tool, draft: true}", 1))
+			f.in.Config = loadConfig(t, strings.Replace(testConfig, "notes_file: NOTES.md}", "notes_file: NOTES.md, draft: true}", 1))
 		}, "config.release", Warn, "draft"},
+		{"notes name the tag", "v1.2.0", nil, "config.release-notes", Pass, "NOTES.md name v1.2.0"},
+		{"notes of the previous version", "v1.2.0", func(f *fixture) { writeNotes(t, f, "# tool v1.1.0\n") }, "config.release-notes", Fail, "does not mention v1.2.0 (versions found: v1.1.0)"},
+		{"notes of the candidate, stable tag", "v1.2.0", func(f *fixture) { writeNotes(t, f, "# tool v1.2.0-rc.1\n") }, "config.release-notes", Fail, "does not mention v1.2.0"},
+		{"notes of the stable, candidate tag", "v1.2.0-rc.1", func(f *fixture) { writeNotes(t, f, "# tool v1.2.0\n") }, "config.release-notes", Fail, "does not mention v1.2.0-rc.1"},
+		{"notes with a longer version", "v1.2.0", func(f *fixture) { writeNotes(t, f, "see v1.2.01 and 11.2.0\n") }, "config.release-notes", Fail, "does not mention"},
+		{"notes with the bare version", "v1.2.0", func(f *fixture) { writeNotes(t, f, "## 1.2.0 (2026-10-25)\n") }, "config.release-notes", Pass, "name v1.2.0"},
+		{"notes missing", "v1.2.0", func(f *fixture) { os.Remove(filepath.Join(f.in.Config.Root, "NOTES.md")) }, "config.release-notes", Fail, "cannot be read"},
+		{"notes empty", "v1.2.0", func(f *fixture) { writeNotes(t, f, " \n") }, "config.release-notes", Fail, "is empty"},
+		{"changelog without the version", "v1.2.0", func(f *fixture) {
+			f.in.Config.Preflight.Changelog = "CHANGELOG.md"
+			os.WriteFile(filepath.Join(f.in.Config.Root, "CHANGELOG.md"), []byte("## v1.1.0\n"), 0o644)
+		}, "config.release-notes", Fail, "CHANGELOG.md does not mention v1.2.0"},
+		{"changelog with the version", "v1.2.0", func(f *fixture) {
+			f.in.Config.Preflight.Changelog = "CHANGELOG.md"
+			os.WriteFile(filepath.Join(f.in.Config.Root, "CHANGELOG.md"), []byte("## [1.2.0]\n"), 0o644)
+		}, "config.release-notes", Pass, "NOTES.md, CHANGELOG.md"},
+		{"notes outside the root", "v1.2.0", func(f *fixture) {
+			f.in.Config.Preflight.Changelog = "../escape.md"
+		}, "config.release-notes", Fail, "cannot be read"},
+		{"prerelease tag published as stable", "v1.2.0-rc.1", func(f *fixture) { f.in.Config.Release.GitHub.Prerelease = "false" }, "config.release", Warn, "published as a stable release"},
+		{"stable tag published as prerelease", "v1.2.0", func(f *fixture) { f.in.Config.Release.GitHub.Prerelease = "true" }, "config.release", Warn, "published as a prerelease"},
 		{"no brews", "v1.2.0", func(f *fixture) {
 			f.in.Config = loadConfig(t, testConfig[:strings.Index(testConfig, "brews:")]+"preflight: {environment: release}\n")
 		}, "config.formula", Skip, "no Homebrew"},
@@ -315,6 +338,7 @@ func ExampleChecks() {
 	// config.load
 	// config.assets
 	// config.release
+	// config.release-notes
 	// config.formula
 	// github.repository
 	// github.release

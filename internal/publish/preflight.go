@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/magicdrive/hephaestus/internal/homebrew"
+	"github.com/magicdrive/hephaestus/internal/preflight"
 )
 
 // Deps are publish's connections to the outside world.
@@ -24,6 +25,10 @@ type Deps struct {
 	Interactive bool
 	Now         func() time.Time
 	Sleep       func(ctx context.Context, d time.Duration) error
+	// Generic runs `hephaestus preflight --strict` for the tag (the
+	// generic, read-only release checks, internal/preflight). It is an
+	// additional gate: the checks above stay. Nil skips it (tests).
+	Generic func(ctx context.Context, tag string) (*preflight.Report, error)
 }
 
 // Check is one preflight result.
@@ -106,7 +111,32 @@ func Preflight(ctx context.Context, d *Deps, p *Project, pl *Plan) *Report {
 	} else {
 		preflightStable(ctx, d, p, pl, r)
 	}
+	if d.Generic != nil {
+		preflightGeneric(ctx, d, tag, r)
+	}
 	return r
+}
+
+// preflightGeneric adds the generic preflight (strict) as one more gate:
+// its summary, and every check that did not pass.
+func preflightGeneric(ctx context.Context, d *Deps, tag string, r *Report) {
+	rep, err := d.Generic(ctx, tag)
+	if err != nil {
+		r.addErr("generic preflight", err)
+		return
+	}
+	var parts []string
+	for _, s := range []preflight.Status{preflight.Fail, preflight.Unknown, preflight.Warn, preflight.Pass, preflight.Skip} {
+		if n := rep.Summary[s]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, strings.ToLower(string(s))))
+		}
+	}
+	r.add("generic preflight", rep.ExitCode() == preflight.ExitPass, "hephaestus preflight --strict: %s (%s)", rep.Status, strings.Join(parts, ", "))
+	for _, c := range rep.Checks {
+		if c.Status == preflight.Fail || c.Status == preflight.Unknown || c.Status == preflight.Warn {
+			r.add("  "+c.ID, false, "%s: %s", c.Status, c.Message)
+		}
+	}
 }
 
 func preflightGit(ctx context.Context, d *Deps, p *Project, tag string, r *Report) {

@@ -23,8 +23,11 @@ uploads or writes to GitHub itself.
 `make publish-check` verifies every row it can read (secret names only, never
 values). The generic, read-only `hephaestus preflight --tag vX.Y.Z`
 ([preflight.md](preflight.md)) runs the same kind of checks for any
-repository that releases with Hephaestus; `make publish` keeps its own
-checks for this repository.
+repository that releases with Hephaestus. `make publish-check` and
+`make publish` keep their own checks and also require that generic
+preflight to pass in strict mode (with the `gh` token), so a
+`RELEASE_NOTES.md` or `CHANGELOG.md` that does not name the tag stops the
+release before anything is tagged.
 
 ## Cutting a release
 
