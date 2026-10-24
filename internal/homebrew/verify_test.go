@@ -23,12 +23,17 @@ func checkRubySyntax(t *testing.T, content []byte) {
 }
 
 func TestVerifyMatch(t *testing.T) {
-	arts := fourPlatforms(false)
+	files := append(stdFiles(), file("NOTES.md", modeRegular), file("CHANGES.md", modeRegular), file("AUTHORS", modeRegular), file("mycli2src", modeExec))
+	var arts []manifest.Artifact
+	for _, a := range fourPlatforms(false) {
+		arts = append(arts, arch(a.OS, a.Arch, "", files, "mycli"))
+	}
+	// Every argument form, each file installed once.
 	w, err := verifyInstall("mycli", `bin.install "mycli"
 prefix.install "README.md", "LICENSE"
-doc.install ["README.md"]
-pkgshare.install %w[README.md LICENSE]
-bin.install("mycli" => "mycli2")`, arts)
+doc.install ["NOTES.md"]
+pkgshare.install %w[CHANGES.md AUTHORS]
+bin.install("mycli2src" => "mycli2")`, arts)
 	if err != nil || len(w) != 0 {
 		t.Errorf("warnings %v, err %v", w, err)
 	}
@@ -123,19 +128,21 @@ func TestVerifyConditions(t *testing.T) {
 		arch("darwin", "arm64", "", []manifest.File{file("mycli-mac", modeExec)}),
 		arch("linux", "amd64", "", []manifest.File{file("mycli-linux", modeExec)}),
 	}
-	code := `bin.install "mycli-mac" => "mycli" if OS.mac?
-bin.install "mycli-linux" => "mycli" unless OS.mac?
-if OS.linux? && Hardware::CPU.intel?
+	// Each block alone (one archive installs each file once).
+	for _, code := range []string{
+		"bin.install \"mycli-mac\" => \"mycli\" if OS.mac?\nbin.install \"mycli-linux\" => \"mycli\" unless OS.mac?",
+		"if OS.mac?\n  bin.install \"mycli-mac\"\nelse\n  bin.install \"mycli-linux\"\nend",
+	} {
+		if _, err := verifyInstall("x", code, arts); err != nil {
+			t.Errorf("%s: err = %v", code, err)
+		}
+	}
+	code := `if OS.linux? && Hardware::CPU.intel?
   bin.install "mycli-linux"
 elsif OS.mac?
   bin.install "unknowable"
 else
   bin.install "also-unknowable"
-end
-if OS.mac?
-  bin.install "mycli-mac"
-else
-  bin.install "mycli-linux"
 end`
 	w, err := verifyInstall("x", code, arts)
 	if err != nil {
@@ -248,4 +255,40 @@ func FuzzAnalyzeInstall(f *testing.F) {
 		_, _ = verifyInstall("x", code, arts)
 		_, _, _ = codeBlock("install", code, "    ")
 	})
+}
+
+// TestVerifyDuplicateInstalls: installs that cannot all succeed, or that
+// overwrite each other, are errors (Pathname#install moves its source).
+func TestVerifyDuplicateInstalls(t *testing.T) {
+	files := []manifest.File{file("t", modeExec), file("t.1", modeRegular), file("misc/", ""), file("misc/completions/", ""),
+		file("misc/completions/t-completion.sh", modeRegular), file("other", modeExec)}
+	arts := []manifest.Artifact{arch("darwin", "arm64", "", files, "t"), arch("linux", "amd64", "", files, "t")}
+	for _, tc := range []struct {
+		name, code, want string
+	}{
+		// magicdrive/t's first formula: the second install found nothing.
+		{"same source twice", "bin.install \"t\"\nbash_completion.install \"misc/completions/t-completion.sh\" => \"t\"\npkgshare.install \"misc/completions/t-completion.sh\"", "is installed twice"},
+		{"same destination", "bin.install \"t\"\nbin.install \"other\" => \"t\"", "two installs write bin/t"},
+		{"man page twice", "man1.install \"t.1\"\nman1.install \"t.1\"", "is installed twice"},
+		{"directory and a file in it", "pkgshare.install \"misc\"\nbash_completion.install \"misc/completions/t-completion.sh\"", "overlaps"},
+		{"zsh and fish from one file", "zsh_completion.install \"misc/completions/t-completion.sh\" => \"_t\"\nfish_completion.install \"misc/completions/t-completion.sh\"", "is installed twice"},
+		{"only on one platform", "bin.install \"t\"\nbin.install \"t\" if OS.linux?", arts[1].Name},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := verifyInstall("t", tc.code, arts)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	// The fixed formula: install once, link the completion.
+	ok := "bin.install \"t\"\nman1.install \"t.1\"\npkgshare.install \"misc/completions/t-completion.sh\"\nbash_completion.install_symlink pkgshare/\"t-completion.sh\" => \"t\""
+	if _, err := verifyInstall("t", ok, arts); err != nil {
+		t.Errorf("fixed formula: %v", err)
+	}
+	// Platform-exclusive installs of one name are fine.
+	excl := "bin.install \"t\" if OS.mac?\nbin.install \"other\" => \"t\" unless OS.mac?"
+	if _, err := verifyInstall("t", excl, arts); err != nil {
+		t.Errorf("platform-exclusive: %v", err)
+	}
 }

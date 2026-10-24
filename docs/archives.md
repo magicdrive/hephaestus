@@ -50,6 +50,28 @@ from `targets` if given, otherwise from the binaries recorded in the artifact
 manifest (optionally restricted by `builds`). With neither, the stage fails
 before writing anything.
 
+### Noarch archives
+
+A CLI that needs no build per platform — a Bash, Python or Node script, or
+prebuilt files that run everywhere — is packaged once with the target
+`os: all, arch: all`. Name it without `{{ .OS }}`/`{{ .Arch }}` (they render
+as `all`):
+
+```yaml
+archives:
+  - id: script
+    name: "{{ .Project }}_{{ .Version }}_noarch"
+    targets: [{os: all, arch: all}]
+    files:
+      - {src: mycli, dst: mycli, mode: "0755"}
+      - {src: mycli.1, dst: mycli.1}
+```
+
+The archive, its checksum and its attestation are produced like any other;
+the Homebrew formula installs it on macOS and Linux, Intel and ARM, from one
+`url`. A noarch archive may coexist with platform-specific archives in one
+release; a formula selects one kind with `brews[].ids`.
+
 Default contents: when `files` is omitted, each archive contains that target's
 binaries at its root with mode `0755`. When `files` is present it is the whole
 list — nothing is added implicitly (no automatic README/LICENSE, unlike

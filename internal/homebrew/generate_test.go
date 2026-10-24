@@ -254,6 +254,18 @@ func goldenCases() []goldenCase {
 			wantWarnings: []string{"Apple Silicon Macs install the darwin/amd64 build"},
 		},
 		{
+			// A Bash script: one archive for every platform.
+			name: "noarch",
+			in: func(t *testing.T) Input {
+				a := arch("all", "all", "", []manifest.File{file("mycli", modeExec), file("mycli.1", modeRegular), file("completions/", ""),
+					file("completions/mycli.bash", modeRegular), file("README.md", modeRegular)}, "mycli")
+				b := baseBrew()
+				b.Dependencies = []config.BrewDependency{{Name: "bash"}}
+				b.Install = "bin.install \"mycli\"\nman1.install \"mycli.1\"\nbash_completion.install \"completions/mycli.bash\" => \"mycli\"\n"
+				return input(b, a)
+			},
+		},
+		{
 			name: "url_template",
 			in: func(t *testing.T) Input {
 				b := baseBrew()
@@ -709,5 +721,27 @@ func TestExtraInstallPerTarget(t *testing.T) {
 	want := "    bin.install \"mycli\"\n    if OS.mac?\n      doc.install \"doc_darwin.md\"\n    end\n    if OS.linux?\n      doc.install \"doc_linux.md\"\n    end\n"
 	if !strings.Contains(string(f.Content), want) {
 		t.Errorf("install:\n%s", f.Content)
+	}
+}
+
+func TestNoarchSelection(t *testing.T) {
+	noarch := arch("all", "all", "", stdFiles(), "mycli")
+	plat := fourPlatforms(false)
+	if _, err := Generate(input(baseBrew(), append(plat, noarch)...)); err == nil || !strings.Contains(err.Error(), "both platform-specific and noarch") {
+		t.Errorf("mixed: %v", err)
+	}
+	other := noarch
+	other.Name, other.Path, other.ID = "mycli_1.2.3_docs.tar.gz", "dist/mycli_1.2.3_docs.tar.gz", "docs"
+	if _, err := Generate(input(baseBrew(), noarch, other)); err == nil || !strings.Contains(err.Error(), "several noarch archives") {
+		t.Errorf("two noarch: %v", err)
+	}
+	// brews[].ids selects one kind.
+	b := baseBrew()
+	b.IDs = []string{"docs"}
+	in := input(b, append(plat, other)...)
+	in.Config.Archives = []config.Archive{{ID: "default"}, {ID: "docs"}}
+	f := generateOne(t, in)
+	if !strings.Contains(string(f.Content), "\n  url \"https://github.com/acme/mycli/releases/download/v1.2.3/mycli_1.2.3_docs.tar.gz\"") || strings.Contains(string(f.Content), "on_macos") {
+		t.Errorf("noarch formula:\n%s", f.Content)
 	}
 }

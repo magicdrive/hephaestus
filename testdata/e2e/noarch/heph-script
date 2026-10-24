@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# A Bash CLI: the noarch end-to-end fixture.
+case "${1:-}" in
+  --version) echo "heph-script ${HEPH_SCRIPT_VERSION:-dev}" ;;
+  *) echo "usage: heph-script --version"; exit 1 ;;
+esac

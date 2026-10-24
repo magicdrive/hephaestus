@@ -241,8 +241,22 @@ func generate(in Input, b *config.Brew) (Formula, error) {
 			return f, fmt.Errorf("homepage: %w", err)
 		}
 	}
+	// A noarch archive serves macOS and Linux, Intel and ARM: one top-level
+	// url, placed where Homebrew's component order wants it (url, version,
+	// sha256, then license and dependencies).
+	noarch := len(plats) == 1 && IsNoarch(plats[0].archive)
+	if noarch {
+		if err := g.urlLine(b, vars, &plats[0], "  "); err != nil {
+			return f, err
+		}
+	}
 	if writeVersion {
 		if err := g.attr("version", version); err != nil {
+			return f, err
+		}
+	}
+	if noarch {
+		if err := g.sha256Line(&plats[0], "  "); err != nil {
 			return f, err
 		}
 	}
@@ -528,6 +542,21 @@ func (g *gen) code(field, src string, vars tmpl.Vars, indent string) (string, er
 
 // urlStanza writes the url and sha256 lines at indent.
 func (g *gen) urlStanza(b *config.Brew, vars tmpl.Vars, p *platform, indent string) error {
+	if err := g.urlLine(b, vars, p, indent); err != nil {
+		return err
+	}
+	return g.sha256Line(p, indent)
+}
+
+func (g *gen) sha256Line(p *platform, indent string) error {
+	if !manifest.IsSHA256(p.archive.SHA256) {
+		return fmt.Errorf("archive %s has no valid sha256 in the manifest", p.archive.Name)
+	}
+	g.line(indent + "sha256 " + mustQuote(p.archive.SHA256))
+	return nil
+}
+
+func (g *gen) urlLine(b *config.Brew, vars tmpl.Vars, p *platform, indent string) error {
 	// Options go on continuation lines aligned under the URL, keys padded to
 	// a table, as in homebrew-core (Layout/HashAlignment).
 	type opt struct{ key, val string }
@@ -570,10 +599,6 @@ func (g *gen) urlStanza(b *config.Brew, vars tmpl.Vars, p *platform, indent stri
 		s += ",\n" + indent + "    " + o.key + strings.Repeat(" ", width-len(o.key)+1) + o.val
 	}
 	g.line(s)
-	if !manifest.IsSHA256(p.archive.SHA256) {
-		return fmt.Errorf("archive %s has no valid sha256 in the manifest", p.archive.Name)
-	}
-	g.line(indent + "sha256 " + mustQuote(p.archive.SHA256))
 	return nil
 }
 
@@ -633,7 +658,12 @@ func selectArchives(m *manifest.Manifest, b *config.Brew) ([]manifest.Artifact, 
 		warnings = append(warnings, fmt.Sprintf("goamd64 %q is ignored: the manifest does not record GOAMD64 variants", b.Goamd64))
 	}
 	byTarget := map[string][]manifest.Artifact{}
+	var noarch []manifest.Artifact
 	for _, a := range m.Filter(manifest.KindArchive, b.IDs...) {
+		if IsNoarch(a) {
+			noarch = append(noarch, a)
+			continue
+		}
 		if a.OS != "darwin" && a.OS != "linux" {
 			continue // Homebrew runs on macOS and Linux only
 		}
@@ -645,6 +675,19 @@ func selectArchives(m *manifest.Manifest, b *config.Brew) ([]manifest.Artifact, 
 		}
 		key := a.OS + "/" + a.Arch
 		byTarget[key] = append(byTarget[key], a)
+	}
+	if len(noarch) > 0 {
+		names := make([]string, len(noarch))
+		for i, a := range noarch {
+			names[i] = a.Name
+		}
+		switch {
+		case len(byTarget) > 0:
+			return nil, warnings, fmt.Errorf("both platform-specific and noarch (os: all, arch: all) archives match (%s); select one kind with brews[].ids", strings.Join(names, ", "))
+		case len(noarch) > 1:
+			return nil, warnings, fmt.Errorf("several noarch archives (%s); select one with brews[].ids", strings.Join(names, ", "))
+		}
+		return noarch, warnings, nil
 	}
 	var out []manifest.Artifact
 	var errs []error
@@ -677,6 +720,10 @@ func selectArchives(m *manifest.Manifest, b *config.Brew) ([]manifest.Artifact, 
 	}
 	return out, warnings, nil
 }
+
+// IsNoarch reports whether an archive serves every platform: its target is
+// os: all, arch: all (e.g. a script, or files that need no build).
+func IsNoarch(a manifest.Artifact) bool { return a.OS == "all" && a.Arch == "all" }
 
 func armSuffix(arm string) string {
 	if arm == "" {

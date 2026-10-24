@@ -343,6 +343,26 @@ Archive selection: only `darwin` and `linux` archives with arch `amd64` or
 archives for the same OS and arch are an error (narrow with `ids`). At least
 one archive must remain.
 
+A **noarch** archive — target `os: all, arch: all`, see
+[archives.md](archives.md#noarch-archives) — serves every platform: the
+formula then has a single top-level `url` and `sha256` and no
+`on_macos`/`on_linux` blocks. A formula uses either one noarch archive or
+platform-specific archives; when both kinds (or several noarch archives)
+match, it is an error: select one with `ids`.
+
+Install verification: besides checking that every installed path exists in
+every archive it applies to, generation fails when installs cannot all
+succeed or overwrite each other. `Pathname#install` *moves* its source, so
+installing one file (or a directory and a file inside it) twice fails at
+install time, and two installs to the same destination (`bin/mycli`,
+`bash_completion/mycli`, ...) clobber each other. Install a file once and
+link it elsewhere with `install_symlink`:
+
+```ruby
+pkgshare.install "completions/mycli.sh"
+bash_completion.install_symlink pkgshare/"mycli.sh" => "mycli"
+```
+
 Ruby code fields (`install`, `extra_install`, `post_install`, `custom_block`,
 `service`, `test`) are trusted configuration, embedded as code. Template
 values substituted into them must consist of `A-Z a-z 0-9 . _ + - / @ : ~ = ,
