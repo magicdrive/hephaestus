@@ -242,10 +242,65 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/action-install-e2e.sh v1.1.0 550d48f64917749742574b5c2ff1b292940ff71a b2ea250f3eaf2323735a96a787be517c26a248c1
+      - name: Install the published v1.2.0-rc.1 through the release path
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/action-install-e2e.sh v1.2.0-rc.1 bae0e2b3cbf41ad27299e0cfc3517a6affc7e15e 550d48f64917749742574b5c2ff1b292940ff71a
       - name: The environment is unchanged
         run: |
           scripts/go-env-snapshot.sh > "$RUNNER_TEMP/env-after"
           diff -u "$RUNNER_TEMP/env-before" "$RUNNER_TEMP/env-after"
+
+  action-release:
+    # The action of a published release through uses:, exactly as callers
+    # run it: v1.2.0-rc.1 pinned to its commit installs its release binary
+    # (download, checksum, attestation bound to that commit, version) on
+    # every platform it supports, runs a snapshot of a project that is not
+    # Go and a release plan, and leaves the job's toolchain and environment
+    # as they were. No Go is set up in this job.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Record the environment before the action
+        run: scripts/go-env-snapshot.sh | tee "$RUNNER_TEMP/env-before"
+      - name: Snapshot with the released action
+        id: snap
+        uses: magicdrive/hephaestus@bae0e2b3cbf41ad27299e0cfc3517a6affc7e15e # v1.2.0-rc.1
+        with:
+          working-directory: testdata/e2e/noarch
+          stages: archive,checksum
+          snapshot: "true"
+          github-token: ""
+      - name: Release plan with the released action
+        id: plan
+        uses: magicdrive/hephaestus@bae0e2b3cbf41ad27299e0cfc3517a6affc7e15e # v1.2.0-rc.1
+        with:
+          command: plan
+          tag: v9.9.9-rc.1
+      - name: Outputs, and the environment after the action
+        env:
+          STATUS: ${{ steps.snap.outputs.status }}
+          ARTIFACTS: ${{ steps.snap.outputs.artifacts }}
+          PLAN: ${{ steps.plan.outputs.prerelease }},${{ steps.plan.outputs.tap }}
+        run: |
+          echo "status=$STATUS plan=$PLAN"
+          [[ "$STATUS" == no-op && "$PLAN" == "true,skip" ]]
+          echo "$ARTIFACTS" | jq -e 'length == 2'
+          scripts/go-env-snapshot.sh > "$RUNNER_TEMP/env-after"
+          diff -u "$RUNNER_TEMP/env-before" "$RUNNER_TEMP/env-after"
+          for d in "$RUNNER_TEMP"/hephaestus-go*; do
+            if [[ -e "$d" ]]; then echo "::error::a Go toolchain was downloaded: $d"; exit 1; fi
+          done
 
   action-smoke:
     needs: [action-binary]
@@ -567,7 +622,7 @@ jobs:
   ci-gate:
     # The single required check, and what the release workflow waits for.
     if: always()
-    needs: [lint, test, completion, race, fuzz-smoke, snapshot, homebrew-e2e, action-binary, action-install, action-smoke, action-boundary, action-isolation, action-isolation-detects-v1-1-0]
+    needs: [lint, test, completion, race, fuzz-smoke, snapshot, homebrew-e2e, action-binary, action-install, action-release, action-smoke, action-boundary, action-isolation, action-isolation-detects-v1-1-0]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded
