@@ -63,8 +63,14 @@ brews:
     skip_upload: auto
     install: |
       bin.install "hephaestus"
+    # bash, zsh and fish completion scripts, written at install time by
+    # `hephaestus completion <shell>` into Homebrew's completion directories.
+    completions:
+      generate:
+        args: [completion]
     test: |
       assert_match version.to_s, shell_output("#{bin}/hephaestus version")
+      assert_match "_hephaestus", shell_output("#{bin}/hephaestus completion zsh")
     repository:
       owner: magicdrive
       name: homebrew-tap

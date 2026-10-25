@@ -382,11 +382,30 @@ func verifyTapPullRequest(ctx context.Context, d *Deps, pl *Plan, t TapPlan, rel
 	}
 	ok, detail := formulaMatchesRelease(string(content), t.URLPrefix, pl.Archives, digests)
 	r.add("tap formula", ok, "%s", detail)
+	if len(t.Completions) > 0 {
+		ok, detail := formulaHasLines(string(content), t.Completions)
+		r.add("tap completions", ok, "%s", detail)
+	}
 	state := pr.State
 	if pr.Merged {
 		state = "merged"
 	}
 	r.add("tap pull request", true, "%s (%s; review and merge it on the tap, publish never merges)", pr.HTMLURL, state)
+}
+
+// formulaHasLines requires each line (trimmed) to be a line of the formula:
+// the shell completions the configuration installs.
+func formulaHasLines(formula string, want []string) (bool, string) {
+	have := map[string]bool{}
+	for _, l := range strings.Split(formula, "\n") {
+		have[strings.TrimSpace(l)] = true
+	}
+	for _, w := range want {
+		if !have[w] {
+			return false, fmt.Sprintf("the formula does not install the configured completions: missing %s", w)
+		}
+	}
+	return true, fmt.Sprintf("installs the configured completions (%s)", strings.Join(want, "; "))
 }
 
 // formulaMatchesRelease requires every url in the formula to be a release

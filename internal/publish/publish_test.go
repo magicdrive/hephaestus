@@ -222,7 +222,7 @@ func TestPublishStable(t *testing.T) {
 		t.Fatalf("outcome %+v\n%s", o, h.out)
 	}
 	out := h.out.String()
-	for _, want := range []string{"Release type:   Stable", "Homebrew Tap:   PUBLISH: pull request to magicdrive/homebrew-tap", "[ok  ] tap formula", "download urls and sha256 match", "[ok  ] tap pull request", "publish never merges"} {
+	for _, want := range []string{"Release type:   Stable", "Homebrew Tap:   PUBLISH: pull request to magicdrive/homebrew-tap", "[ok  ] tap formula", "download urls and sha256 match", `[ok  ] tap completions              installs the configured completions (generate_completions_from_executable(bin/"hephaestus", "completion"))`, "[ok  ] tap pull request", "publish never merges"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q\n%s", want, out)
 		}
@@ -495,6 +495,9 @@ func TestPublishVerificationFailures(t *testing.T) {
 		{"stable formula foreign url", "v1.0.0", func(h *harness, _ *Plan) {
 			h.gh.prFormula = "  url \"https://evil.example/x.tar.gz\"\n  sha256 \"" + strings.Repeat("0", 64) + "\"\n"
 		}, "[FAIL] tap formula"},
+		{"stable formula without completions", "v1.0.0", func(h *harness, _ *Plan) {
+			h.gh.prFormula = strings.Replace(h.gh.prFormula, "generate_completions_from_executable", "# removed", 1)
+		}, "[FAIL] tap completions"},
 		{"stable not latest", "v1.0.0", func(h *harness, _ *Plan) { h.gh.latest = "v0.9.0" }, "[FAIL] latest"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

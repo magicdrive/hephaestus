@@ -405,6 +405,9 @@ func generate(in Input, b *config.Brew) (Formula, error) {
 	if installBody == "" {
 		return f, errors.New("install is empty")
 	}
+	if err := checkCompletions(b, installBody, archives); err != nil {
+		return f, err
+	}
 	g.line("")
 	g.line("  def install")
 	g.line(installBody)
@@ -911,6 +914,9 @@ func installCode(b *config.Brew, vars tmpl.Vars, archives []manifest.Artifact) (
 		if err != nil {
 			return "", err
 		}
+		parts = append(parts, s)
+	}
+	if s := completionCode(b); s != "" {
 		parts = append(parts, s)
 	}
 	return strings.Join(parts, "\n"), nil

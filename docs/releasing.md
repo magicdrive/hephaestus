@@ -98,7 +98,8 @@ command, or a goal that is not a version is an error before anything runs.
    a GitHub-hosted runner, and the tap is either untouched (prerelease: same
    head commit, no pull request, the tap steps skipped) or has a formula pull
    request that changes only `hephaestus.rb`, with this release's URLs and
-   checksums (stable).
+   checksums and the install lines of the configured shell completions
+   (stable).
 
 The tool's summary says which outcome it is: released and verified; failed
 (or refused before tagging); or **outcome unknown** — monitoring stopped

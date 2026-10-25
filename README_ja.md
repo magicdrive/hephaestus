@@ -189,6 +189,28 @@ hephaestus version
 
 実行するとアーカイブ、チェックサムファイル、Formula の SHA-256 を表示し、最後に `==> published`、`no-op`、`dry-run`、`failed` のいずれかを出力します。
 
+## シェル補完
+
+`hephaestus completion bash|zsh|fish` は補完スクリプトを出力します。補完の対象は、コマンド、フラグ、値が決まっているフラグの値（`--format`、`--template`、`--stages`、`--phase`、`--skip`）です。詳しくは [docs/cli.md](docs/cli.md#completion) を参照してください。
+
+**Homebrew の場合**（v1.0.1 から。1.0.0 からの `brew upgrade` を含む）は、Formula が 3 種類のスクリプトを Homebrew の補完ディレクトリにインストールします。
+
+| シェル | インストールされるファイル | 有効にする設定（一度だけ） |
+| --- | --- | --- |
+| bash | `$(brew --prefix)/etc/bash_completion.d/hephaestus` | `bash-completion@2` を入れ、`~/.bash_profile` から読み込む：`[[ -r "$(brew --prefix)/etc/profile.d/bash_completion.sh" ]] && . "$(brew --prefix)/etc/profile.d/bash_completion.sh"` |
+| zsh | `$(brew --prefix)/share/zsh/site-functions/_hephaestus` | `~/.zshrc` の `compinit` より前に `FPATH="$(brew --prefix)/share/zsh/site-functions:${FPATH}"` を書き、続けて `autoload -Uz compinit && compinit` |
+| fish | `$(brew --prefix)/share/fish/vendor_completions.d/hephaestus.fish` | Homebrew で入れた fish なら不要。それ以外の fish では、このディレクトリを `$fish_complete_path` に加える |
+
+ファイルのインストールと補完の有効化は別です。Homebrew が行うのはファイルのインストールまでで、上のシェル設定は利用者が行います。Homebrew 自身のドキュメントが勧める設定なので、すでに入っている環境も多いはずです。アップグレードの後は新しいシェルを開いてください。zsh は `rm -f ~/.zcompdump*; compinit` を実行するまで、古い関数一覧のキャッシュを使い続けることがあります。
+
+**Homebrew を使わない場合**は、そのセッションで読み込むか、ファイルとして置きます。
+
+```sh
+eval "$(hephaestus completion bash)"                                    # bash
+hephaestus completion zsh > ~/.zfunc/_hephaestus                          # zsh（compinit より前に fpath=(~/.zfunc $fpath)）
+hephaestus completion fish > ~/.config/fish/completions/hephaestus.fish   # fish
+```
+
 ## 設定
 
 YAML ファイル 1 つです。未知のキーは行番号と候補つきのエラーになり、すべてのテンプレートは作業を始める前に試し描画されます。既定値、制約、テンプレート変数を含む完全なリファレンスは [docs/configuration.md](docs/configuration.md) です。
@@ -223,7 +245,7 @@ Hephaestus はクロスコンパイルをしません。ターゲットの宣言
 
 ## Homebrew Formula
 
-Formula はマニフェストから生成します。URL は公開したリリース（または `url_template`）から、SHA-256 はアーカイブから取ります。出力は現行の Homebrew のスタイル（`on_macos` / `on_linux` の中に `on_arm` / `on_intel`、`def install` は 1 つ、SPDX の `license` 式）に従い、CI で `brew audit --strict`、`brew install`、`brew test` を実行して確かめています。すべての値はエスケープした Ruby リテラルとして出力し、`install` のパスは各アーカイブの内容と照合します。既定の `test` ブロックは、インストールした実行ファイルの存在を確かめます。
+Formula はマニフェストから生成します。URL は公開したリリース（または `url_template`）から、SHA-256 はアーカイブから取ります。出力は現行の Homebrew のスタイル（`on_macos` / `on_linux` の中に `on_arm` / `on_intel`、`def install` は 1 つ、SPDX の `license` 式）に従い、CI で `brew audit --strict`、`brew install`、`brew test` を実行して確かめています。すべての値はエスケープした Ruby リテラルとして出力し、`install` のパスは各アーカイブの内容と照合します。既定の `test` ブロックは、インストールした実行ファイルの存在を確かめます。`brews[].completions` を設定すると、bash・zsh・fish の補完もインストールします。補完スクリプトは、インストールした実行ファイルに生成させるか、アーカイブに同梱したものを使います。どちらも CLI の実装言語は問いません（[設定](docs/configuration.md#formula-completions)）。
 
 ## Tap への公開
 

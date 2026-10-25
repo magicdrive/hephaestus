@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -646,12 +647,69 @@ func (c *Config) validateBrew(i int, archiveIDs, names map[string]bool, add func
 	if pr := b.Repository.PullRequest; pr != nil && pr.CheckBoxes {
 		c.warnings = append(c.warnings, p+".repository.pull_request.check_boxes is accepted but has no effect")
 	}
+	if b.Completions != nil {
+		validateCompletions(p+".completions", b.Completions, add)
+	}
 	if len(b.URLHeaders) > 0 {
 		for j, h := range b.URLHeaders {
 			if strings.ContainsAny(h, "\r\n") {
 				add(fmt.Sprintf("%s.url_headers[%d]", p, j), "must be a single line")
 			}
 			checkTmpl(fmt.Sprintf("%s.url_headers[%d]", p, j), h)
+		}
+	}
+}
+
+var (
+	completionExecutableRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
+	completionArgRe        = regexp.MustCompile(`^[^\x00-\x1f\x7f]+$`)
+)
+
+func validateCompletions(p string, c *BrewCompletions, add func(string, string, ...any)) {
+	files := c.Files.ByShell()
+	if c.Generate == nil && len(files) == 0 {
+		add(p, "set generate (scripts printed by the executable) or files (scripts in the archive)")
+	}
+	if c.Executable != "" && !completionExecutableRe.MatchString(c.Executable) {
+		add(p+".executable", "%q must be the name of an executable the formula installs into bin (letters, digits, ._+-; no path)", c.Executable)
+	}
+	if g := c.Generate; g != nil {
+		for j, a := range g.Args {
+			if !completionArgRe.MatchString(a) {
+				add(fmt.Sprintf("%s.generate.args[%d]", p, j), "must be a non-empty argument without control characters")
+			}
+		}
+		if !slices.Contains(CompletionShellParameterFormats, g.ShellParameterFormat) {
+			add(p+".generate.shell_parameter_format", "%q must be one of arg, flag, none, cobra, clap, click, typer (or empty for a plain argument)", g.ShellParameterFormat)
+		}
+		seen := map[string]bool{}
+		for j, sh := range g.Shells {
+			sp := fmt.Sprintf("%s.generate.shells[%d]", p, j)
+			switch {
+			case !slices.Contains(CompletionShells, sh):
+				add(sp, "%q must be bash, zsh or fish", sh)
+			case seen[sh]:
+				add(sp, "%q is listed twice", sh)
+			case files[sh] != "":
+				add(sp, "%q is also in files: the %s completion would be installed twice", sh, sh)
+			}
+			seen[sh] = true
+		}
+		if len(g.Shells) == 0 {
+			for _, sh := range CompletionShells {
+				if files[sh] != "" {
+					add(p+".files."+sh, "the %s completion is also generated (generate.shells defaults to bash, zsh and fish); list the generated shells", sh)
+				}
+			}
+		}
+	}
+	for _, sh := range CompletionShells {
+		f := files[sh]
+		if f == "" {
+			continue
+		}
+		if err := pathutil.ValidateRelative(f); err != nil || strings.ContainsAny(f, "\x00\n\r") {
+			add(p+".files."+sh, "%q must be a relative path inside the archive", f)
 		}
 	}
 }

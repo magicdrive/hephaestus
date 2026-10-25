@@ -23,28 +23,6 @@ import (
 // Version is the running hephaestus version, set by Execute.
 var Version = "dev"
 
-const usage = `hephaestus — forge release artifacts into reliable distributions
-
-Usage:
-  hephaestus <command> [flags]
-
-Commands:
-  init        Write a starting hephaestus.yaml (--template go|rust|script|prebuilt)
-  check       Validate the configuration and print the resolved plan
-  run         Run stages (default: every configured stage)
-  build       Run the build stage only
-  archive     Run the archive stage only
-  checksum    Run the checksum stage only
-  release     Run the GitHub release stage only
-  formula     Run the Homebrew formula stage only
-  tap         Run the Homebrew tap publication stage only
-  preflight   Read-only release safety checks before pushing a tag (--tag vX.Y.Z)
-  status      Read-only state of a tag's release and the next safe action (--tag vX.Y.Z)
-  version     Print the version
-
-Run "hephaestus <command> -h" for flags.
-`
-
 // Main runs the CLI and returns the process exit code.
 //
 // Everything it writes passes through a redactor that replaces the known
@@ -78,6 +56,10 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 		return statusCmd(ctx, rest, stdout, stderr, red)
 	case "init":
 		return initCmd(ctx, rest, stdout, stderr)
+	case "completion":
+		return completionCmd(rest, stdout, stderr)
+	case "__complete":
+		return completeCmd(rest, stdout)
 	case "check":
 	case "run":
 	case "build", "archive", "checksum", "release", "formula", "tap":
@@ -88,21 +70,8 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 	}
 
 	opts := &Options{Stdout: stdout, Stderr: stderr, redact: red}
-	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	fs := runFlags(cmd, opts, &stages, &phase)
 	fs.SetOutput(stderr)
-	fs.StringVar(&opts.ConfigPath, "config", "", "configuration file (default: hephaestus.yaml in the current directory)")
-	fs.StringVar(&opts.Tag, "tag", "", "release tag (default: $GITHUB_REF_NAME on tag pushes)")
-	fs.StringVar(&opts.Commit, "commit", "", "commit SHA (default: $GITHUB_SHA)")
-	fs.BoolVar(&opts.Snapshot, "snapshot", false, "build without a tag (version 0.0.0-SNAPSHOT); configured release, formula and tap stages are skipped, and refused when named in --stages")
-	fs.BoolVar(&opts.DryRun, "dry-run", false, "plan release and tap publication without writing to GitHub")
-	fs.BoolVar(&opts.Fresh, "fresh", false, "ignore an existing manifest instead of continuing from it")
-	fs.StringVar(&opts.Repo, "repo", "", "owner/name of the release repository (default: config, then $GITHUB_REPOSITORY)")
-	fs.StringVar(&opts.TokenEnv, "token-env", "GITHUB_TOKEN", "environment variable holding the release token")
-	fs.StringVar(&opts.TapTokenEnv, "tap-token-env", "HOMEBREW_TAP_GITHUB_TOKEN", "environment variable holding the tap token")
-	if cmd == "run" {
-		fs.StringVar(&stages, "stages", "", "comma-separated stages to run, or all (default: every configured stage)")
-		fs.StringVar(&phase, "phase", "", "run only the selected stages of one phase: local (build, archive, checksum) or publish (release, formula, tap)")
-	}
 	if err := fs.Parse(rest); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -160,6 +129,27 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 	}
 	opts.Stages = list
 	return run(ctx, cfg, opts)
+}
+
+// runFlags defines the flags of check, run and the single-stage commands;
+// stages and phase are set only by run. Shell completion reads the same
+// definitions.
+func runFlags(cmd string, opts *Options, stages, phase *string) *flag.FlagSet {
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	fs.StringVar(&opts.ConfigPath, "config", "", "configuration file (default: hephaestus.yaml in the current directory)")
+	fs.StringVar(&opts.Tag, "tag", "", "release tag (default: $GITHUB_REF_NAME on tag pushes)")
+	fs.StringVar(&opts.Commit, "commit", "", "commit SHA (default: $GITHUB_SHA)")
+	fs.BoolVar(&opts.Snapshot, "snapshot", false, "build without a tag (version 0.0.0-SNAPSHOT); configured release, formula and tap stages are skipped, and refused when named in --stages")
+	fs.BoolVar(&opts.DryRun, "dry-run", false, "plan release and tap publication without writing to GitHub")
+	fs.BoolVar(&opts.Fresh, "fresh", false, "ignore an existing manifest instead of continuing from it")
+	fs.StringVar(&opts.Repo, "repo", "", "owner/name of the release repository (default: config, then $GITHUB_REPOSITORY)")
+	fs.StringVar(&opts.TokenEnv, "token-env", "GITHUB_TOKEN", "environment variable holding the release token")
+	fs.StringVar(&opts.TapTokenEnv, "tap-token-env", "HOMEBREW_TAP_GITHUB_TOKEN", "environment variable holding the tap token")
+	if cmd == "run" {
+		fs.StringVar(stages, "stages", "", "comma-separated stages to run, or all (default: every configured stage)")
+		fs.StringVar(phase, "phase", "", "run only the selected stages of one phase: local (build, archive, checksum) or publish (release, formula, tap)")
+	}
+	return fs
 }
 
 // Phases split a run so that build code and publishing credentials need not

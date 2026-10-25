@@ -169,25 +169,36 @@ type initData struct {
 	Docs                       []string
 }
 
+// initArgs holds the flags of `hephaestus init`.
+type initArgs struct{ kind, name, desc, repo, tap, license, out string }
+
+// flags defines the init flags on a; shell completion reads the same
+// definitions.
+func (a *initArgs) flags() *flag.FlagSet {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.StringVar(&a.kind, "template", "", "go, rust, script (noarch) or prebuilt (required)")
+	fs.StringVar(&a.name, "name", "", "command name (default: the directory name)")
+	fs.StringVar(&a.desc, "description", "Command-line tool", "one-line description (Homebrew: capitalized, not starting with the name)")
+	fs.StringVar(&a.repo, "repo", "", "owner/name of the GitHub repository (default: $GITHUB_REPOSITORY)")
+	fs.StringVar(&a.tap, "tap", "", "owner/name of the Homebrew tap (default: <owner>/homebrew-tap)")
+	fs.StringVar(&a.license, "license", "MIT", "SPDX license of the project")
+	fs.StringVar(&a.out, "output", "hephaestus.yaml", "file to write (never overwritten)")
+	return fs
+}
+
 // initCmd runs `hephaestus init`: writes a starting hephaestus.yaml for a
 // kind of project. It never overwrites a file.
 func initCmd(_ context.Context, args []string, stdout, stderr io.Writer) int {
-	var kind, name, desc, repoSpec, tap, license, out string
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	var a initArgs
+	fs := a.flags()
 	fs.SetOutput(stderr)
-	fs.StringVar(&kind, "template", "", "go, rust, script (noarch) or prebuilt (required)")
-	fs.StringVar(&name, "name", "", "command name (default: the directory name)")
-	fs.StringVar(&desc, "description", "Command-line tool", "one-line description (Homebrew: capitalized, not starting with the name)")
-	fs.StringVar(&repoSpec, "repo", "", "owner/name of the GitHub repository (default: $GITHUB_REPOSITORY)")
-	fs.StringVar(&tap, "tap", "", "owner/name of the Homebrew tap (default: <owner>/homebrew-tap)")
-	fs.StringVar(&license, "license", "MIT", "SPDX license of the project")
-	fs.StringVar(&out, "output", "hephaestus.yaml", "file to write (never overwritten)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
+	kind, name, desc, repoSpec, tap, license, out := a.kind, a.name, a.desc, a.repo, a.tap, a.license, a.out
 	src, ok := initTemplates[kind]
 	if fs.NArg() > 0 || !ok {
 		fmt.Fprintln(stderr, "usage: hephaestus init --template go|rust|script|prebuilt [--name NAME] [--repo owner/name] [--tap owner/name] [--license SPDX] [--output FILE]")

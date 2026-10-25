@@ -1,0 +1,22 @@
+#!/bin/sh
+# End-to-end fixture: a POSIX shell CLI that prints its own bash and zsh
+# completion scripts (`heph-comp completion bash|zsh`); its fish script is
+# shipped as a file in the archive.
+case "$1" in
+--version) echo "heph-comp 1.0.0" ;;
+alpha | beta) echo "$1" ;;
+completion)
+	case "$2" in
+	bash) echo 'complete -W "alpha beta" heph-comp' ;;
+	zsh) printf '%s\n' '#compdef heph-comp' "_arguments '1: :(alpha beta)'" ;;
+	*)
+		echo "heph-comp completion: unknown shell" >&2
+		exit 2
+		;;
+	esac
+	;;
+*)
+	echo "usage: heph-comp alpha|beta|completion SHELL|--version" >&2
+	exit 2
+	;;
+esac

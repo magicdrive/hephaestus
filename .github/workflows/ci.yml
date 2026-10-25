@@ -40,7 +40,7 @@ jobs:
       - name: govulncheck
         run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
       - name: shellcheck
-        run: shellcheck scripts/*.sh testdata/e2e/boundary/probe.sh
+        run: shellcheck scripts/*.sh testdata/e2e/boundary/probe.sh testdata/e2e/completions/heph-comp cmd/hephaestus/completions/hephaestus.bash cmd/hephaestus/testdata/completion/complete.bash
 
   test:
     # Linux amd64 and arm64, macOS arm64, Windows amd64. macOS Intel runs
@@ -63,6 +63,36 @@ jobs:
       - name: Coverage
         shell: bash
         run: go tool cover -func=coverage.out | tail -1
+
+  completion:
+    # `hephaestus completion` in real bash, zsh and fish (Linux and macOS,
+    # where macOS adds its own bash 3.2). Missing shells fail the job.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install zsh and fish (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh fish
+      - name: Install fish (macOS)
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install fish
+      - name: Shell versions
+        run: bash --version | head -1; /bin/bash --version | head -1; zsh --version; fish --version
+      - name: Completion in real shells
+        env:
+          HEPHAESTUS_COMPLETION_SHELLS: "1"
+        run: go test -count=1 -run 'TestComplet' -v ./cmd/hephaestus/
 
   race:
     strategy:
@@ -138,6 +168,18 @@ jobs:
         run: echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
       - name: Fixture → archives → formula → brew audit/install/test
         run: scripts/homebrew-e2e.sh
+      - name: Install zsh and fish (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh fish
+      - name: Install fish (macOS)
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install fish
+      - name: Completions in formulae; hephaestus 1.0.0 → this checkout (brew upgrade)
+        env:
+          HEPHAESTUS_COMPLETION_SHELLS: "1"
+        run: scripts/homebrew-completion-e2e.sh
 
   action-smoke:
     # The composite action on every runner OS: Git Bash, the .exe suffix
@@ -264,7 +306,7 @@ jobs:
   ci-gate:
     # The single required check, and what the release workflow waits for.
     if: always()
-    needs: [lint, test, race, fuzz-smoke, snapshot, homebrew-e2e, action-smoke, action-boundary]
+    needs: [lint, test, completion, race, fuzz-smoke, snapshot, homebrew-e2e, action-smoke, action-boundary]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

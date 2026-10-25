@@ -66,8 +66,12 @@ brews:
     skip_upload: "false"
     install: |
       bin.install "hephaestus"
+    completions:
+      generate:
+        args: [completion]
     test: |
       assert_match version.to_s, shell_output("#{bin}/hephaestus version")
+      assert_match "_hephaestus", shell_output("#{bin}/hephaestus completion zsh")
     repository:
       owner: magicdrive
       name: homebrew-tap-sandbox
