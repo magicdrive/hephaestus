@@ -49,7 +49,7 @@ config ──► pipeline.Check ──► build ──► archive ──► chec
 | `internal/ghaction` | Step outputs and summary | Let a value inject another output |
 | `internal/preflight` | Read-only release safety checks with stable IDs, PASS/FAIL/WARN/SKIP/UNKNOWN, text and JSON reports | Write to git or GitHub; run repository code; read a secret value |
 | `internal/status` | Read-only state of a tag's release (tag, release, assets vs. manifest, tap pull requests) and the next safe action | Write anything; guess a state it could not read |
-| `internal/publish` | Release Hephaestus itself (`make publish`): preflight, annotated tag push, follow and verify the release run | Publish, upload or write to GitHub; move, delete or force-push a tag |
+| `internal/publish` | Release a version by its tag (`hephaestus publish`; `make publish` for Hephaestus itself through `internal/cmd/publish`): preflight, annotated tag push, follow and verify the release run, with the conventions of docs/publish.md | Publish, upload or write to GitHub; move, delete or force-push a tag; hold project-specific names |
 | `cmd/hephaestus` | Flags, stage loop, report | Contain stage logic |
 
 ## 2. Invariants
@@ -181,9 +181,10 @@ improvement and is not.
     Authority: `repo_test.go`.
 
 15. **A tag push is the only release trigger, and a pushed tag is final.**
-    `make publish` pushes one annotated tag, never forced, only after a
-    preflight that requires the exact commit's CI to be green, and then only
-    observes: the release workflow is the sole publisher. A version is a
+    `hephaestus publish` (`make publish`) pushes one annotated tag, never
+    forced, only after a preflight that requires the exact commit's CI to be
+    green, and then only observes: the release workflow is the sole
+    publisher. A version is a
     prerelease exactly when `version.Info.IsPrerelease` says so; the release
     stage, `skip_upload: auto` and the workflow's tap steps (through
     `publish plan`) all use it, and a prerelease's tap steps get no tap

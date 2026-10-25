@@ -8,6 +8,14 @@ version can be released, asks, creates and pushes an annotated tag, then
 follows the workflow run and verifies what it published. It never publishes,
 uploads or writes to GitHub itself.
 
+`make publish` runs `go run ./internal/cmd/publish`: the same code as
+`hephaestus publish` ([publish.md](publish.md), which other projects use for
+their own `make publish`), built from the source being released, with this
+repository's help text. It adds one check of its own to `publish` and `check`:
+`action/VERSION` (the release whose binary the GitHub Action downloads), when
+present, must name the version being released; otherwise it stops with
+`action/VERSION is <x>, not <tag>: set it to <tag> in a pull request first`.
+
 ## One-time setup
 
 | Item | Value |
