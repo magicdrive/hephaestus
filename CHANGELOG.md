@@ -3,6 +3,95 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
+## v1.0.0
+
+First stable release of 1.0; full notes in
+[RELEASE_NOTES.md](RELEASE_NOTES.md). This section summarizes the changes
+since v0.2.0; the release candidates below record each step. From 1.0.0,
+Hephaestus follows the [compatibility policy](docs/compatibility/policy.md).
+
+### Added
+
+- **Preflight**, extended: `preflight` in the GitHub Action (inputs
+  `strict` and `offline`; outputs `preflight-status`,
+  `preflight-exit-code` and `preflight-report`; annotations, redacted
+  summary). The check `config.release-notes` requires the notes file and
+  the optional `preflight.changelog` to name the tag. Plus `preflight
+  --report FILE`, and `make publish` gated on `preflight --strict`.
+- **Noarch archives** (`targets: [{os: all, arch: all}]`): one archive and
+  one formula `url` for every platform.
+- **Formula quality**: formula generation rejects installs that cannot all
+  succeed (a file installed twice, a directory and a file inside it, two
+  installs to one destination).
+- **`hephaestus status --tag`**: the read-only state of a release and the
+  next safe action ([docs/recovery.md](docs/recovery.md)).
+- **`hephaestus init --template go|rust|script|prebuilt`**.
+- **Verify release workflow** (`.github/workflows/verify-release.yml`,
+  run manually): runs a published release's binaries on Linux, macOS and
+  Windows, amd64 and arm64.
+- [CLI reference](docs/cli.md), [compatibility policy](docs/compatibility/policy.md),
+  [recovery guide](docs/recovery.md).
+
+### Changed
+
+- **Immutable release protection**: a published release's title, notes
+  and prerelease flag are never edited (v0.2.0 updated them on a re-run). A
+  published release's assets are never replaced or deleted:
+  `replace_existing_assets` applies to drafts only.
+- **Concurrent release safety**: Hephaestus never deletes a release. A run
+  that loses a race for a tag stops with a conflict instead of deleting its
+  draft. A draft is re-read before it is published, before one of its
+  assets is deleted, and before `draft: true` updates it. Each asset's
+  digest is checked before its URL is recorded.
+- **Recovery hardening**: an incomplete asset seen after a failed upload is
+  deleted only when it is older than the 10-minute grace period.
+- The release workflow stops a prerelease whose plan would publish the
+  tap.
+
+### Fixed
+
+- **Snapshots**: `run --snapshot` failed with "a tag is required" for any
+  configuration with `brews`. It now skips the formula stage, as it skips
+  release and tap.
+- **`init` templates**: the formula test is `system bin/"NAME",
+  "--version"`, which passes `brew audit --strict` (fixed in rc.2).
+- **Publish verification**: `make publish` re-reads step data that GitHub
+  reports only partially right after a run. If the data stays incomplete,
+  the result is inconclusive (exit 3) rather than a failure (fixed in rc.2).
+
+### Security
+
+- Publishing tokens stay out of the build's environment and are redacted
+  from output, reports and step summaries, including the preflight report
+  and annotations.
+- Releases are created only from complete, verified drafts, and every
+  archive and the checksum file carry a build provenance attestation. The
+  `verify-release` workflow has read-only permissions.
+
+### Compatibility
+
+- v0.2.0 configurations load unchanged (`testdata/compat/v0.2.0`).
+  Configuration keys, CLI commands and flags, Action inputs and outputs,
+  JSON fields and check IDs were only added; nothing was removed or
+  renamed.
+- Narrower behavior, for safety: a published release is not edited, and
+  its assets are not replaced or deleted; `replace_existing_assets` applies
+  to drafts only; a draft that lost a race is not deleted. Also: `run
+  --snapshot` skips the formula stage, and a formula configuration that
+  installs the same file twice is rejected.
+- `brews[].skip_upload` still defaults to `false`; set `auto` to keep
+  prereleases out of the tap.
+
+### Known Limitations
+
+- The Rust template needs each target's Rust target and linker; it was
+  verified for the host target only.
+- Recovery failure injection is tested against a fake GitHub API.
+- GitHub has no conditional update: between a re-read and the write that
+  follows it, another writer can still change the release.
+- An incomplete asset left by a failed upload waits 10 minutes before a
+  re-run removes it.
+
 ## v1.0.0-rc.2
 
 ### Fixed

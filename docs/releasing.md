@@ -136,7 +136,10 @@ For a stable version the workflow opens a pull request on
 `magicdrive/homebrew-tap` from `hephaestus-X.Y.Z`. A green workflow means the
 pull request exists and was verified, **not** that it is merged: review it
 (the tap's own checks, `brew audit`) and merge it yourself. `make publish`
-never merges it. Users get the new version once it is merged.
+never merges it. Users get the new version once it is merged: then
+`brew install magicdrive/tap/hephaestus` (or `brew upgrade hephaestus`)
+installs it, and `make publish-status vX.Y.Z` reports the release as
+completed.
 
 ## What the release workflow does
 

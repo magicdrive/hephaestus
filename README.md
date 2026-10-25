@@ -170,7 +170,9 @@ prebuilt artifacts, workflows).
 go install github.com/magicdrive/hephaestus@latest   # Go 1.26 or later
 ```
 
-After the first release, also:
+With Homebrew (the latest stable release whose formula pull request has
+been merged into [magicdrive/homebrew-tap](https://github.com/magicdrive/homebrew-tap);
+prereleases are not in the tap):
 
 ```sh
 brew install magicdrive/tap/hephaestus
