@@ -171,6 +171,7 @@ hephaestus run                設定されたすべてのステージを実行�
 hephaestus build|archive|checksum|release|formula|tap   1 つのステージを実行する
 hephaestus preflight --tag vX.Y.Z   タグを push する前の読み取り専用リリースチェック
 hephaestus status --tag vX.Y.Z      リリースの現状と次に取るべき安全な操作（読み取り専用）
+hephaestus publish vX.Y.Z           確認、タグの作成と push、リリース workflow の追跡と検証
 hephaestus version
 ```
 
@@ -328,6 +329,7 @@ Formula はマニフェストから生成します。URL は公開したリリ�
 | [Development](docs/development.md) | make ターゲット、テスト、golden ファイル、fuzz、E2E |
 | [Release preflight](docs/preflight.md) | `hephaestus preflight --tag vX.Y.Z`：タグを push する前の読み取り専用チェック |
 | [Recovering a release](docs/recovery.md) | `hephaestus status`、失敗箇所ごとの安全な復旧 |
+| [Publishing a release](docs/publish.md) | `hephaestus publish vX.Y.Z` と、各プロジェクトの `make publish vX.Y.Z`：規約、安全のためのルール、復旧 |
 | [Releasing](docs/releasing.md) | Hephaestus 自身のリリース手順（`make publish vX.Y.Z`、プレリリース、失敗時の復旧） |
 | [Repository conventions](docs/architecture/repository-conventions.md) | Ark・Enma と共有する規約 |
 | [Architecture](ARCHITECTURE.md) | コントリビューター向けの不変条件 |

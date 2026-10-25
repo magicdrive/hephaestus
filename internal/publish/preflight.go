@@ -29,6 +29,22 @@ type Deps struct {
 	// generic, read-only release checks, internal/preflight). It is an
 	// additional gate: the checks above stay. Nil skips it (tests).
 	Generic func(ctx context.Context, tag string) (*preflight.Report, error)
+	// Hint names the command that runs a publish command ("publish",
+	// "check", "status" or "watch") in the next steps publish prints. Nil
+	// names the Makefile targets: make publish, make publish-status, ...
+	Hint func(command string) string
+}
+
+// Command is how the user runs a publish command, for messages: "make
+// publish-watch" unless d.Hint says otherwise.
+func (d *Deps) Command(command string) string {
+	if d.Hint != nil {
+		return d.Hint(command)
+	}
+	if command == "publish" {
+		return "make publish"
+	}
+	return "make publish-" + command
 }
 
 // Check is one preflight result.
@@ -206,14 +222,14 @@ func preflightGit(ctx context.Context, d *Deps, p *Project, tag string, r *Repor
 	if c, err := d.Git.Commit(ctx, "refs/tags/"+tag); err != nil {
 		r.addErr("local tag", err)
 	} else if c != "" {
-		r.add("local tag", false, "%s already exists locally (-> %s); see make publish-status %s", tag, short(c), tag)
+		r.add("local tag", false, "%s already exists locally (-> %s); see %s %s", tag, short(c), d.Command("status"), tag)
 	} else {
 		r.add("local tag", true, "%s does not exist", tag)
 	}
 	if c, ok, err := d.Git.RemoteTag(ctx, tag); err != nil {
 		r.addErr("remote tag", err)
 	} else if ok {
-		r.add("remote tag", false, "%s already exists on origin (-> %s); see make publish-status %s", tag, short(c), tag)
+		r.add("remote tag", false, "%s already exists on origin (-> %s); see %s %s", tag, short(c), d.Command("status"), tag)
 	} else {
 		r.add("remote tag", true, "%s does not exist on origin", tag)
 	}
