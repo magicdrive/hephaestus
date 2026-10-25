@@ -27,7 +27,9 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
 - The draft is re-read right before it is published: a release published
   meanwhile is not edited, and a draft whose assets changed (added,
   removed, incomplete or different) or that lost to another release is not
-  published.
+  published. A draft is also re-read before one of its assets is deleted
+  and before `draft: true` updates its title or notes; after publishing,
+  each asset's digest is checked before its URL is recorded.
 - A published release's assets are never replaced or deleted, on mutable
   releases too: `replace_existing_assets` now applies to drafts only, and
   an incomplete asset on a published release is reported, not removed.

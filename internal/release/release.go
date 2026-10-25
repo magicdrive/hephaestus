@@ -585,12 +585,13 @@ func (r *runner) run(ctx context.Context) (*Result, error) {
 		return r.res, fmt.Errorf("release %s: %d of %d assets failed; %s: %w", r.tag, len(failed), len(r.assets), what, errors.Join(failed...))
 	}
 
+	wasDraft := rel.Draft
 	if rel, err = r.finalize(ctx, rel); err != nil {
 		return r.res, err
 	}
 	r.res.ReleaseURL = rel.HTMLURL
 	r.res.Published = !rel.Draft
-	if err := r.recordURLs(ctx, rel, remote); err != nil {
+	if err := r.recordURLs(ctx, rel, remote, wasDraft); err != nil {
 		return r.res, err
 	}
 	if r.in.DryRun {
@@ -745,6 +746,9 @@ func (r *runner) processAsset(ctx context.Context, rel *github.Release, byName m
 				return ar
 			}
 			r.action("delete incomplete %s (state %q)", l.name, e.State)
+		}
+		if err := r.stillDraft(ctx, rel.ID); err != nil {
+			return fail(err)
 		}
 		if err := r.deleteAsset(ctx, e.ID); err != nil {
 			return fail(fmt.Errorf("deleting the existing asset: %w", err))
@@ -905,6 +909,20 @@ func assetAge(e github.Asset) (time.Duration, bool) {
 	return age, age < starterGracePeriod
 }
 
+// stillDraft re-reads release id right before an existing asset of it is
+// deleted: the release may have been published by a concurrent run since
+// it was read, and a published release's assets are never deleted.
+func (r *runner) stillDraft(ctx context.Context, id int64) error {
+	cur, err := r.c.GetRelease(ctx, r.owner, r.repo, id)
+	if err != nil {
+		return fmt.Errorf("re-reading release %d before deleting an asset (nothing was deleted): %w", id, err)
+	}
+	if !cur.Draft {
+		return fmt.Errorf("release %d was published meanwhile (by a concurrent run); a published release's assets are never deleted, so nothing was deleted", id)
+	}
+	return nil
+}
+
 func (r *runner) deleteAsset(ctx context.Context, id int64) error {
 	r.writes++
 	err := r.c.DeleteReleaseAsset(ctx, r.owner, r.repo, id)
@@ -993,6 +1011,9 @@ func (r *runner) recover(ctx context.Context, rel *github.Release, l *local) (*g
 			if age, recent := assetAge(e); recent {
 				return nil, fmt.Errorf("an incomplete %s (state %q, updated %s ago) is on the release after the failed upload; it may be another run's upload in progress, so it was left: re-run after %s", l.name, e.State, age.Round(time.Second), starterGracePeriod)
 			}
+			if err := r.stillDraft(ctx, rel.ID); err != nil {
+				return nil, err
+			}
 			r.action("delete incomplete %s (state %q) left by a failed upload", l.name, e.State)
 			if err := r.deleteAsset(ctx, e.ID); err != nil {
 				return nil, fmt.Errorf("deleting incomplete asset: %w", err)
@@ -1067,9 +1088,15 @@ func (r *runner) uploadOnce(ctx context.Context, releaseID int64, l *local) (*gi
 // release (mutable or immutable) is never edited: what differs from this
 // run's configuration is reported and left as it was published.
 func (r *runner) finalize(ctx context.Context, rel *github.Release) (*github.Release, error) {
-	if rel.Draft && !r.cfg.Draft && !r.in.DryRun {
+	if rel.Draft && !r.in.DryRun {
 		var err error
-		if rel, err = r.checkBeforePublish(ctx, rel); err != nil {
+		if r.cfg.Draft {
+			// Only the title, notes or prerelease flag may be updated; the
+			// release may have been published meanwhile.
+			if rel, err = r.c.GetRelease(ctx, r.owner, r.repo, rel.ID); err != nil {
+				return nil, fmt.Errorf("release: re-reading the draft release before updating it (it was not changed): %w", err)
+			}
+		} else if rel, err = r.checkBeforePublish(ctx, rel); err != nil {
 			return nil, err
 		}
 	}
@@ -1197,9 +1224,12 @@ func (r *runner) checkBeforePublish(ctx context.Context, rel *github.Release) (*
 	return cur, nil
 }
 
-// recordURLs stores each asset's download URL in the manifest. Drafts are
-// skipped: their URLs ("untagged-...") change when they are published.
-func (r *runner) recordURLs(ctx context.Context, rel *github.Release, remote []github.Asset) error {
+// recordURLs stores each asset's download URL in the manifest, after
+// checking each asset against this build's size and digest (the list is
+// re-read when this run wrote, or when the release was a draft: a
+// concurrent run may have published other content). Drafts are skipped:
+// their URLs ("untagged-...") change when they are published.
+func (r *runner) recordURLs(ctx context.Context, rel *github.Release, remote []github.Asset, wasDraft bool) error {
 	if r.in.DryRun {
 		return nil
 	}
@@ -1207,7 +1237,7 @@ func (r *runner) recordURLs(ctx context.Context, rel *github.Release, remote []g
 		r.logf("release %s is a draft; download URLs are recorded once it is published", r.tag)
 		return nil
 	}
-	if r.writes > 0 || r.res.Created {
+	if r.writes > 0 || r.res.Created || wasDraft {
 		var err error
 		if remote, err = r.c.ListReleaseAssets(ctx, r.owner, r.repo, rel.ID); err != nil {
 			return fmt.Errorf("release: listing assets after publishing: %w", err)
@@ -1221,6 +1251,9 @@ func (r *runner) recordURLs(ctx context.Context, rel *github.Release, remote []g
 		a, ok := byName[l.name]
 		if !ok || a.State != github.AssetStateUploaded || a.BrowserDownloadURL == "" || a.Size != l.size {
 			return fmt.Errorf("release: asset %s is missing or incomplete on release %d after publishing", l.name, rel.ID)
+		}
+		if a.Digest != nil && *a.Digest != "" && !strings.EqualFold(*a.Digest, "sha256:"+l.sha256) {
+			return fmt.Errorf("release: asset %s on release %d is %s, not this build's sha256:%s (published by a concurrent run?); its URL was not recorded", l.name, rel.ID, *a.Digest, l.sha256)
 		}
 		r.res.Assets[i].URL = a.BrowserDownloadURL
 		r.in.Manifest.Artifacts[l.idx].DownloadURL = a.BrowserDownloadURL

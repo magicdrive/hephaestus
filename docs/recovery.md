@@ -66,9 +66,15 @@ call for it. The only asset it may delete from a published release is one
 it has just uploaded itself and whose verification failed (the id comes
 from its own upload response).
 
-Known limit: GitHub has no conditional update, so between the re-read
-before publishing and the publish request itself (one API call) another
-writer could still change the draft.
+A draft is also re-read right before one of its assets is deleted (for
+`replace_existing_assets` or an old incomplete upload) and before its
+title or notes are updated with `draft: true`: a release published
+meanwhile is left alone. After publishing, each asset is checked against
+this build's digest before its URL is recorded in the manifest.
+
+Known limit: GitHub has no conditional update, so between a re-read and
+the write that follows it (one API call) another writer could still change
+the release.
 
 ## How each scenario is verified
 
@@ -83,7 +89,7 @@ writer could still change the draft.
 | 8 | **documentation only**: the attestation is a workflow step (`release.yml`), exercised by every real release, not by a test |
 | 9 | E2E `tap-failure` (pull request creation fails after publishing; the full re-run writes nothing to the release and opens the pull request) and `tap-only`; tap unit tests for reused branches and pull requests |
 | 10 | unit tests: `TestRerunIsNoOp`, `TestExistingTagMustPointToBuiltCommit`; E2E `stable` (second run writes nothing) |
-| 11 | unit tests: `TestConcurrentDraftLoserStopsWithoutDeleting` (lower-id draft, published release), `TestConcurrentDraftWinnerKeepsItsDraft`, `TestLostCreateDoesNotClaimAnotherRunsDraft`, `TestCheckBeforePublish` (published, asset added, changed or removed, another release published meanwhile), `TestClientCannotDeleteReleases`; the workflow's `concurrency` group is configuration, not tested |
+| 11 | unit tests: `TestConcurrentDraftLoserStopsWithoutDeleting` (lower-id draft, published release), `TestConcurrentDraftWinnerKeepsItsDraft`, `TestLostCreateDoesNotClaimAnotherRunsDraft`, `TestCheckBeforePublish` (published, asset added, changed or removed, another release published meanwhile), `TestDraftPublishedBeforeAssetDeleteKeepsAsset`, `TestDraftConfigDoesNotEditReleasePublishedMeanwhile`, `TestPublishedMeanwhileWithOtherContentIsNotRecorded`, `TestClientCannotDeleteReleases`; the workflow's `concurrency` group is configuration, not tested |
 | 12 | unit tests: `TestImmutablePublishedRelease`, `TestPublishedReleaseIsNeverEdited`, `TestImmutableReleaseRerunWritesNothing`; E2E `immutable` and `immutable-resumes-tap` |
 | lost publish response | unit test `TestPublishLostResponseIsNotPublishedTwice` |
 

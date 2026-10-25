@@ -302,8 +302,10 @@ func TestPublishedReleaseAssetsAreNeverReplacedOrDeleted(t *testing.T) {
 			t.Fatalf("wrote to a published release: %v", w)
 		}
 		wantStatuses(t, res, map[string]string{linuxName: StatusFailed, darwinName: StatusUnchanged, checksumName: StatusUnchanged})
-		if a := f.byTag(tag)[0].assets[0]; string(a.data) != "other bytes" {
-			t.Fatal("published asset modified")
+		for _, a := range f.byTag(tag)[0].assets {
+			if a.Name == linuxName && string(a.data) != "other bytes" {
+				t.Fatal("published asset modified")
+			}
 		}
 	})
 	t.Run("old incomplete asset", func(t *testing.T) {
@@ -665,5 +667,90 @@ func TestRecentStarterAssetIsNotDeleted(t *testing.T) {
 				t.Fatalf("statuses %v", statuses(res))
 			}
 		})
+	}
+}
+
+// publishOnFirstGet makes a concurrent run publish release rel when this
+// run first re-reads it by id; change, when set, runs at the same moment.
+func publishOnFirstGet(f *fakeGitHub, change func(rel *fakeRelease)) *bool {
+	done := false
+	re := regexp.MustCompile(`^/repos/acme/tool/releases/\d+$`)
+	f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+		if r.Method == "GET" && re.MatchString(r.URL.Path) && !done {
+			done = true
+			f.mu.Lock()
+			rel := f.releases[0]
+			rel.Draft = false
+			if change != nil {
+				change(rel)
+			}
+			f.refreshURLs(rel)
+			f.mu.Unlock()
+		}
+		return false
+	}
+	return &done
+}
+
+// TestDraftPublishedBeforeAssetDeleteKeepsAsset: a draft asset about to be
+// replaced is not deleted when a concurrent run published the release
+// since it was read.
+func TestDraftPublishedBeforeAssetDeleteKeepsAsset(t *testing.T) {
+	f := newFakeGitHub(t)
+	fx := newFixture(t)
+	fx.gh().ReplaceExistingAssets = true
+	f.addRelease(tag, true, false, map[string]string{linuxName: "other bytes", darwinName: defaultFiles[darwinName], checksumName: defaultFiles[checksumName]})
+	done := publishOnFirstGet(f, nil)
+	_, err := Run(context.Background(), fx.input(f.client(t)))
+	if !*done || err == nil || !strings.Contains(err.Error(), "published meanwhile") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := f.count("DELETE "); n != 0 {
+		t.Fatalf("deleted from a published release: %v", f.writes())
+	}
+}
+
+// TestDraftConfigDoesNotEditReleasePublishedMeanwhile: with draft: true,
+// the title and notes of a draft are updated only after re-reading it; a
+// release a concurrent run published meanwhile is not edited.
+func TestDraftConfigDoesNotEditReleasePublishedMeanwhile(t *testing.T) {
+	f := newFakeGitHub(t)
+	fx := newFixture(t)
+	fx.gh().Draft = true
+	fx.gh().Notes = "new notes"
+	f.addRelease(tag, true, false, map[string]string{linuxName: defaultFiles[linuxName], darwinName: defaultFiles[darwinName], checksumName: defaultFiles[checksumName]})
+	done := publishOnFirstGet(f, nil)
+	if _, err := Run(context.Background(), fx.input(f.client(t))); err != nil {
+		t.Fatal(err)
+	}
+	if !*done || f.count("PATCH ") != 0 {
+		t.Fatalf("re-read %t, writes %v", *done, f.writes())
+	}
+	if b := f.byTag(tag)[0].Body; b == "new notes" {
+		t.Fatal("published release edited")
+	}
+}
+
+// TestPublishedMeanwhileWithOtherContentIsNotRecorded: when a concurrent
+// run published the draft with other content, this run's manifest does not
+// record that release's URLs as its own.
+func TestPublishedMeanwhileWithOtherContentIsNotRecorded(t *testing.T) {
+	f := newFakeGitHub(t)
+	fx := newFixture(t)
+	f.addRelease(tag, true, false, map[string]string{linuxName: defaultFiles[linuxName], darwinName: defaultFiles[darwinName], checksumName: defaultFiles[checksumName]})
+	publishOnFirstGet(f, func(rel *fakeRelease) {
+		for _, a := range rel.assets {
+			if a.Name == checksumName {
+				d := "sha256:" + sum("other")
+				a.Digest = &d
+			}
+		}
+	})
+	_, err := Run(context.Background(), fx.input(f.client(t)))
+	if err == nil || !strings.Contains(err.Error(), "not this build's") {
+		t.Fatalf("err = %v", err)
+	}
+	if f.count("PATCH ") != 0 || fx.downloadURL(checksumName) != "" {
+		t.Fatalf("writes %v, url %q", f.writes(), fx.downloadURL(checksumName))
 	}
 }
