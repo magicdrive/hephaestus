@@ -33,7 +33,18 @@ v1.1.1, which was never released.
 ### Added
 
 - `hephaestus publish`: the release tool Hephaestus uses for itself, for any
-  project with the same release workflow conventions (`docs/publish.md`).
+  project with the same release workflow conventions
+  ([docs/publish.md](docs/publish.md)). `make publish vX.Y.Z` runs it in
+  order:
+  1. preflight;
+  2. confirmation;
+  3. annotated tag;
+  4. follow the release workflow;
+  5. verify assets, checksums, attestations and the tap pull request.
+- Action `command: plan`, with the outputs `prerelease` and `tap`: the
+  release plan of a tag, so a release job can skip, and never give the token
+  to, the tap steps of a prerelease. It refuses a prerelease that would
+  update the tap.
 
 ### Fixed
 

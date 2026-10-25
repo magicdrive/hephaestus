@@ -61,6 +61,10 @@ The tool that releases Hephaestus is now a command for any project:
 
 See [docs/publish.md](https://github.com/magicdrive/hephaestus/blob/v1.2.0-rc.1/docs/publish.md).
 
+The Action gains `command: plan`, with the outputs `prerelease` and `tap`.
+The steps that use the tap token can then run only when the tap is
+published. A prerelease never even receives the token.
+
 ## Fixes (prepared for v1.1.1)
 
 - **The Action no longer changes your Go toolchain.** v1.1.0 put its own Go
@@ -76,7 +80,7 @@ See [docs/publish.md](https://github.com/magicdrive/hephaestus/blob/v1.2.0-rc.1/
 ## Compatibility
 
 - **Unchanged:** configuration, CLI flags, Action inputs and outputs, JSON
-  fields and check IDs. `publish` is a new command.
+  fields and check IDs. New: the `publish` command, and the Action's `plan` command with the outputs `prerelease` and `tap`.
 - **The Action:** it must be referenced by a release tag or that tag's
   commit, and it no longer provides Go. Set up your own Go, as the examples
   always did.

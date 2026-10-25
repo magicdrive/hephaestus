@@ -91,7 +91,7 @@ could shadow it.
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `command` | `run` | `run`, `check`, `build`, `archive`, `checksum`, `release`, `formula`, `tap` or `preflight`. Any other value fails the step. |
+| `command` | `run` | `run`, `check`, `build`, `archive`, `checksum`, `release`, `formula`, `tap`, `preflight` or `plan` ([release plan](#release-plan)). Any other value fails the step. |
 | `stages` | `""` | With `command: run`: comma-separated stages (`build,archive,checksum,release,formula,tap`) or `all`. Empty runs every stage the configuration declares. Ignored by other commands. |
 | `config` | `""` | Configuration file, relative to `working-directory`. Empty: `hephaestus.yaml` (or `.yml`, `.hephaestus.yaml`, `.hephaestus.yml`). |
 | `tag` | `""` | Release tag. Empty: the pushed tag (`github.ref_name` when the workflow runs for a tag). |
@@ -126,6 +126,8 @@ the list above.
 | `preflight-status` | With `command: preflight`: `pass`, `warn`, `unknown` or `fail`. |
 | `preflight-exit-code` | With `command: preflight`: `0` pass, `1` fail (or strict `WARN`/`UNKNOWN`), `2` usage, `3` some checks unknown. The step fails on any non-zero code. |
 | `preflight-report` | With `command: preflight`: path of the JSON report ([schema](preflight.md#json-report)). |
+| `prerelease` | With `command: plan`: `"true"` when the tag is released as a prerelease. |
+| `tap` | With `command: plan`: `publish` when the release updates the Homebrew tap, `skip` otherwise. |
 
 The step also writes a Markdown summary (stages, artifacts with SHA-256,
 release assets and their status, formulae, tap results, warnings). Known
@@ -192,6 +194,32 @@ Declare `permissions: contents: read` at the top of the workflow and grant
   is a heuristic: keep credentials under recognizable names.
 - Set `github-token: ""` on steps that do not publish (pull request CI,
   snapshot builds).
+
+## Release plan
+
+`command: plan` prints what a release workflow does for a tag
+(`hephaestus publish plan`, [publish.md](publish.md)). It sets the outputs
+`prerelease` and `tap`, so the steps that use the tap token can be skipped
+for a prerelease and never receive the token. The tag is the `tag` input,
+or the pushed tag. The plan reads only the configuration: it needs no token
+and runs no project code. A prerelease whose plan would update the tap fails
+the step. `hephaestus publish` expects a release job built this way:
+
+```yaml
+      - name: Plan the release
+        id: plan
+        uses: magicdrive/hephaestus@<full commit SHA of a release tag> # vX.Y.Z
+        with:
+          command: plan
+      - name: Generate the formula and open a tap pull request
+        if: steps.plan.outputs.tap == 'publish'
+        uses: magicdrive/hephaestus@<full commit SHA of a release tag> # vX.Y.Z
+        with:
+          command: run
+          stages: formula,tap
+          github-token: ""
+          tap-token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+```
 
 ## Release preflight
 

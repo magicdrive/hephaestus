@@ -319,6 +319,29 @@ jobs:
         with:
           command: check
           working-directory: testdata/e2e/fixture
+      - name: Release plan of a stable tag
+        id: plan-stable
+        env:
+          HEPHAESTUS_ACTION_BINARY: ${{ steps.heph-bin.outputs.path }}
+        uses: ./
+        with:
+          command: plan
+          tag: v9.9.9
+      - name: Release plan of a prerelease
+        id: plan-rc
+        env:
+          HEPHAESTUS_ACTION_BINARY: ${{ steps.heph-bin.outputs.path }}
+        uses: ./
+        with:
+          command: plan
+          tag: v9.9.9-rc.1
+      - name: Check plan outputs
+        env:
+          STABLE: ${{ steps.plan-stable.outputs.prerelease }},${{ steps.plan-stable.outputs.tap }}
+          RC: ${{ steps.plan-rc.outputs.prerelease }},${{ steps.plan-rc.outputs.tap }}
+        run: |
+          echo "stable=$STABLE rc=$RC"
+          [[ "$STABLE" == "false,publish" && "$RC" == "true,skip" ]]
       - name: Release preflight (offline)
         # A pull request checks out a detached merge commit, so git.branch
         # fails; a push checks out a shallow clone without origin/HEAD, so
