@@ -72,52 +72,62 @@ expect_fail "no checksum line" verify_checksum "$work/a.tar.gz" "$work/sums" c.t
 printf '%s  a.tar.gz\n%s  a.tar.gz\n' "$good" "$good" >"$work/dup"
 expect_fail "two checksum lines" verify_checksum "$work/a.tar.gz" "$work/dup" a.tar.gz
 
-# Archives. Each is built from a directory and extracted into a new one;
-# the extraction must write the binary only.
-make_archive() { # NAME SETUP...: runs SETUP in a new directory, then archives it
-  local name=$1 d="$work/src-$1"
+# Archives, written member by member with Python's tarfile so that every
+# platform builds exactly the crafted entries (tar itself strips ../ and
+# cannot make links everywhere). Each is extracted into a new directory; the
+# extraction may write the binary only.
+py=""
+for c in python3 python; do
+  if command -v "$c" >/dev/null && "$c" -c 'import sys; sys.exit(sys.version_info < (3,))' 2>/dev/null; then py=$c; break; fi
+done
+# craft NAME ENTRY...: ENTRY is reg:PATH, dir:PATH or sym:PATH:TARGET.
+craft() {
+  local name=$1
   shift
-  mkdir "$d"
-  (cd "$d" && eval "$*")
-  # shellcheck disable=SC2046 # the member names are simple words
-  tar -czf "$work/$name.tar.gz" -C "$d" $(cd "$d" && ls -A)
+  "$py" - "$work/$name.tar.gz" "$@" <<'PY'
+import io, sys, tarfile
+with tarfile.open(sys.argv[1], "w:gz") as t:
+    for e in sys.argv[2:]:
+        kind, _, rest = e.partition(":")
+        info = tarfile.TarInfo(rest.split(":")[0])
+        if kind == "reg":
+            data = b"#!/bin/sh\n"
+            info.size, info.mode = len(data), 0o755
+            t.addfile(info, io.BytesIO(data))
+        elif kind == "dir":
+            info.type, info.mode = tarfile.DIRTYPE, 0o755
+            t.addfile(info)
+        else:
+            info.type, info.linkname = tarfile.SYMTYPE, rest.split(":", 1)[1]
+            t.addfile(info)
+PY
 }
-make_archive good 'printf "#!/bin/sh\n" >hephaestus; chmod 755 hephaestus; printf x >LICENSE; printf x >README.md'
-expect_ok "a regular binary at the root" extract_binary "$work/good.tar.gz" hephaestus "$work/x-good"
-expect_eq "only the binary is written" "$(ls -A "$work/x-good")" hephaestus
-
-make_archive link 'ln -s /etc/passwd hephaestus'
-expect_fail "the binary is a symlink" extract_binary "$work/link.tar.gz" hephaestus "$work/x-link"
-
-make_archive nested 'mkdir bin; printf x >bin/hephaestus'
-expect_fail "the binary is not at the root" extract_binary "$work/nested.tar.gz" hephaestus "$work/x-nested"
-
-make_archive dir 'mkdir hephaestus'
-expect_fail "the binary is a directory" extract_binary "$work/dir.tar.gz" hephaestus "$work/x-dir"
-
-make_archive none 'printf x >README.md'
-expect_fail "no binary" extract_binary "$work/none.tar.gz" hephaestus "$work/x-none"
-
-# Two members with the same name.
-mkdir -p "$work/dup1" "$work/dup2"
-printf one >"$work/dup1/hephaestus"
-printf two >"$work/dup2/hephaestus"
-tar -cf "$work/dup.tar" -C "$work/dup1" hephaestus
-tar -rf "$work/dup.tar" -C "$work/dup2" hephaestus
-gzip -c "$work/dup.tar" >"$work/dup.tar.gz"
-expect_fail "two binaries" extract_binary "$work/dup.tar.gz" hephaestus "$work/x-dup"
-
-# A traversal member next to the binary is never extracted. GNU tar can
-# write such an entry with --transform; elsewhere the case is skipped.
-mkdir -p "$work/trav"
-printf x >"$work/trav/hephaestus"
-printf evil >"$work/trav/evil"
-if tar --version 2>/dev/null | grep -q 'GNU tar' &&
-  tar -czf "$work/trav.tar.gz" -C "$work/trav" --transform 's,^evil$,../evil,' hephaestus evil 2>/dev/null; then
-  expect_ok "a ../ member next to the binary" extract_binary "$work/trav.tar.gz" hephaestus "$work/x-trav/in"
-  expect_eq "the ../ member was not written" "$(ls -A "$work/x-trav")" in
+if [[ -z "$py" ]]; then
+  echo "skip crafted archives (no Python 3)"
 else
-  echo "skip a ../ member next to the binary (needs GNU tar to build the archive)"
+  craft good reg:hephaestus reg:LICENSE reg:README.md
+  expect_ok "a regular binary at the root" extract_binary "$work/good.tar.gz" hephaestus "$work/x-good"
+  expect_eq "only the binary is written" "$(ls -A "$work/x-good")" hephaestus
+
+  craft link sym:hephaestus:/etc/passwd
+  expect_fail "the binary is a symlink" extract_binary "$work/link.tar.gz" hephaestus "$work/x-link"
+  craft link2 reg:real sym:hephaestus:real
+  expect_fail "the binary is a symlink to another member" extract_binary "$work/link2.tar.gz" hephaestus "$work/x-link2"
+  craft nested dir:bin reg:bin/hephaestus
+  expect_fail "the binary is not at the root" extract_binary "$work/nested.tar.gz" hephaestus "$work/x-nested"
+  craft dir dir:hephaestus
+  expect_fail "the binary is a directory" extract_binary "$work/dir.tar.gz" hephaestus "$work/x-dir"
+  craft none reg:README.md
+  expect_fail "no binary" extract_binary "$work/none.tar.gz" hephaestus "$work/x-none"
+  craft dup reg:hephaestus reg:hephaestus
+  expect_fail "two binaries" extract_binary "$work/dup.tar.gz" hephaestus "$work/x-dup"
+  craft dotslash reg:./hephaestus
+  expect_fail "the binary as ./hephaestus" extract_binary "$work/dotslash.tar.gz" hephaestus "$work/x-dotslash"
+  craft trav reg:hephaestus reg:../evil reg:/tmp/hephaestus-install-test-abs
+  mkdir "$work/x-trav"
+  expect_ok "../ and absolute members next to the binary" extract_binary "$work/trav.tar.gz" hephaestus "$work/x-trav/in"
+  expect_eq "only the binary is written" "$(ls -A "$work/x-trav") $(ls -A "$work/x-trav/in")" "in hephaestus"
+  [[ -e /tmp/hephaestus-install-test-abs ]] && expect_eq "the absolute member was not written" written no
 fi
 
 # The existing directory guard: extraction needs a new directory.
