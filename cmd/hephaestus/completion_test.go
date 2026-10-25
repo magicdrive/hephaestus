@@ -52,6 +52,7 @@ func TestComplete(t *testing.T) {
 		{"stages first", []string{"run", "--stages", "t"}, []string{"tap"}, directiveDefault},
 		{"stages list skips used", []string{"run", "--stages=build,archive,"}, []string{"--stages=build,archive,checksum", "--stages=build,archive,release", "--stages=build,archive,formula", "--stages=build,archive,tap"}, directiveDefault},
 		{"skip list", []string{"preflight", "--skip", "git.b"}, []string{"git.branch"}, directiveDefault},
+		{"nothing after all", []string{"run", "--stages=all,"}, nil, directiveDefault},
 		{"file value", []string{"check", "--config", ""}, nil, directiveFile},
 		{"file value, --flag=value", []string{"preflight", "--report=out"}, nil, directiveFile},
 		{"free-form value", []string{"status", "--tag", ""}, nil, directiveDefault},

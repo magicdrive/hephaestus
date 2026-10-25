@@ -834,13 +834,65 @@ func TestGenerateCompletions(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
+	noarch := func(extra ...manifest.File) manifest.Artifact {
+		return arch("all", "all", "", append([]manifest.File{file("mycli", modeExec)}, extra...), "mycli")
+	}
 	t.Run("generated and installed twice", func(t *testing.T) {
 		b := baseBrew()
-		b.ExtraInstall = `bash_completion.install "mycli" => "x"`
+		b.ExtraInstall = `bash_completion.install "c.bash" => "mycli"`
 		b.Completions = &config.BrewCompletions{Generate: &config.BrewCompletionGenerate{}}
-		_, err := Generate(input(b, fourPlatforms(false)...))
+		_, err := Generate(input(b, noarch(file("c.bash", modeRegular))))
 		if err == nil || !strings.Contains(err.Error(), "generated (completions.generate) and also installed") {
 			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("another command's completion is not a conflict", func(t *testing.T) {
+		b := baseBrew()
+		b.ExtraInstall = `bash_completion.install "c.bash" => "other-tool"`
+		b.Completions = &config.BrewCompletions{Generate: &config.BrewCompletionGenerate{}}
+		if _, err := Generate(input(b, noarch(file("c.bash", modeRegular)))); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("generate written twice", func(t *testing.T) {
+		b := baseBrew()
+		b.ExtraInstall = `generate_completions_from_executable(bin/"mycli", "completion")`
+		b.Completions = &config.BrewCompletions{Generate: &config.BrewCompletionGenerate{Args: []string{"completion"}}}
+		_, err := Generate(input(b, noarch()))
+		if err == nil || !strings.Contains(err.Error(), "2 times") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("executable put into bin by install_symlink", func(t *testing.T) {
+		b := baseBrew()
+		b.Install = "libexec.install \"mycli\"\nbin.install_symlink libexec/\"mycli\""
+		b.Completions = &config.BrewCompletions{Generate: &config.BrewCompletionGenerate{Args: []string{"completion"}}}
+		if _, err := Generate(input(b, noarch())); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("long call is wrapped for brew style", func(t *testing.T) {
+		b := baseBrew()
+		b.Name = "hephaestus-long-name"
+		a := arch("all", "all", "", []manifest.File{file("hephaestus-long-name", modeExec)}, "hephaestus-long-name")
+		b.Completions = &config.BrewCompletions{Generate: &config.BrewCompletionGenerate{Args: []string{"completion"}, ShellParameterFormat: "cobra", Shells: []string{"bash", "zsh"}}}
+		fs, err := Generate(input(b, a))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := string(fs[0].Content)
+		want := "    generate_completions_from_executable(bin/\"hephaestus-long-name\", \"completion\",\n" +
+			"                                         shell_parameter_format: :cobra, shells: [:bash, :zsh])\n"
+		if !strings.Contains(c, want) {
+			t.Fatalf("missing wrapped call:\n%s", c)
+		}
+		for _, l := range strings.Split(c, "\n") {
+			if len(l) > maxFormulaLine {
+				t.Errorf("line longer than %d: %q", maxFormulaLine, l)
+			}
+		}
+		if got := CompletionLines(&b); len(got) != 1 || strings.Contains(got[0], "\n") {
+			t.Errorf("CompletionLines = %q, want one logical line", got)
 		}
 	})
 	t.Run("shipped file missing from the archive", func(t *testing.T) {

@@ -22,7 +22,7 @@ export LC_ALL=C
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 harness="$repo/cmd/hephaestus/testdata/completion"
-version="${HEPHAESTUS_E2E_VERSION:-1.0.1}"
+version="${HEPHAESTUS_E2E_VERSION:-1.1.0}"
 # The production tap's formula of v1.0.0 (magicdrive/homebrew-tap, merged
 # pull request #4): read only, from a fixed commit.
 v100_formula="https://raw.githubusercontent.com/magicdrive/homebrew-tap/f700c89e31785cc76f8b8ffb72f82b2609cb2bd2/hephaestus.rb"

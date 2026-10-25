@@ -193,7 +193,7 @@ hephaestus version
 
 `hephaestus completion bash|zsh|fish` は補完スクリプトを出力します。補完の対象は、コマンド、フラグ、値が決まっているフラグの値（`--format`、`--template`、`--stages`、`--phase`、`--skip`）です。詳しくは [docs/cli.md](docs/cli.md#completion) を参照してください。
 
-**Homebrew の場合**（v1.0.1 から。1.0.0 からの `brew upgrade` を含む）は、Formula が 3 種類のスクリプトを Homebrew の補完ディレクトリにインストールします。
+**Homebrew の場合**（v1.1.0 から。1.0.0 からの `brew upgrade` を含む）は、Formula が 3 種類のスクリプトを Homebrew の補完ディレクトリにインストールします。
 
 | シェル | インストールされるファイル | 有効にする設定（一度だけ） |
 | --- | --- | --- |

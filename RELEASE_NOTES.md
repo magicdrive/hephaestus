@@ -1,6 +1,9 @@
-# Hephaestus v1.0.1
+# Hephaestus v1.1.0
 
 Shell completion, for Hephaestus itself and for the formulae it generates.
+A minor release: it adds a command and a configuration key, as the
+[compatibility policy](https://github.com/magicdrive/hephaestus/blob/v1.1.0/docs/compatibility/policy.md)
+allows in 1.x.0.
 
 ## Hephaestus completes itself
 
@@ -31,7 +34,7 @@ Homebrew installs the files, but each shell must also be set up to load
 them. A fish installed by Homebrew needs nothing more. bash needs
 `bash-completion@2`, and zsh needs Homebrew's `site-functions` on `FPATH`
 before `compinit`. The
-[README](https://github.com/magicdrive/hephaestus/blob/v1.0.1/README.md#shell-completion)
+[README](https://github.com/magicdrive/hephaestus/blob/v1.1.0/README.md#shell-completion)
 has the lines to add, and the commands for installing without Homebrew.
 
 ## Completions in the formulae Hephaestus generates
@@ -66,7 +69,7 @@ The configuration is checked before anything is published:
 
 Every value is written as a Ruby string literal. A formula without
 `completions` is generated exactly as before. Details are in the
-[configuration reference](https://github.com/magicdrive/hephaestus/blob/v1.0.1/docs/configuration.md#formula-completions).
+[configuration reference](https://github.com/magicdrive/hephaestus/blob/v1.1.0/docs/configuration.md#formula-completions).
 
 ## Testing
 
@@ -104,4 +107,4 @@ Every value is written as a Ruby string literal. A formula without
 - A custom `shell_parameter_format` prefix string is not supported; use
   `extra_install` for such a case.
 
-**Full Changelog**: https://github.com/magicdrive/hephaestus/compare/v1.0.0...v1.0.1
+**Full Changelog**: https://github.com/magicdrive/hephaestus/compare/v1.0.0...v1.1.0

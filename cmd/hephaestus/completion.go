@@ -265,6 +265,9 @@ func values(name, prefix, partial string) ([]candidate, int) {
 	for _, x := range strings.Split(head, ",") {
 		used[x] = true
 	}
+	if used["all"] {
+		return nil, directiveDefault // "all" stands alone
+	}
 	var out []candidate
 	for _, x := range v.values() {
 		if x == "all" && head != "" {

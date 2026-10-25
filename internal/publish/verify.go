@@ -393,12 +393,32 @@ func verifyTapPullRequest(ctx context.Context, d *Deps, pl *Plan, t TapPlan, rel
 	r.add("tap pull request", true, "%s (%s; review and merge it on the tap, publish never merges)", pr.HTMLURL, state)
 }
 
-// formulaHasLines requires each line (trimmed) to be a line of the formula:
-// the shell completions the configuration installs.
+// formulaHasLines requires each line (trimmed) to be a statement of the
+// formula's def install block: the shell completions the configuration
+// installs. The same text elsewhere (a comment, the test block) does not
+// count.
 func formulaHasLines(formula string, want []string) (bool, string) {
 	have := map[string]bool{}
+	in := false
+	stmt := "" // a statement continued after a trailing comma
 	for _, l := range strings.Split(formula, "\n") {
-		have[strings.TrimSpace(l)] = true
+		switch {
+		case l == "  def install":
+			in = true
+		case in && l == "  end":
+			in = false
+		case in:
+			t := strings.TrimSpace(l)
+			if stmt != "" {
+				t = stmt + " " + t
+			}
+			if strings.HasSuffix(t, ",") {
+				stmt = t
+				continue
+			}
+			stmt = ""
+			have[t] = true
+		}
 	}
 	for _, w := range want {
 		if !have[w] {

@@ -224,7 +224,7 @@ commands, flags and fixed flag values (`--format`, `--template`,
 `--stages`, `--phase`, `--skip`); details in
 [docs/cli.md](docs/cli.md#completion).
 
-**With Homebrew** (from v1.0.1, including `brew upgrade` from 1.0.0), the
+**With Homebrew** (from v1.1.0, including `brew upgrade` from 1.0.0), the
 formula installs all three scripts into Homebrew's completion directories:
 
 | Shell | File installed | To enable it, once |

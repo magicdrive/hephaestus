@@ -26,7 +26,7 @@ v1.0.0 is prepared by #19 and published only after the owner merges it.
 | [#17](https://github.com/magicdrive/hephaestus/pull/17) | `docs/v1.0.0-rc.2-notes` | `main` | rc.2 | release notes and changelog for v1.0.0-rc.2 |
 | [#18](https://github.com/magicdrive/hephaestus/pull/18) | `ci/verify-release-workflow` | `main` | rc.2 verification | `verify-release.yml`: run a published release's binaries on six platforms |
 | [#19](https://github.com/magicdrive/hephaestus/pull/19) | `docs/v1.0.0-stable-release` | `main` | 1.0 | release notes, changelog and docs for v1.0.0 (v1.0.0 published from its merge, b2ea250) |
-| #20 | `feat/shell-completion` | `main` | 1.0.1 | `hephaestus completion bash\|zsh\|fish`; `brews[].completions`; Hephaestus's formula installs its completions |
+| #20 | `feat/shell-completion` | `main` | 1.1.0 | `hephaestus completion bash\|zsh\|fish`; `brews[].completions`; Hephaestus's formula installs its completions |
 
 Merge in order; each base branch is merged into the next, so no rebase is
 needed.

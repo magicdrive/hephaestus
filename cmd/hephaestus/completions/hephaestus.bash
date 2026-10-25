@@ -38,10 +38,15 @@ _hephaestus() {
             value=${cur#*=}
             pre=${cur%"$value"}
         fi
-        type compopt >/dev/null 2>&1 && compopt -o filenames
+        # bash 4+: compopt quotes the names; bash 3.2 has no compopt, so
+        # they are quoted here.
+        local quote=1
+        type compopt >/dev/null 2>&1 && compopt -o filenames && quote=0
         while IFS= read -r w; do
             w=$pre$w
-            COMPREPLY[${#COMPREPLY[@]}]=${w#"$strip"}
+            w=${w#"$strip"}
+            ((quote)) && w=$(printf '%q' "$w")
+            COMPREPLY[${#COMPREPLY[@]}]=$w
         done < <(compgen -f -- "$value")
         return 0
     fi

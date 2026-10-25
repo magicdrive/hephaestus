@@ -3,9 +3,11 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
-## v1.0.1
+## v1.1.0
 
-Shell completion; full notes in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+Shell completion; full notes in [RELEASE_NOTES.md](RELEASE_NOTES.md). A
+minor release: it adds a command and a configuration key
+([compatibility policy](docs/compatibility/policy.md)).
 
 ### Added
 
