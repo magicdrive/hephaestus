@@ -24,6 +24,9 @@ type command struct {
 	flags func() *flag.FlagSet
 	// args are the values of the command's only positional argument.
 	args []string
+	// subcommands are offered as the first word after the command (before
+	// its flags).
+	subcommands func() []candidate
 }
 
 // commands in usage order.
@@ -39,6 +42,7 @@ var commands = []command{
 	{name: "tap", summary: "Run the Homebrew tap publication stage only", flags: stageFlags("tap")},
 	{name: "preflight", summary: "Read-only release safety checks before pushing a tag (--tag vX.Y.Z)", flags: func() *flag.FlagSet { return new(preflightArgs).flags() }},
 	{name: "status", summary: "Read-only state of a tag's release and the next safe action (--tag vX.Y.Z)", flags: func() *flag.FlagSet { return new(statusArgs).flags() }},
+	{name: "publish", summary: "Release a version: check, tag, push, follow the workflow, verify (vX.Y.Z)", flags: publishFlags, subcommands: publishSubcommands},
 	{name: "completion", summary: "Print the shell completion script (bash, zsh or fish)", args: completionShells},
 	{name: "version", summary: "Print the version"},
 	{name: "help", summary: "Print this help"},
@@ -189,6 +193,9 @@ func complete(words []string) ([]candidate, int) {
 		}
 		return nil, directiveDefault
 	}
+	if cmd.subcommands != nil && len(before) == 1 && !strings.HasPrefix(cur, "-") {
+		return filter(cmd.subcommands(), cur), directiveDefault
+	}
 	fs := cmd.flags()
 
 	// Walk the words before the cursor: which flags are set, and whether
@@ -227,7 +234,7 @@ func complete(words []string) ([]candidate, int) {
 		return values(name, cur[:len(cur)-len(value)], value)
 	}
 	if cur != "" && !strings.HasPrefix(cur, "-") {
-		return nil, directiveDefault // the commands take no positional arguments
+		return nil, directiveDefault // no completed positional arguments
 	}
 	dash := "--"
 	if strings.HasPrefix(cur, "-") && !strings.HasPrefix(cur, "--") && len(cur) > 1 {

@@ -38,7 +38,9 @@ type shellCase struct {
 }
 
 var shellCases = []shellCase{
-	{name: "top-level command", words: []string{"hephaestus", ""}, want: []string{"init", "check", "run", "build", "archive", "checksum", "release", "formula", "tap", "preflight", "status", "completion", "version", "help"}},
+	{name: "top-level command", words: []string{"hephaestus", ""}, want: []string{"init", "check", "run", "build", "archive", "checksum", "release", "formula", "tap", "preflight", "status", "publish", "completion", "version", "help"}},
+	{name: "publish commands", words: []string{"hephaestus", "publish", "st"}, want: []string{"status"}},
+	{name: "publish flags after a command", words: []string{"hephaestus", "publish", "watch", "--po"}, want: []string{"--poll"}},
 	{name: "partial command", words: []string{"hephaestus", "pre"}, want: []string{"preflight"}},
 	{name: "completion shells", words: []string{"hephaestus", "completion", ""}, want: []string{"bash", "zsh", "fish"}},
 	{name: "completion partial shell", words: []string{"hephaestus", "completion", "f"}, want: []string{"fish"}},

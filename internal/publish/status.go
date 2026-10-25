@@ -118,7 +118,10 @@ func (s *Status) Print(d *Deps, pl *Plan) {
 		d.logf("Release:      none")
 	}
 	tap := "skipped for this version"
-	if !pl.TapSkipped() {
+	switch {
+	case len(pl.Taps) == 0:
+		tap = "none configured"
+	case !pl.TapSkipped():
 		tap = "published by pull request"
 	}
 	d.logf("Homebrew tap: %s", tap)

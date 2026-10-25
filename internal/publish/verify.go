@@ -230,12 +230,14 @@ const (
 )
 
 // verifyTapSteps checks that the release job ran the tap steps exactly
-// when the tap is published.
+// when the tap is published. Without any formula configured the steps are
+// optional, but a step that exists must have been skipped.
 func verifyTapSteps(ctx context.Context, d *Deps, p *Project, pl *Plan, run *Run, r *Report) {
 	want := "success"
 	if pl.TapSkipped() {
 		want = "skipped"
 	}
+	noTaps := len(pl.Taps) == 0
 	var steps []Step
 	for attempt := 0; ; attempt++ {
 		jobs, err := d.GH.Jobs(ctx, p.Repo, run.ID)
@@ -244,8 +246,13 @@ func verifyTapSteps(ctx context.Context, d *Deps, p *Project, pl *Plan, run *Run
 			return
 		}
 		steps = steps[:0]
+		// settled: GitHub reports every step of the run's jobs (a skipped
+		// job has none) with a conclusion.
+		settled := len(jobs) > 0
 		for _, j := range jobs {
+			settled = settled && (len(j.Steps) > 0 || j.Conclusion == "skipped")
 			for _, s := range j.Steps {
+				settled = settled && s.Conclusion != ""
 				if s.Name == TapPublishStep || s.Name == TapPreflightStep {
 					steps = append(steps, s)
 				}
@@ -257,11 +264,11 @@ func verifyTapSteps(ctx context.Context, d *Deps, p *Project, pl *Plan, run *Run
 				complete = false
 			}
 		}
-		if complete {
+		if complete || noTaps && len(steps) == 0 && settled {
 			break
 		}
 		if attempt+1 >= tapStepAttempts || d.Sleep == nil {
-			r.addErr("tap steps", fmt.Errorf("GitHub reports %d of the 2 tap steps of run %d with a conclusion (step data incomplete); re-run make publish-watch to verify again", len(steps), run.ID))
+			r.addErr("tap steps", fmt.Errorf("GitHub reports %d of the 2 tap steps of run %d with a conclusion (step data incomplete); re-run %s to verify again", len(steps), run.ID, d.Command("watch")))
 			return
 		}
 		if err := d.Sleep(ctx, tapStepDelay); err != nil {
@@ -275,9 +282,12 @@ func verifyTapSteps(ctx context.Context, d *Deps, p *Project, pl *Plan, run *Run
 			return
 		}
 	}
-	if want == "skipped" {
+	switch {
+	case noTaps && len(steps) == 0:
+		r.add("tap steps", true, "no formula configured and no tap step in the release job")
+	case want == "skipped":
 		r.add("tap steps", true, "tap rehearsal and publish steps skipped: the tap token was not used")
-	} else {
+	default:
 		r.add("tap steps", true, "tap rehearsal and publish steps succeeded")
 	}
 }

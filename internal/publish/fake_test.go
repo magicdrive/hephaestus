@@ -196,6 +196,8 @@ func (g *fakeGit) PushTag(_ context.Context, tag string) error {
 type fakeGH struct {
 	mu          sync.Mutex
 	t           *testing.T
+	repo        string // the release repository (owner/name)
+	noTapSteps  bool   // the release job has no tap steps
 	authErr     error
 	ciRuns      []Run
 	rulesets    []Ruleset
@@ -226,6 +228,7 @@ type fakeGH struct {
 func newFakeGH(t *testing.T) *fakeGH {
 	return &fakeGH{
 		t:      t,
+		repo:   "magicdrive/hephaestus",
 		ciRuns: []Run{{ID: 10, Path: ".github/workflows/ci.yml", Event: "push", HeadBranch: "main", HeadSHA: testCommit, Status: "completed", Conclusion: "success", HTMLURL: "https://ci/10", CreatedAt: time.Unix(100, 0)}},
 		rulesets: []Ruleset{
 			ruleset("Protect main", "branch", "active", []string{"refs/heads/main"}, "deletion", "non_fast_forward", "required_status_checks"),
@@ -270,8 +273,12 @@ func (f *fakeGH) startRelease(pl *Plan, now func() time.Time) func(string) {
 			skip = "success"
 		}
 		f.jobs = []Job{{Name: "release", Status: "completed", Conclusion: f.conclusion, Steps: []Step{
+			{Name: "Publish the GitHub release", Conclusion: f.conclusion},
 			{Name: TapPreflightStep, Conclusion: skip}, {Name: TapPublishStep, Conclusion: skip},
 		}}}
+		if f.noTapSteps {
+			f.jobs[0].Steps = f.jobs[0].Steps[:1]
+		}
 		if f.conclusion != "success" {
 			return
 		}
@@ -283,9 +290,12 @@ func (f *fakeGH) startRelease(pl *Plan, now func() time.Time) func(string) {
 		f.releases = append(f.releases, rel)
 		if !pl.Prerelease {
 			f.latest = tag
+		}
+		if !pl.TapSkipped() {
+			pub := pl.Taps[0].Publish
 			f.tapPRs = []PullRequest{{Number: 7, State: "open", HTMLURL: "https://tap/pull/7"}}
-			f.tapPRs[0].Head.Ref, f.tapPRs[0].Head.SHA = "hephaestus-"+pl.Version.Version, "4444444444444444444444444444444444444444"
-			f.prFiles = []string{"hephaestus.rb"}
+			f.tapPRs[0].Head.Ref, f.tapPRs[0].Head.SHA = pub.Branch, "4444444444444444444444444444444444444444"
+			f.prFiles = []string{pub.Path}
 			f.prFormula = formulaFor(pl, rel)
 		}
 	}
@@ -440,7 +450,7 @@ func (f *fakeGH) DownloadRelease(_ context.Context, _ Repo, _ string, dir string
 func (f *fakeGH) VerifyAttestation(_ context.Context, file string, p AttestPolicy) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if p.SignerWorkflow != "magicdrive/hephaestus/.github/workflows/release.yml" || p.SourceDigest != testCommit || !strings.HasPrefix(p.SourceRef, "refs/tags/v") {
+	if p.Repo.String() != f.repo || p.SignerWorkflow != f.repo+"/.github/workflows/release.yml" || p.SourceDigest != testCommit || !strings.HasPrefix(p.SourceRef, "refs/tags/v") {
 		return fmt.Errorf("unexpected policy %+v", p)
 	}
 	name := filepath.Base(file)

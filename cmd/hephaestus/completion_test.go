@@ -22,7 +22,7 @@ func words(cands []candidate) []string {
 }
 
 func TestComplete(t *testing.T) {
-	allCommands := []string{"init", "check", "run", "build", "archive", "checksum", "release", "formula", "tap", "preflight", "status", "completion", "version", "help"}
+	allCommands := []string{"init", "check", "run", "build", "archive", "checksum", "release", "formula", "tap", "preflight", "status", "publish", "completion", "version", "help"}
 	for _, tc := range []struct {
 		name      string
 		words     []string
@@ -66,6 +66,13 @@ func TestComplete(t *testing.T) {
 		{"no positional", []string{"run", "x"}, nil, directiveDefault},
 		{"stage commands share run's flags without --stages", []string{"build", "--sta"}, nil, directiveDefault},
 		{"help flag", []string{"init", "--he"}, []string{"--help"}, directiveDefault},
+		{"publish commands", []string{"publish", ""}, []string{"check", "status", "watch", "plan", "help"}, directiveDefault},
+		{"publish partial command", []string{"publish", "w"}, []string{"watch"}, directiveDefault},
+		{"publish flags", []string{"publish", "-"}, []string{"--config", "--discover-timeout", "--from-make", "--poll", "--watch-timeout", "--yes", "--help"}, directiveDefault},
+		{"publish command flags", []string{"publish", "check", "--f"}, []string{"--from-make"}, directiveDefault},
+		{"publish --config is a file", []string{"publish", "watch", "--config", ""}, nil, directiveFile},
+		{"publish version is not completed", []string{"publish", "check", "v"}, nil, directiveDefault},
+		{"publish no command after a flag", []string{"publish", "--yes", ""}, []string{"--config", "--discover-timeout", "--from-make", "--poll", "--watch-timeout", "--help"}, directiveDefault},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, d := complete(tc.words)

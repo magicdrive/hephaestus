@@ -119,8 +119,8 @@ func Publish(ctx context.Context, d *Deps, p *Project, pl *Plan, opts Options) *
 	rep.Print(d.Out)
 	if !rep.OK() {
 		return fail(errors.New("preflight failed: nothing was created or pushed"),
-			"fix the failed checks and run make publish "+tag+" again",
-			"make publish-status "+tag+" shows an existing tag, run or release")
+			"fix the failed checks and run "+d.Command("publish")+" "+tag+" again",
+			d.Command("status")+" "+tag+" shows an existing tag, run or release")
 	}
 	o.State, o.Commit = PreflightPassed, rep.Commit
 
@@ -142,13 +142,13 @@ func Publish(ctx context.Context, d *Deps, p *Project, pl *Plan, opts Options) *
 	// Re-check right before the irreversible step: origin/main and the
 	// remote tag may have changed while the prompt was open.
 	if err := d.Git.FetchMain(ctx); err != nil {
-		return fail(fmt.Errorf("re-fetch origin/main: %w", err), unpushedHint(tag)...)
+		return fail(fmt.Errorf("re-fetch origin/main: %w", err), unpushedHint(d, tag)...)
 	}
 	if remote, err := d.Git.Commit(ctx, "refs/remotes/origin/"+p.Branch); err != nil || remote != rep.Commit {
-		return fail(fmt.Errorf("origin/%s moved to %q since the preflight (%v)", p.Branch, remote, err), unpushedHint(tag)...)
+		return fail(fmt.Errorf("origin/%s moved to %q since the preflight (%v)", p.Branch, remote, err), unpushedHint(d, tag)...)
 	}
 	if c, exists, err := d.Git.RemoteTag(ctx, tag); err != nil || exists {
-		return fail(fmt.Errorf("remote tag %s appeared (-> %q) or cannot be checked (%v)", tag, c, err), unpushedHint(tag)...)
+		return fail(fmt.Errorf("remote tag %s appeared (-> %q) or cannot be checked (%v)", tag, c, err), unpushedHint(d, tag)...)
 	}
 
 	d.logf("==> pushing tag %s (not forced)", tag)
@@ -162,16 +162,16 @@ func Publish(ctx context.Context, d *Deps, p *Project, pl *Plan, opts Options) *
 	case rerr != nil:
 		// Unknown: the push may have reached GitHub.
 		o.Err, o.MonitorLost = fmt.Errorf("cannot tell whether %s reached origin (push: %v; check: %w)", tag, perr, rerr), true
-		o.Next = []string{"run make publish-status " + tag + " before anything else: if the tag is on origin, the release is running"}
+		o.Next = []string{"run " + d.Command("status") + " " + tag + " before anything else: if the tag is on origin, the release is running"}
 		return o
 	case !exists:
 		if perr == nil {
 			perr = errors.New("git reported success but origin has no such tag")
 		}
-		return fail(fmt.Errorf("push tag: %w", perr), unpushedHint(tag)...)
+		return fail(fmt.Errorf("push tag: %w", perr), unpushedHint(d, tag)...)
 	case c != rep.Commit:
 		o.State = TagPushed
-		return fail(fmt.Errorf("origin has %s at %s, not %s", tag, c, rep.Commit), "do not move the tag; inspect with make publish-status "+tag)
+		return fail(fmt.Errorf("origin has %s at %s, not %s", tag, c, rep.Commit), "do not move the tag; inspect with "+d.Command("status")+" "+tag)
 	case perr != nil:
 		d.logf("    git reported %v, but origin has %s at %s: continuing", perr, tag, short(rep.Commit))
 	}
@@ -192,17 +192,17 @@ func Watch(ctx context.Context, d *Deps, p *Project, pl *Plan, opts Options) *Ou
 	c, exists, err := d.Git.RemoteTag(ctx, tag)
 	if err != nil || !exists {
 		o.State, o.FailedAt, o.Err = Failed, NotStarted, fmt.Errorf("tag %s is not on origin (%v): nothing to watch", tag, err)
-		o.Next = []string{"make publish " + tag + " creates and pushes it"}
+		o.Next = []string{d.Command("publish") + " " + tag + " creates and pushes it"}
 		return o
 	}
 	o.State, o.Commit = TagPushed, c
 	return follow(ctx, d, p, pl, o, time.Time{}, nil, opts)
 }
 
-func unpushedHint(tag string) []string {
+func unpushedHint(d *Deps, tag string) []string {
 	return []string{
 		"the tag exists only locally and nothing was published",
-		"inspect it with `git show " + tag + "`; delete it with `git tag -d " + tag + "` and run make publish " + tag + " again",
+		"inspect it with `git show " + tag + "`; delete it with `git tag -d " + tag + "` and run " + d.Command("publish") + " " + tag + " again",
 	}
 }
 
@@ -213,7 +213,7 @@ func follow(ctx context.Context, d *Deps, p *Project, pl *Plan, o *Outcome, sinc
 		o.Err, o.MonitorLost = err, true
 		o.Next = append(o.Next,
 			"monitoring stopped; this does not mean the release failed",
-			"resume with make publish-watch "+tag+", or check make publish-status "+tag)
+			"resume with "+d.Command("watch")+" "+tag+", or check "+d.Command("status")+" "+tag)
 		if o.Run != nil {
 			o.Next = append(o.Next, "run: "+o.Run.HTMLURL)
 		} else {
@@ -386,7 +386,7 @@ func failureHints(ctx context.Context, d *Deps, p *Project, tag string, run Run)
 		hints = append(hints, "nothing was published; for a transient failure: gh run rerun "+fmt.Sprint(run.ID)+" --failed --repo "+p.Repo.String(),
 			"for a code fix, merge it to main and release a new version; never move or delete the pushed tag")
 	}
-	return append(hints, "watch again with make publish-watch "+tag)
+	return append(hints, "watch again with "+d.Command("watch")+" "+tag)
 }
 
 // confirm shows what is about to happen and asks; the default is no.
@@ -428,6 +428,11 @@ Pushing the tag starts the release workflow; a pushed tag is never moved or dele
 		return errors.New("confirmation needs a terminal; pass YES=1 (make) or --yes to confirm non-interactively")
 	}
 	fmt.Fprint(d.Out, "Create and push this release tag? [y/N] ")
+	// Output may be held back until a newline (hephaestus redacts its
+	// output line by line): the question must be visible before the read.
+	if f, ok := d.Out.(interface{ Flush() }); ok {
+		f.Flush()
+	}
 	line, _ := bufio.NewReader(d.In).ReadString('\n')
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":

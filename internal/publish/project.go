@@ -14,8 +14,10 @@ import (
 	"github.com/magicdrive/hephaestus/internal/tmpl"
 )
 
-// Project is the release setup of this repository: hephaestus.yaml plus
-// the GitHub names the release workflow relies on.
+// Project is the release setup of the repository being released:
+// hephaestus.yaml plus the GitHub names its release workflow relies on.
+// The names are conventions every project released with publish follows
+// (docs/publish.md), not settings.
 type Project struct {
 	Cfg  *config.Config
 	Repo Repo // where the release is published (release.github)
@@ -28,8 +30,10 @@ type Project struct {
 	TapTokenSecret string // the tap token's secret name in Environment
 }
 
-// Release workflow facts that publish and the workflow share. repo_test.go
-// keeps .github/workflows/release.yml in line with them.
+// Release workflow facts that publish and the workflow share: the
+// conventions of docs/publish.md, the same for every project. For
+// Hephaestus itself, repo_publish_test.go keeps .github/workflows/release.yml
+// in line with them.
 const (
 	ReleaseWorkflowFile = "release.yml"
 	CIWorkflowFile      = "ci.yml"
@@ -54,6 +58,10 @@ func LoadProject(path string) (*Project, error) {
 // NewProject derives the project from a loaded configuration.
 func NewProject(cfg *config.Config) (*Project, error) {
 	g := cfg.Release.GitHub
+	if cfg.BrewsFrom != "" {
+		// publish would see no formula and could not verify the tap.
+		return nil, errors.New("brews_from is not supported by publish: write the brews in hephaestus.yaml")
+	}
 	if !g.IsEnabled() || g.Owner == "" || g.Repo == "" {
 		return nil, errors.New("release.github.owner and release.github.name must be set: publish releases to one known repository")
 	}
