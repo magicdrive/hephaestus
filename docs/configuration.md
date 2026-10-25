@@ -512,7 +512,7 @@ used as is.
 | `.Arm` | the ARM version, if any |
 | `.Ext` | `.exe` when the OS is `windows`, else empty |
 | `.ArtifactName`, `.ArtifactPath`, `.ArtifactExt` | the archive a value is rendered for (`brews[].url_template`, `install`, `extra_install`); empty elsewhere |
-| `.Env.NAME` | the process environment, overridden by top-level `env`. The token variables, the variables `brews[].repository.token` reads, and variables whose name looks like a credential (contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL`, `PRIVATE_KEY`, `API_KEY`, `APIKEY` or `ACCESS_KEY`, or has a `_`-separated segment `PAT`, `AUTH`, `KEY`, `PASS` or `PWD`, ignoring case) are not visible unless they are declared in top-level `env` — except in `builds[].env` values and `brews[].repository.token`, which see the complete environment. A rendered value that contains a token is an error. |
+| `.Env.NAME` | the process environment, overridden by top-level `env`. The token variables, the variables `brews[].repository.token` reads, and variables whose name looks like a credential (contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL`, `PRIVATE_KEY`, `API_KEY`, `APIKEY` or `ACCESS_KEY`, or has a `_`-separated segment `PAT`, `AUTH`, `KEY`, `PASS` or `PWD`, ignoring case; the shell's `PWD` and `OLDPWD` are not credentials) are not visible unless they are declared in top-level `env` — except in `builds[].env` values and `brews[].repository.token`, which see the complete environment. A rendered value that contains a token is an error. |
 
 Per-target variables are set in `builds` (`command`, `output`, `dir`, `env`,
 `existing.path`), in `archives` and in the formula fields rendered per

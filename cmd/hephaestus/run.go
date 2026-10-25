@@ -174,6 +174,15 @@ func execute(ctx context.Context, cfg *config.Config, opts *Options, rep *report
 		rep.Warnings = append(rep.Warnings, w)
 	}
 
+	if opts.Fresh {
+		removed, err := removeStaleOutputs(cfg, opts.Stages)
+		for _, p := range removed {
+			fmt.Fprintf(opts.Stderr, "fresh: removed %s (written by the previous run)\n", p)
+		}
+		if err != nil {
+			return err
+		}
+	}
 	manifestPath := filepath.Join(cfg.Root, filepath.FromSlash(cfg.Manifest))
 	m, err := loadManifest(manifestPath, cfg, info, commit, opts.Fresh)
 	if err != nil {

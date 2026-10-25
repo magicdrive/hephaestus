@@ -474,3 +474,101 @@ func TestWarnsWhenBuildAndPublishShareCredentials(t *testing.T) {
 		t.Errorf("publish phase warned:\n%s", errs)
 	}
 }
+
+// The environment of a runner or a shell: directories under names that look
+// like credentials must not hide paths, and tokens must still be hidden,
+// including when they overlap with paths.
+func TestRedactor_EnvironmentPaths(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "proj", "ウェブ app") // Unicode and a space
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keyFile := filepath.Join(root, "creds.json")
+	if err := os.WriteFile(keyFile, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	winPath := `C:\Users\runner\work\proj`
+	r := &redactor{}
+	r.addEnviron([]string{
+		"PWD=" + nested,
+		"OLDPWD=" + root,
+		"HOME=" + root,
+		"TMPDIR=" + root,
+		"PATH=" + root + string(os.PathListSeparator) + "/usr/bin",
+		"GITHUB_WORKSPACE=" + nested,
+		"GOOGLE_APPLICATION_CREDENTIALS=" + keyFile, // where a credential is
+		"SSH_AUTH_SOCK=" + root,
+		"KEY_DIR=" + winPath, // not an existing absolute path here: redacted
+		"GITHUB_TOKEN=ghs_runnerTokenValue1234",
+		"TAP_PAT=github_pat_tapValue5678",
+		"DB_PASSWORD=hunter2-hunter2",
+		"EMPTY_TOKEN=",
+		"SPACES_SECRET=   ",
+		// A secret that is also part of a path, and a path-like secret
+		// under a known token name: both stay hidden.
+		"NPM_TOKEN=proj-secret-segment",
+		"GH_TOKEN=" + nested,
+	})
+
+	in := strings.Join([]string{
+		"root " + nested + "/dist/x.tar.gz",
+		"home " + root,
+		"creds " + keyFile,
+		"win " + winPath,
+		"tokens ghs_runnerTokenValue1234 github_pat_tapValue5678 hunter2-hunter2",
+		"overlap /work/proj-secret-segment/file",
+	}, "\n")
+	got := r.redact(in)
+
+	for _, leaked := range []string{"ghs_runnerTokenValue1234", "github_pat_tapValue5678", "hunter2-hunter2", "proj-secret-segment", winPath} {
+		if strings.Contains(got, leaked) {
+			t.Errorf("%q leaked:\n%s", leaked, got)
+		}
+	}
+	// GH_TOKEN is a known token variable: its value is hidden even though
+	// it is an existing directory. Every other path stays readable.
+	if strings.Contains(got, nested) {
+		t.Errorf("the value of GH_TOKEN (a directory) was not redacted:\n%s", got)
+	}
+	for _, want := range []string{"home " + root, "creds " + keyFile} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q was redacted:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "***\n***") || strings.Count(got, redacted) > 7 {
+		t.Errorf("over-redacted:\n%s", got)
+	}
+
+	// Without GH_TOKEN naming it, the working directory stays readable.
+	r2 := &redactor{}
+	r2.addEnviron([]string{"PWD=" + nested, "GITHUB_WORKSPACE=" + nested, "OLDPWD=" + root, "EMPTY_TOKEN="})
+	line := "root " + nested + "/dist"
+	if got := r2.redact(line); got != line {
+		t.Errorf("PWD redacted a path: %q", got)
+	}
+}
+
+// hephaestus check prints the project root; a shell's PWD (the project
+// directory) must not turn it into "***".
+func TestCheck_PWDIsNotRedacted(t *testing.T) {
+	clearGitHubEnv(t)
+	root := filepath.Join(t.TempDir(), "my project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(root, "hephaestus.yaml")
+	if err := os.WriteFile(cfg, []byte("version: 1\nproject:\n  name: p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PWD", root)
+	t.Setenv("OLDPWD", root)
+	t.Setenv("HEPH_TEST_TOKEN", "heph-test-token-value-0001")
+	code, out, errs := runCLI(t, "check", "--config", cfg)
+	if code != 0 {
+		t.Fatalf("check: %d\n%s%s", code, out, errs)
+	}
+	if !strings.Contains(out, "root "+root) || strings.Contains(out, redacted) {
+		t.Errorf("check output:\n%s", out)
+	}
+}

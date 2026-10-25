@@ -3,6 +3,50 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
+## v1.1.1
+
+Full notes in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+
+### Fixed
+
+- **The GitHub Action no longer changes the caller's Go toolchain.** v1.1.0
+  ran `actions/setup-go`, which put Go 1.26.0 first on the job's `PATH` and
+  exported `GOTOOLCHAIN=local`. Projects were then built with that Go: a
+  module requiring a newer Go failed, and others were built with an older
+  toolchain. The Action now builds Hephaestus with a Go toolchain private to
+  its build step, and writes nothing to `$GITHUB_PATH` or `$GITHUB_ENV`. The
+  toolchain is the one go.mod names: the official archive, checked against a
+  SHA-256 pinned in `action/go-toolchain.sha256`, or on other platforms a
+  version that the checksum database verifies.
+- **Redaction no longer hides paths under the current directory.** The
+  credential-name heuristic matched the shell's `PWD`, so every path below it
+  was printed as `***`. `PWD` and `OLDPWD` are not credentials. A value
+  matched only by its variable's name is not redacted when it is the path of
+  an existing file or directory. Known tokens are always redacted.
+- **`--fresh` deletes the previous run's archives, checksum files and
+  formulae from `dist`** when the run writes them again. Only unchanged files
+  that Hephaestus wrote itself are deleted.
+
+### Tests
+
+- CI `action-isolation` compares the Go environment before and after the
+  Action on Linux, macOS and Windows (x64 and ARM64). It covers a caller with
+  Go 1.26 or 1.27, a caller without `setup-go`, and a project that is not
+  written in Go. A control job checks that the comparison detects v1.1.0's
+  change.
+- Redaction tests cover `PWD`, `HOME`, `TMPDIR`, `PATH`, the workspace,
+  tokens, overlapping values, nested and Unicode paths, and empty values.
+- A `--fresh` test covers stale, kept and modified outputs.
+
+### Compatibility
+
+- No configuration key, command, flag, Action input or output, JSON field or
+  check ID changed.
+- A workflow that relied on the Action's Go to build a Go project, without
+  its own `actions/setup-go`, must add one.
+- `{{ .Env.PWD }}` and `{{ .Env.OLDPWD }}` are visible to templates, and
+  build commands receive `PWD` and `OLDPWD`.
+
 ## v1.1.0
 
 Shell completion; full notes in [RELEASE_NOTES.md](RELEASE_NOTES.md). A
