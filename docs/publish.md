@@ -191,25 +191,19 @@ verified). None is configurable.
 | Its publishing job runs in environment **`release`** | preflight `environment` |
 | It attests **every** asset (each archive and the checksum file) with `actions/attest-build-provenance`, in that workflow, on a GitHub-hosted runner | verification `attestations` (`gh attestation verify --signer-workflow <owner>/<repo>/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z --source-digest <commit> --deny-self-hosted-runners`) |
 | It uploads no other release assets | verification `assets` |
-| A step with `id: plan` runs `hephaestus publish plan "$GITHUB_REF_NAME"` and writes its output to `$GITHUB_OUTPUT` | the tap steps depend on it |
+| A step with `id: plan` runs the action with `command: plan` (or `hephaestus publish plan "$GITHUB_REF_NAME"`, writing its output to `$GITHUB_OUTPUT`) | the tap steps depend on it |
 | The two steps that use the tap token are named exactly **`Rehearse the formula and tap pull request (read-only)`** and **`Generate the formula and open a tap pull request`**, both with `if: steps.plan.outputs.tap == 'publish'`, and no other step gets the token | verification `tap steps`: both skipped when the tap is skipped (the token was not even passed), both succeeded when it is published. Without `brews` the steps may be left out |
 
-The release job's plan and tap steps, for a project that installs nothing
-else to run them:
+The release job's plan and tap steps, with the action (no Go needed). The
+action's `plan` command also refuses a prerelease whose plan would update
+the tap:
 
 ```yaml
       - name: Plan the release
         id: plan
-        shell: bash
-        run: |
-          set -euo pipefail
-          plan="$(go run github.com/magicdrive/hephaestus@v1.2.0 publish plan "$GITHUB_REF_NAME")"
-          echo "$plan"
-          grep -qxE 'tap=(publish|skip)' <<<"$plan" || { echo "::error::unexpected release plan"; exit 1; }
-          if grep -qx 'prerelease=true' <<<"$plan" && ! grep -qx 'tap=skip' <<<"$plan"; then
-            echo "::error::a prerelease must not update the tap (brews.skip_upload: auto)"; exit 1
-          fi
-          echo "$plan" >> "$GITHUB_OUTPUT"
+        uses: magicdrive/hephaestus@<full-commit-sha>
+        with:
+          command: plan
       - name: Rehearse the formula and tap pull request (read-only)
         if: steps.plan.outputs.tap == 'publish'
         uses: magicdrive/hephaestus@<full-commit-sha>

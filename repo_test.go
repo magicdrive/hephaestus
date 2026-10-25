@@ -418,62 +418,40 @@ func TestDocs_ConfigurationExamplesAreValid(t *testing.T) {
 	}
 }
 
-// The action builds Hephaestus with the toolchain go.mod names, from an
-// official archive checked against action/go-toolchain.sha256: one pinned
-// SHA-256 for every GitHub-hosted platform, for that exact version.
-// scripts/update-action-go.sh rewrites the file when the toolchain changes.
-func TestAction_GoToolchainPins(t *testing.T) {
-	gomod, err := os.ReadFile("go.mod")
+// The action runs the release binary of the version in action/VERSION
+// (action/install-hephaestus.sh). The release workflow must refuse a tag
+// that differs from it: otherwise the action at a release commit would look
+// for another release's binary, or for none.
+func TestAction_VersionNamesTheRelease(t *testing.T) {
+	data, err := os.ReadFile("action/VERSION")
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`(?m)^toolchain (go[0-9.]+)\s*$`).FindStringSubmatch(string(gomod))
-	if m == nil {
-		t.Fatal("go.mod has no toolchain line")
+	v := strings.TrimSpace(string(data))
+	if !regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$`).MatchString(v) || string(data) != v+"\n" {
+		t.Errorf("action/VERSION = %q, want one release tag and a newline", data)
 	}
-	version := m[1]
-	data, err := os.ReadFile("action/go-toolchain.sha256")
+	release, err := os.ReadFile(".github/workflows/release.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	line := regexp.MustCompile(`^([0-9a-f]{64})  (go[0-9.]+)\.([a-z]+-[a-z0-9]+)\.(tar\.gz|zip)$`)
-	got := map[string]bool{}
-	for _, l := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		f := line.FindStringSubmatch(l)
-		if f == nil {
-			t.Errorf("malformed line %q", l)
-			continue
-		}
-		if f[2] != version {
-			t.Errorf("%q pins %s, go.mod's toolchain is %s: run scripts/update-action-go.sh", l, f[2], version)
-		}
-		wantExt := "tar.gz"
-		if strings.HasPrefix(f[3], "windows-") {
-			wantExt = "zip"
-		}
-		if f[4] != wantExt {
-			t.Errorf("%q: want a .%s archive", l, wantExt)
-		}
-		got[f[3]] = true
-	}
-	for _, p := range []string{"linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64", "windows-arm64"} {
-		if !got[p] {
-			t.Errorf("no SHA-256 pinned for %s", p)
-		}
+	if !strings.Contains(string(release), `[[ "$(tr -d '\r\n' < action/VERSION)" == "$GITHUB_REF_NAME" ]]`) {
+		t.Error("release.yml does not check that action/VERSION names the tag being released")
 	}
 }
 
-// The action must not change the caller's Go environment (action-isolation
-// in ci.yml checks the behavior): no setup-go, and nothing written to
+// The action must not change the caller's environment or toolchain
+// (action-isolation and action-install in ci.yml check the behavior): no
+// setup-go or other toolchain, no compilation, and nothing written to
 // GITHUB_PATH or GITHUB_ENV.
 func TestAction_DoesNotChangeTheCallersEnvironment(t *testing.T) {
-	for _, f := range []string{"action.yml", "action/build-hephaestus.sh"} {
+	for _, f := range []string{"action.yml", "action/install-hephaestus.sh"} {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
 		code := regexp.MustCompile(`(?m)^\s*#.*$`).ReplaceAllString(string(data), "")
-		for _, bad := range []string{"actions/setup-go", "GITHUB_PATH", "GITHUB_ENV"} {
+		for _, bad := range []string{"actions/setup-go", "GITHUB_PATH", "GITHUB_ENV", "go build", "go install", "GOTOOLCHAIN", "dl.google.com", "go.dev/dl"} {
 			if strings.Contains(code, bad) {
 				t.Errorf("%s uses %s", f, bad)
 			}

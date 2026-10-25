@@ -182,11 +182,11 @@ or download an archive from the GitHub Releases page; release archives and
 the checksum file carry build provenance attestations
 (`gh attestation verify <file> --repo magicdrive/hephaestus`).
 
-In GitHub Actions, use the action (it builds Hephaestus from the commit you
-pin):
+In GitHub Actions, use the action. It runs the verified release binary that
+belongs to the commit you pin, without installing a toolchain:
 
 ```yaml
-- uses: magicdrive/hephaestus@<full-commit-sha>
+- uses: magicdrive/hephaestus@<full commit SHA of a release tag> # vX.Y.Z
 ```
 
 ## Usage
