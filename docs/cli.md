@@ -15,6 +15,7 @@ Every command reads `hephaestus.yaml` from the current directory unless
 | `build`, `archive`, `checksum`, `release`, `formula`, `tap` | as `run` | run one stage (same flags as `run`) |
 | `preflight` | nothing | read-only release checks before pushing a tag |
 | `status` | nothing | read-only state of a tag's release and the next safe action |
+| `completion` | nothing | print the bash, zsh or fish completion script |
 | `version` | nothing | print the version |
 
 ## init
@@ -79,3 +80,33 @@ hephaestus status --tag v1.2.3 [--format json]
 
 States and their safe recovery are in [recovery.md](recovery.md). Exit
 codes: `0` read, `1` conflict, `2` usage, `3` GitHub could not be read.
+
+## completion
+
+```sh
+hephaestus completion bash|zsh|fish
+```
+
+Prints the shell's completion script on stdout (nothing else; errors go to
+stderr, an unknown shell exits `2`). The script completes commands, each
+command's flags (`--flag` and `-flag`; a flag already given is not offered
+again unless it is repeatable), and the fixed values of `--format`,
+`--template`, `--phase`, `--stages` and `--skip` (comma-separated lists
+continue after a comma), in both `--flag value` and `--flag=value` form.
+`--config`, `--report` and `--output` complete file names. After `--`
+nothing is offered. Tags, repositories and other free-form values are not
+completed.
+
+The script asks the running `hephaestus` for candidates (the hidden
+`hephaestus __complete WORD...`), which only reads the command's own flag
+definitions: no configuration, repository, token or network is used.
+
+| Shell | Load for the current session | Install permanently (without Homebrew) |
+| --- | --- | --- |
+| bash (3.2 or later) | `eval "$(hephaestus completion bash)"` | `hephaestus completion bash > ~/.local/share/bash-completion/completions/hephaestus` (bash-completion 2), or the `eval` line in `~/.bashrc` |
+| zsh | `source <(hephaestus completion zsh)` (after `compinit`) | `hephaestus completion zsh > ~/.zfunc/_hephaestus` with `fpath=(~/.zfunc $fpath)` before `compinit` in `~/.zshrc` |
+| fish | `hephaestus completion fish \| source` | `hephaestus completion fish > ~/.config/fish/completions/hephaestus.fish` |
+
+The Homebrew formula installs all three scripts; see the README's
+[Shell completion](../README.md#shell-completion) section for enabling them.
+

@@ -55,6 +55,11 @@ type Brew struct {
 	// bin.install/man.install/... call exists in every archive.
 	// Default true.
 	Verify *bool `yaml:"verify"`
+	// Completions installs shell completion scripts for bash, zsh and fish
+	// with the formula: generated at install time by the installed
+	// executable, or shipped in the archive. Optional; without it the
+	// formula is unchanged.
+	Completions *BrewCompletions `yaml:"completions"`
 	// AllowDowngrade lets the tap stage replace a formula whose version is
 	// newer than the one being published (e.g. when re-running an older
 	// tag). By default such a formula is left alone. Default false.
@@ -76,6 +81,67 @@ func (b *Brew) PullRequestMode() bool {
 
 // VerifyEnabled applies the default.
 func (b *Brew) VerifyEnabled() bool { return b.Verify == nil || *b.Verify }
+
+// BrewCompletions configures brews[].completions. Generate and Files may be
+// combined for different shells.
+type BrewCompletions struct {
+	// Executable is the command the completions are for: the name the
+	// formula installs into bin. Generate runs bin/<executable>; Files are
+	// installed under its name. Default: the formula name.
+	Executable string `yaml:"executable"`
+	// Generate has the installed executable print each script at install
+	// time (Homebrew's generate_completions_from_executable).
+	Generate *BrewCompletionGenerate `yaml:"generate"`
+	// Files are completion scripts in the archive, by shell.
+	Files BrewCompletionFiles `yaml:"files"`
+}
+
+// BrewCompletionGenerate configures completions.generate.
+type BrewCompletionGenerate struct {
+	// Args are passed to the executable before the shell (e.g.
+	// [completion] runs "mycli completion bash").
+	Args []string `yaml:"args"`
+	// ShellParameterFormat is how the shell is passed (Homebrew's
+	// shell_parameter_format): empty for a plain argument ("bash"), or arg
+	// (--shell=bash), flag (--bash), none, cobra, clap, click or typer.
+	ShellParameterFormat string `yaml:"shell_parameter_format"`
+	// Shells to generate: bash, zsh, fish. Default: all three.
+	Shells []string `yaml:"shells"`
+}
+
+// BrewCompletionFiles are completion scripts shipped in the archive, as
+// paths relative to the directory Homebrew installs from.
+type BrewCompletionFiles struct {
+	Bash string `yaml:"bash"`
+	Zsh  string `yaml:"zsh"`
+	Fish string `yaml:"fish"`
+}
+
+// CompletionShells are the shells brews[].completions supports.
+var CompletionShells = []string{"bash", "zsh", "fish"}
+
+// CompletionShellParameterFormats are the accepted
+// completions.generate.shell_parameter_format values ("" is the default).
+var CompletionShellParameterFormats = []string{"", "arg", "flag", "none", "cobra", "clap", "click", "typer"}
+
+// GeneratedShells returns the shells completions.generate produces.
+func (g *BrewCompletionGenerate) GeneratedShells() []string {
+	if len(g.Shells) == 0 {
+		return CompletionShells
+	}
+	return g.Shells
+}
+
+// ByShell returns the shipped file for each shell that has one.
+func (f BrewCompletionFiles) ByShell() map[string]string {
+	m := map[string]string{}
+	for sh, p := range map[string]string{"bash": f.Bash, "zsh": f.Zsh, "fish": f.Fish} {
+		if p != "" {
+			m[sh] = p
+		}
+	}
+	return m
+}
 
 // CommitAuthor mirrors GoReleaser's commit_author.
 type CommitAuthor struct {

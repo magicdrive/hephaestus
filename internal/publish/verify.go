@@ -382,11 +382,50 @@ func verifyTapPullRequest(ctx context.Context, d *Deps, pl *Plan, t TapPlan, rel
 	}
 	ok, detail := formulaMatchesRelease(string(content), t.URLPrefix, pl.Archives, digests)
 	r.add("tap formula", ok, "%s", detail)
+	if len(t.Completions) > 0 {
+		ok, detail := formulaHasLines(string(content), t.Completions)
+		r.add("tap completions", ok, "%s", detail)
+	}
 	state := pr.State
 	if pr.Merged {
 		state = "merged"
 	}
 	r.add("tap pull request", true, "%s (%s; review and merge it on the tap, publish never merges)", pr.HTMLURL, state)
+}
+
+// formulaHasLines requires each line (trimmed) to be a statement of the
+// formula's def install block: the shell completions the configuration
+// installs. The same text elsewhere (a comment, the test block) does not
+// count.
+func formulaHasLines(formula string, want []string) (bool, string) {
+	have := map[string]bool{}
+	in := false
+	stmt := "" // a statement continued after a trailing comma
+	for _, l := range strings.Split(formula, "\n") {
+		switch {
+		case l == "  def install":
+			in = true
+		case in && l == "  end":
+			in = false
+		case in:
+			t := strings.TrimSpace(l)
+			if stmt != "" {
+				t = stmt + " " + t
+			}
+			if strings.HasSuffix(t, ",") {
+				stmt = t
+				continue
+			}
+			stmt = ""
+			have[t] = true
+		}
+	}
+	for _, w := range want {
+		if !have[w] {
+			return false, fmt.Sprintf("the formula does not install the configured completions: missing %s", w)
+		}
+	}
+	return true, fmt.Sprintf("installs the configured completions (%s)", strings.Join(want, "; "))
 }
 
 // formulaMatchesRelease requires every url in the formula to be a release

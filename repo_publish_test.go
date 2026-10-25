@@ -94,6 +94,11 @@ func TestOwnConfig_PrereleaseNeverPublishesTap(t *testing.T) {
 		if pl.Prerelease != skip || pl.TapSkipped() != skip || len(pl.Taps) != 1 {
 			t.Errorf("%s: prerelease %t, tap skipped %t, %d taps; want both %t", tag, pl.Prerelease, pl.TapSkipped(), len(pl.Taps), skip)
 		}
+		// make publish verifies that the published formula installs
+		// Hephaestus's bash, zsh and fish completions.
+		if want := []string{`generate_completions_from_executable(bin/"hephaestus", "completion")`}; len(pl.Taps) == 1 && !slices.Equal(pl.Taps[0].Completions, want) {
+			t.Errorf("%s: completions %q, want %q", tag, pl.Taps[0].Completions, want)
+		}
 	}
 }
 

@@ -81,6 +81,9 @@ type TapPlan struct {
 	Publish homebrew.Publish
 	// URLPrefix is the download URL prefix the formula must use.
 	URLPrefix string
+	// Completions are the install lines of brews[].completions the
+	// formula must contain (none when it is unset).
+	Completions []string
 }
 
 // Vars returns the template variables of version v, as the pipeline sets
@@ -145,7 +148,8 @@ func (p *Project) Plan(v Version) (*Plan, error) {
 			return nil, fmt.Errorf("brews[%d] (%s): %w", i, b.Name, err)
 		}
 		tp := TapPlan{Formula: b.Name, Publish: pub,
-			URLPrefix: "https://github.com/" + p.Repo.String() + "/releases/download/" + v.Tag + "/"}
+			URLPrefix:   "https://github.com/" + p.Repo.String() + "/releases/download/" + v.Tag + "/",
+			Completions: homebrew.CompletionLines(b)}
 		if b.URLTemplate != "" {
 			tp.URLPrefix = "" // checked against the rendered formula instead
 		}

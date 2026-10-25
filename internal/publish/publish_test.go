@@ -222,7 +222,7 @@ func TestPublishStable(t *testing.T) {
 		t.Fatalf("outcome %+v\n%s", o, h.out)
 	}
 	out := h.out.String()
-	for _, want := range []string{"Release type:   Stable", "Homebrew Tap:   PUBLISH: pull request to magicdrive/homebrew-tap", "[ok  ] tap formula", "download urls and sha256 match", "[ok  ] tap pull request", "publish never merges"} {
+	for _, want := range []string{"Release type:   Stable", "Homebrew Tap:   PUBLISH: pull request to magicdrive/homebrew-tap", "[ok  ] tap formula", "download urls and sha256 match", `[ok  ] tap completions              installs the configured completions (generate_completions_from_executable(bin/"hephaestus", "completion"))`, "[ok  ] tap pull request", "publish never merges"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q\n%s", want, out)
 		}
@@ -495,6 +495,14 @@ func TestPublishVerificationFailures(t *testing.T) {
 		{"stable formula foreign url", "v1.0.0", func(h *harness, _ *Plan) {
 			h.gh.prFormula = "  url \"https://evil.example/x.tar.gz\"\n  sha256 \"" + strings.Repeat("0", 64) + "\"\n"
 		}, "[FAIL] tap formula"},
+		{"stable formula without completions", "v1.0.0", func(h *harness, _ *Plan) {
+			h.gh.prFormula = strings.Replace(h.gh.prFormula, "generate_completions_from_executable", "# removed", 1)
+		}, "[FAIL] tap completions"},
+		{"stable formula with the completion line outside def install", "v1.0.0", func(h *harness, pl *Plan) {
+			line := "    " + pl.Taps[0].Completions[0] + "\n"
+			h.gh.prFormula = strings.Replace(h.gh.prFormula, line, "", 1)
+			h.gh.prFormula = strings.Replace(h.gh.prFormula, "end\nend\n", "end\n\n  test do\n"+line+"  end\nend\n", 1)
+		}, "[FAIL] tap completions"},
 		{"stable not latest", "v1.0.0", func(h *harness, _ *Plan) { h.gh.latest = "v0.9.0" }, "[FAIL] latest"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -625,5 +633,24 @@ func TestGenericPreflightGate(t *testing.T) {
 				t.Error("a tag was created despite the generic preflight")
 			}
 		})
+	}
+}
+
+func TestFormulaHasLines(t *testing.T) {
+	line := `generate_completions_from_executable(bin/"x", "completion", shell_parameter_format: :cobra, shells: [:bash, :zsh])`
+	wrapped := "class X < Formula\n  def install\n    bin.install \"x\"\n" +
+		"    generate_completions_from_executable(bin/\"x\", \"completion\",\n" +
+		"                                         shell_parameter_format: :cobra, shells: [:bash, :zsh])\n  end\nend\n"
+	if ok, d := formulaHasLines(wrapped, []string{line}); !ok {
+		t.Fatalf("wrapped call not found: %s", d)
+	}
+	for name, f := range map[string]string{
+		"in test":    "class X < Formula\n  def install\n    bin.install \"x\"\n  end\n\n  test do\n    " + line + "\n  end\nend\n",
+		"in comment": "class X < Formula\n  def install\n    # " + line + "\n  end\nend\n",
+		"absent":     "class X < Formula\n  def install\n    bin.install \"x\"\n  end\nend\n",
+	} {
+		if ok, _ := formulaHasLines(f, []string{line}); ok {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

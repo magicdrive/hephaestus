@@ -43,6 +43,7 @@ release:
 brews:
   - name: hephaestus
     skip_upload: auto
+    completions: {generate: {args: [completion]}}
     repository: {owner: magicdrive, name: homebrew-tap, pull_request: {enabled: true}}
 `
 
@@ -311,7 +312,11 @@ func formulaFor(pl *Plan, rel Release) string {
 		}
 		fmt.Fprintf(&b, "  url \"%s%s\"\n  sha256 \"%s\"\n", pl.Taps[0].URLPrefix, a.Name, strings.TrimPrefix(a.Digest, "sha256:"))
 	}
-	return b.String() + "end\n"
+	b.WriteString("  def install\n    bin.install \"hephaestus\"\n")
+	for _, l := range pl.Taps[0].Completions {
+		b.WriteString("    " + l + "\n")
+	}
+	return b.String() + "  end\nend\n"
 }
 
 func (f *fakeGH) AuthStatus(context.Context) error { return f.authErr }

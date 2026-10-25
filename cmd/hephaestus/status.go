@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 
 	"github.com/magicdrive/hephaestus/internal/github"
 	"github.com/magicdrive/hephaestus/internal/manifest"
@@ -23,24 +24,35 @@ const (
 	statusExitUnread   = 3 // GitHub could not be read
 )
 
+// statusArgs holds the flags of `hephaestus status`.
+type statusArgs struct{ tag, configPath, repo, format, tokenEnv string }
+
+// flags defines the status flags on a; shell completion reads the same
+// definitions.
+func (a *statusArgs) flags() *flag.FlagSet {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.StringVar(&a.tag, "tag", "", "the release tag, e.g. v1.2.3 (required)")
+	fs.StringVar(&a.configPath, "config", "", "configuration file (default: hephaestus.yaml in the current directory)")
+	fs.StringVar(&a.repo, "repo", "", "owner/name of the release repository (default: config, then $GITHUB_REPOSITORY)")
+	fs.StringVar(&a.format, "format", "text", "output format: text or json")
+	fs.StringVar(&a.tokenEnv, "token-env", "GITHUB_TOKEN", "environment variable holding a GitHub token for reading (GH_TOKEN is used when it is empty)")
+	return fs
+}
+
 // statusCmd runs `hephaestus status --tag vX.Y.Z`: where the release of a
 // tag stands and the next safe action (internal/status). Read-only.
 func statusCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *redactor) int {
-	var tag, configPath, repoFlag, format, tokenEnv string
-	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	var a statusArgs
+	fs := a.flags()
 	fs.SetOutput(stderr)
-	fs.StringVar(&tag, "tag", "", "the release tag, e.g. v1.2.3 (required)")
-	fs.StringVar(&configPath, "config", "", "configuration file (default: hephaestus.yaml in the current directory)")
-	fs.StringVar(&repoFlag, "repo", "", "owner/name of the release repository (default: config, then $GITHUB_REPOSITORY)")
-	fs.StringVar(&format, "format", "text", "output format: text or json")
-	fs.StringVar(&tokenEnv, "token-env", "GITHUB_TOKEN", "environment variable holding a GitHub token for reading (GH_TOKEN is used when it is empty)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return statusExitOK
 		}
 		return statusExitUsage
 	}
-	if fs.NArg() > 0 || tag == "" || (format != "text" && format != "json") {
+	tag, configPath, repoFlag, format, tokenEnv := a.tag, a.configPath, a.repo, a.format, a.tokenEnv
+	if fs.NArg() > 0 || tag == "" || !slices.Contains(outputFormats, format) {
 		fmt.Fprintln(stderr, "usage: hephaestus status --tag vX.Y.Z [--config FILE] [--repo owner/name] [--format text|json]")
 		return statusExitUsage
 	}

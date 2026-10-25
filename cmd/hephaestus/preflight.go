@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/magicdrive/hephaestus/internal/config"
@@ -28,32 +29,44 @@ func (l *stringList) Set(v string) error {
 	return nil
 }
 
+// preflightArgs holds the flags of `hephaestus preflight`.
+type preflightArgs struct {
+	in                           preflight.Input
+	format, tokenEnv, reportPath string
+	strict                       bool
+	secrets, skips               stringList
+}
+
+// flags defines the preflight flags on a; shell completion reads the same
+// definitions.
+func (a *preflightArgs) flags() *flag.FlagSet {
+	fs := flag.NewFlagSet("preflight", flag.ContinueOnError)
+	fs.StringVar(&a.in.Tag, "tag", "", "the tag to be released, e.g. v1.2.3 (required)")
+	fs.StringVar(&a.in.ConfigPath, "config", "", "configuration file (default: hephaestus.yaml in the current directory)")
+	fs.StringVar(&a.in.Repo, "repo", "", "owner/name of the release repository (default: release.github, then the git remote)")
+	fs.StringVar(&a.format, "format", "text", "output format: text or json")
+	fs.StringVar(&a.reportPath, "report", "", "also write the JSON report to this file")
+	fs.BoolVar(&a.strict, "strict", false, "treat WARN and UNKNOWN as failures")
+	fs.BoolVar(&a.in.Offline, "offline", false, "skip every check that needs the network (GitHub API, git ls-remote)")
+	fs.StringVar(&a.in.Remote, "remote", "", "git remote releases are pushed to (default: preflight.remote, then origin)")
+	fs.StringVar(&a.in.Branch, "branch", "", "branch releases are tagged on (default: preflight.branch, then the GitHub default branch)")
+	fs.StringVar(&a.in.Workflow, "workflow", "", "release workflow file name, e.g. release.yml (default: preflight.workflow)")
+	fs.StringVar(&a.in.Environment, "environment", "", "deployment environment of the publishing job (default: preflight.environment)")
+	fs.StringVar(&a.in.TapTokenSecret, "tap-token-secret", "", "secret name of the tap token (default: preflight.tap_token_secret, then "+preflight.DefaultTapTokenSecret+")")
+	fs.Var(&a.secrets, "secret", "secret name that must exist (repeatable); values are never read")
+	fs.Var(&a.skips, "skip", "check IDs to skip (repeatable or comma-separated)")
+	fs.StringVar(&a.tokenEnv, "token-env", "GITHUB_TOKEN", "environment variable holding a GitHub token for reading (GH_TOKEN is used when it is empty)")
+	return fs
+}
+
 // preflightCmd runs `hephaestus preflight`: read-only release safety checks
 // before a tag is pushed (internal/preflight). Unlike the other commands it
 // does not stop on an invalid configuration: config.load reports it and the
 // git and GitHub checks still run.
 func preflightCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *redactor) int {
-	var in preflight.Input
-	var format, tokenEnv, reportPath string
-	var strict bool
-	var secrets, skips stringList
-	fs := flag.NewFlagSet("preflight", flag.ContinueOnError)
+	var a preflightArgs
+	fs := a.flags()
 	fs.SetOutput(stderr)
-	fs.StringVar(&in.Tag, "tag", "", "the tag to be released, e.g. v1.2.3 (required)")
-	fs.StringVar(&in.ConfigPath, "config", "", "configuration file (default: hephaestus.yaml in the current directory)")
-	fs.StringVar(&in.Repo, "repo", "", "owner/name of the release repository (default: release.github, then the git remote)")
-	fs.StringVar(&format, "format", "text", "output format: text or json")
-	fs.StringVar(&reportPath, "report", "", "also write the JSON report to this file")
-	fs.BoolVar(&strict, "strict", false, "treat WARN and UNKNOWN as failures")
-	fs.BoolVar(&in.Offline, "offline", false, "skip every check that needs the network (GitHub API, git ls-remote)")
-	fs.StringVar(&in.Remote, "remote", "", "git remote releases are pushed to (default: preflight.remote, then origin)")
-	fs.StringVar(&in.Branch, "branch", "", "branch releases are tagged on (default: preflight.branch, then the GitHub default branch)")
-	fs.StringVar(&in.Workflow, "workflow", "", "release workflow file name, e.g. release.yml (default: preflight.workflow)")
-	fs.StringVar(&in.Environment, "environment", "", "deployment environment of the publishing job (default: preflight.environment)")
-	fs.StringVar(&in.TapTokenSecret, "tap-token-secret", "", "secret name of the tap token (default: preflight.tap_token_secret, then "+preflight.DefaultTapTokenSecret+")")
-	fs.Var(&secrets, "secret", "secret name that must exist (repeatable); values are never read")
-	fs.Var(&skips, "skip", "check IDs to skip (repeatable or comma-separated)")
-	fs.StringVar(&tokenEnv, "token-env", "GITHUB_TOKEN", "environment variable holding a GitHub token for reading (GH_TOKEN is used when it is empty)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintf(stderr, "\nChecks, in order: %s\n", strings.Join(preflight.Checks(), ", "))
@@ -61,6 +74,8 @@ func preflightCmd(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		}
 		return preflight.ExitUsage
 	}
+	in, format, tokenEnv, reportPath, strict := a.in, a.format, a.tokenEnv, a.reportPath, a.strict
+	secrets, skips := a.secrets, a.skips
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "hephaestus preflight: unexpected argument %q\n", fs.Arg(0))
 		return preflight.ExitUsage
@@ -69,7 +84,7 @@ func preflightCmd(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		fmt.Fprintln(stderr, "hephaestus preflight: --tag is required (the tag you are about to push)")
 		return preflight.ExitUsage
 	}
-	if format != "text" && format != "json" {
+	if !slices.Contains(outputFormats, format) {
 		fmt.Fprintln(stderr, "hephaestus preflight: --format must be text or json")
 		return preflight.ExitUsage
 	}

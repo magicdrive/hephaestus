@@ -392,7 +392,57 @@ values substituted into them must consist of `A-Z a-z 0-9 . _ + - / @ : ~ = ,
 | `commit_author.name` / `.email` | templates | the token's identity | Both or neither. |
 | `commit_author.signing` | — | — | Rejected: commits are created through the GitHub API. |
 | `skip_upload` | `true` \| `false` \| `auto` | `false` | `true`: generate but never publish. `auto`: skip prereleases. |
+| `completions` | mapping | — | Shell completions installed with the formula; see [below](#formula-completions). Unset: the formula is unchanged. |
 | `allow_downgrade` | bool | `false` | Before writing, the version of the formula already in the tap (its `version` line, else a semantic version in its URL path; in pull request mode, on the base branch) is compared with the one being published. When the tap's is newer (for example an older tag's workflow was re-run), nothing is written and the formula is reported as skipped, unless this is `true`. Versions that are not semantic versions cannot be compared: the formula is updated with a warning. |
+
+
+### Formula completions
+
+`brews[].completions` installs bash, zsh and fish completion scripts with
+the formula, for a CLI written in any language. The scripts go where
+Homebrew expects them (`bash_completion`, `zsh_completion`,
+`fish_completion`), through Homebrew's own helpers.
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `executable` | name | the formula name | The command the completions are for, as installed into `bin`. With `generate` it is run; with `files` the scripts are installed under its name (`<name>`, `_<name>`, `<name>.fish`). |
+| `generate.args` | list | — | Arguments before the shell, e.g. `[completion]` runs `<executable> completion bash`. |
+| `generate.shell_parameter_format` | `arg` \| `flag` \| `none` \| `cobra` \| `clap` \| `click` \| `typer` | plain argument | How the shell is passed, as in Homebrew's `shell_parameter_format`: `arg` is `--shell=bash`, `flag` is `--bash`, `none` passes nothing; `cobra`, `clap`, `click` and `typer` follow those frameworks. |
+| `generate.shells` | list of `bash`, `zsh`, `fish` | all three | Shells to generate. |
+| `files.bash` / `.zsh` / `.fish` | path | — | A completion script in the archive (relative to the directory Homebrew installs from, like `install` paths). |
+
+At least one of `generate` and `files` is required; together they must not
+cover the same shell.
+
+`generate` writes one `generate_completions_from_executable` call: at install
+time Homebrew runs the installed executable once per shell and stores its
+output, so the executable must print the script without network access or
+configuration. The executable must be installed into
+`bin` for every archive the formula serves (an error otherwise), and a
+generated shell must not also be installed by `install` or `extra_install`.
+`files` writes `<shell>_completion.install` lines, which are verified against
+each archive like every other install path (missing files and files
+installed twice are errors).
+
+```yaml
+brews:
+  - name: mycli
+    completions:
+      generate:
+        args: [completion]          # mycli completion bash|zsh|fish
+```
+
+```yaml
+brews:
+  - name: mytool
+    completions:
+      files:                          # shipped in the archive
+        bash: completions/mytool.bash
+        zsh: completions/_mytool
+        fish: completions/mytool.fish
+```
+
+Every value is written as a Ruby string literal; nothing is a template.
 
 ## limits
 
