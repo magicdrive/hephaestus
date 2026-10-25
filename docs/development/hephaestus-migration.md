@@ -1,7 +1,7 @@
 # Migration playbook: adopting Hephaestus in an existing project
 
 This playbook is a checklist for moving a project's existing release
-pipeline (usually GoReleaser) to Hephaestus 1.1. It comes from migrating
+pipeline (usually GoReleaser) to Hephaestus 1.2. It comes from migrating
 five projects in October 2026: git-parallel, kjak, ark, enma and goreg. The
 first part applies to every project. The last part records what differed
 between them.
@@ -60,30 +60,38 @@ that runs on a tag push and uses the environment will be rejected.
    publishing. In the release job, set `VERIFY_DIST_NO_EXEC=1` so that no
    built binary runs there.
 
-## 3. The Go toolchain in the GitHub Action
+## 3. The GitHub Action and your toolchain
 
-**Up to 1.1.0**, the Action built Hephaestus with `actions/setup-go`, from
-its own `go.mod`. setup-go puts that Go version on `PATH` and exports
-`GOTOOLCHAIN=local` to the rest of the job. The 1.1.0 Action uses Go 1.26.0.
-Your build commands run after this step, so by default they used that Go:
+**From 1.2.0, the Action runs the verified release binary.** It compiles
+nothing and installs no toolchain, and your build commands use exactly the
+Go (or Rust, Node, ...) your workflow set up. See
+[github-action.md](../github-action.md#pinning-and-the-release-binary). Its
+first step does the following:
 
-- a module that requires a newer Go fails (`go.mod requires go >= 1.27.0
-  (running go 1.26.0; GOTOOLCHAIN=local)`);
-- otherwise the release is built, silently, with an older toolchain than
-  the one you chose. This can mean a downgrade, or a standard library
-  vulnerability that `govulncheck` reported as fixed.
+1. reads `action/VERSION` of the pinned commit;
+2. downloads that release's archive for the runner, and the checksum file;
+3. checks the SHA-256;
+4. verifies the provenance attestation with `gh attestation verify`. The
+   attestation must be signed by `release.yml` on a GitHub-hosted runner,
+   for the release tag and, when the Action is pinned by SHA, for exactly
+   that commit;
+5. extracts only the regular `hephaestus[.exe]`;
+6. checks the version the binary reports.
 
-**The fix** ([#22](https://github.com/magicdrive/hephaestus/pull/22),
-planned for 1.1.1) builds Hephaestus with a Go private to the Action's build
-step: the official archive, checked against a SHA-256 pinned in the
-Action's source. Nothing is written to `$GITHUB_PATH` or `$GITHUB_ENV`. With
-that version, your build uses the Go that your own `actions/setup-go` step
-set up. A Go project must therefore run setup-go before the Action, as the
-examples always did.
+Any failure stops the Action, and there is no fallback. Pin the Action to a
+release tag's commit; branches fail. A Go project must run
+`actions/setup-go` itself, before the Action.
+
+**History.** The 1.1.0 Action ran `actions/setup-go`, which put Go 1.26.0
+first on `PATH` and exported `GOTOOLCHAIN=local` for the whole job. Projects
+were then built with the Action's Go: a module requiring a newer Go failed,
+and others were silently built with an older toolchain, in one case a
+vulnerable one. The fix prepared for 1.1.1 compiled Hephaestus with a
+private Go; it shipped in 1.2.0 and was then replaced by the binary Action.
 
 Whatever the Action version, keep the release toolchain explicit and
-checked. The Action is then not the only thing that decides which Go builds
-the release. Do both of the following:
+checked. The Action is then never what decides which Go builds your release.
+Do both of the following:
 
 ```yaml
 version: 1
@@ -112,6 +120,16 @@ builds:
 2. Assert the toolchain in CI and in the release build job: run
    `go version -m` on a built binary and compare the result with `go.mod`.
 
+### Verifying an Action release before adopting it
+
+A release candidate exercises the same path as the stable release. To
+verify one, pin each project's Action to the candidate's tag commit, with
+`# vX.Y.Z-rc.N` as the comment and the same value in the Makefile's
+`HEPHAESTUS_VERSION`. Then run CI, snapshots and the Homebrew end-to-end
+tests. Once the stable release is out, re-pin to its commit. A pull request
+must never be merged while it still pins a release candidate or an
+unreleased commit.
+
 ## 4. Release workflow
 
 Start from [release-split-jobs.yml](../../examples/workflows/release-split-jobs.yml).
@@ -121,7 +139,7 @@ Every migrated project uses three jobs:
 | --- | --- | --- | --- |
 | `ci` | `contents: read` | none | `uses: ./.github/workflows/ci.yml` at the tagged commit. ci.yml has `workflow_call`, and its concurrency group must not cancel itself when called. |
 | `build` | `contents: read` | none, no environment | Checks the tag format. Runs the Action with `stages: build,archive,checksum`, `fresh: "true"` and `github-token: ""`, then `verify-dist.sh`, then uploads `dist/`. |
-| `release` | `contents: write`, `id-token: write`, `attestations: write` | `environment: release` | Downloads `dist/` and runs `verify-dist.sh` again (no execution). Checks that the tap token is set (as a boolean only). Runs `formula,tap` with `dry-run: "true"`. Then `attest-build-provenance`, `command: release` and `formula,tap`. |
+| `release` | `contents: write`, `id-token: write`, `attestations: write` | `environment: release` | Downloads `dist/` and runs `verify-dist.sh` again (no execution). Runs the Action with `command: plan` (`id: plan`), which sets `prerelease` and `tap`. Checks that the tap token is set (as a boolean only), rehearses `formula,tap` with `dry-run: "true"`, then runs `attest-build-provenance`, `command: release` and `formula,tap`. The tap steps run only `if: steps.plan.outputs.tap == 'publish'`. |
 
 Other rules:
 
@@ -135,6 +153,12 @@ Other rules:
 - A project without builds (a script shipped as a noarch archive) runs
   `stages: archive,checksum`. Naming `build` fails with "no builds are
   configured".
+
+- The steps that use the tap token are named exactly
+  `Rehearse the formula and tap pull request (read-only)` and
+  `Generate the formula and open a tap pull request`. `hephaestus publish`
+  verifies a release by these names ([publish.md](../publish.md)). A
+  prerelease skips both steps and never receives the token.
 
 ## 5. CI
 
@@ -188,12 +212,30 @@ fixed or reported, with its history.
   without other variables in front: scripts that expand
   `$(HEPHAESTUS)` cannot run `VAR=value cmd` prefixes.
 - Run `rm -rf dist` before `snapshot`. In 1.1.0, `--fresh` ignores the old
-  manifest but does not delete the archives left in `dist/`. In 1.1.1, it
+  manifest but does not delete the archives left in `dist/`. From 1.2.0, it
   deletes the archives, checksum files and formulae that the old manifest
   records. `rm -rf dist` still clears everything else.
-- `make publish` (pushing a tag) runs `preflight` first. With `--strict`
-  it stops on any WARN; some projects run the non-strict version until
-  their ruleset WARNs are resolved.
+- `make publish vX.Y.Z` runs `hephaestus publish` (from 1.2.0), the same
+  tool that releases Hephaestus. Add `publish-check`, `publish-status`,
+  `publish-watch` and `publish-help` next to it. Pass the version to the
+  tool through the environment (`-from-make`), never through a shell
+  command line; the Makefile in [publish.md](../publish.md) shows how. Keep
+  an older `tag=vX.Y.Z` form working. The tool then does the following, in
+  order:
+  1. the preflight: branch `main`, clean worktree, in sync with `origin`,
+     the tag unused, CI green on the commit, rulesets, environment, tap,
+     and the strict generic preflight;
+  2. asks for confirmation;
+  3. pushes one annotated tag;
+  4. follows `release.yml`;
+  5. verifies the release: assets, checksums, attestations and the tap
+     pull request.
+- Test the Makefile wiring with a stub in place of the tool. Check that one
+  version is passed once, and that a second version, metacharacters or
+  another goal fail before the tool runs.
+- `make publish-check` reports, as FAIL, every repository setting that is
+  still missing (rulesets, the environment's tag policy). Those are the
+  owner's to fix before the first release.
 
 ## 8. Pull request and review
 
@@ -249,7 +291,8 @@ Put these rules in every brief you give to another agent or contributor.
 ### Updating the Action pin
 
 Pin the Action only to a commit that a release tag points to, never to an
-unreleased commit. Use the commit of the tag (`git rev-parse vX.Y.Z^{commit}`),
+unreleased commit. From 1.2.0 the Action itself refuses any other
+reference. Use the commit of the tag (`git rev-parse vX.Y.Z^{commit}`),
 with a `# vX.Y.Z` comment. Set the same version in the Makefile's
 `HEPHAESTUS_VERSION`.
 
@@ -257,27 +300,40 @@ To verify an unreleased fix in a project's CI, push a commit that pins the
 fix's commit, with its Go pseudo-version as the comment and as
 `HEPHAESTUS_VERSION`. Once CI is green, revert that commit, so that the pull
 request never asks to merge an unreleased pin. The five migration pull
-requests verified #22 this way.
+requests verified #22 this way, and later the 1.2.0 release candidate.
 
 ## 10. Per-project differences
 
+Every project pins `magicdrive/hephaestus@160990d32bbc83af702bde8a63f49ffcac32972c # v1.2.0`
+(and `HEPHAESTUS_VERSION ?= v1.2.0`). Each one verified the release
+candidate `v1.2.0-rc.1` in CI before moving to the stable release. Each has
+`make publish vX.Y.Z` on `hephaestus publish`, a `ci-gate` job, a plan step,
+and the tap steps named by the conventions.
+
 | Project | Shape | Notable choices |
 | --- | --- | --- |
-| git-parallel | Bash script, no build | A noarch archive, `stages: archive,checksum`, and a new formula (none existed). The version is embedded in the script and checked against the tag. The `release` environment allows branch `v*` only, so the owner must add tag `v*`. |
-| kjak | Go, 5 targets, windows zip | Binaries byte-identical to v0.0.3. `GOTOOLCHAIN: auto` with `toolchain` in go.mod. Main was pushed by mistake and reverted (#12, then #13 stacked). |
-| ark | Go, 8 targets incl. 386, windows tar.gz | All existing CI jobs are kept. Builds go through `.github/release/build.sh`, which exports `GOTOOLCHAIN` from go.mod, asserts it, and sets `cache.release` only for a clean tree at the tag. `release_workflow_test.go` checks the new workflow. The formula's `desc` is over 80 characters, kept for compatibility. The full test suite does not pass on Windows yet (pre-existing). |
-| enma | Go, 8 targets incl. 386, windows zip, `install.sh` | Installer E2E against snapshot archives. Completions are shipped as files. `GOTOOLCHAIN: go1.27.3` is pinned in `builds[].env`, not in go.mod, so tests still run with the minimum Go. Without this pin, the release would have been built with an older Go than v2.1.0. |
-| goreg | Go, 8 targets incl. 386, windows tar.gz | Shipped completions (bash, zsh) installed with `completions.files`. The toolchain is pinned to fix a standard-library vulnerability. |
+| git-parallel | Bash script, no build | A noarch archive, `stages: archive,checksum`, and a new formula (none existed). The version is embedded in the script; `make publish` checks it against the tag before calling `hephaestus publish`. The `release` environment allows branch `v*` only, so the owner must switch it to tag `v*`. |
+| kjak | Go, 5 targets, windows zip | Binaries byte-identical to v0.0.3. `GOTOOLCHAIN: auto` with `toolchain` in go.mod. `ci-gate` added. Main was pushed by mistake and reverted (#12, then #13). |
+| ark | Go, 8 targets incl. 386, windows tar.gz | All existing CI jobs are kept. Builds go through `.github/release/build.sh`, which pins `GOTOOLCHAIN` from go.mod, asserts it, and sets `cache.release` only for a clean tree at the tag. `release_workflow_test.go` checks the workflow conventions, with 29 built-in mutations. The `desc` is over 80 characters, kept for compatibility. The full test suite does not pass on Windows yet (pre-existing). |
+| enma | Go, 8 targets incl. 386, windows zip, `install.sh` | Installer E2E against snapshot archives. Completions are shipped as files. `GOTOOLCHAIN: go1.27.3` is pinned in `builds[].env`, not in go.mod, so tests still run with the minimum Go. `ci-gate` added. |
+| goreg | Go, 8 targets incl. 386, windows tar.gz | Shipped completions (bash, zsh) installed with `completions.files`. The toolchain is pinned to fix a standard-library vulnerability. It is the reference layout for `make publish`. |
+
+Owner settings that `make publish-check` still reports as FAIL (October 2026):
+
+- **Main ruleset requiring `ci-gate`:** all five projects.
+- **Tag ruleset for `v*`:** all five projects.
+- **ark:** its rulesets are disabled.
+- **git-parallel:** the environment policy must change from branch `v*` to tag `v*`.
 
 ## 11. Gaps found in Hephaestus 1.1.0
 
 The projects work around each of these. Where one is fixed, the fix is in
-[#22](https://github.com/magicdrive/hephaestus/pull/22), planned for 1.1.1.
+[#22](https://github.com/magicdrive/hephaestus/pull/22) and released in 1.2.0. (The planned 1.1.1 was never released.)
 
 - **The Action leaks its Go into the caller's job** (§3). It puts its own Go
   on `PATH` and exports `GOTOOLCHAIN=local`, so build commands run with the
-  Action's Go. *Fixed in #22.*
-- **`--fresh` leaves old archives in `dist/`.** *Fixed in #22*: the outputs
+  Action's Go. *Fixed in 1.2.0*: the Action now runs the release binary and installs no toolchain.
+- **`--fresh` leaves old archives in `dist/`.** *Fixed in 1.2.0*: the outputs
   that the old manifest records are deleted.
 - **Testing a generated formula against local archives takes a separate
   configuration.** `run --snapshot` skips the formula stage, and
@@ -298,7 +354,7 @@ The projects work around each of these. Where one is fixed, the fix is in
   credential-name heuristic: a `PWD` segment, meant for "password". Its
   value is the current directory, so every path under the current
   directory is printed as `***`. For example, `hephaestus check` prints
-  `root ***`. `env -u PWD` works around it. *Fixed in #22*: `PWD` and
+  `root ***`. `env -u PWD` works around it. *Fixed in 1.2.0*: `PWD` and
   `OLDPWD` are exempt. A value matched only by its variable's name is not
   redacted when it is an existing path. Known tokens are still always
   redacted.
