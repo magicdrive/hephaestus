@@ -3,8 +3,9 @@
 Working record of the road to v1.0.0 ([v1-roadmap.md](v1-roadmap.md)).
 The stack was developed without merging; for v1.0.0-rc.1 the owner
 authorized merging it in order and publishing the release candidate (not
-v1.0.0). v1.0.0-rc.1 was published from #14's merge (fe71b01); rc.2
-follows #15 to #17.
+v1.0.0). v1.0.0-rc.1 was published from #14's merge (fe71b01) and
+v1.0.0-rc.2 from #17's merge (1b462d3); both are immutable prereleases.
+v1.0.0 is prepared by #19 and published only after the owner merges it.
 
 ## Pull requests (stacked)
 
@@ -22,7 +23,9 @@ follows #15 to #17.
 | [#14](https://github.com/magicdrive/hephaestus/pull/14) | `fix/ci-preflight-smoke-unknown` | `main` | RC | action smoke accepts an unknown preflight on push and tag checkouts |
 | [#15](https://github.com/magicdrive/hephaestus/pull/15) | `fix/snapshot-skips-formula` | `main` | rc.1 dogfooding | snapshot skips formula; init formula test; lagging tap step data |
 | [#16](https://github.com/magicdrive/hephaestus/pull/16) | `fix/never-delete-releases` | `main` | rc.2 audit | no release is ever deleted; re-reads before publishing, deleting assets and updating drafts; published assets never replaced |
-| #17 | `docs/v1.0.0-rc.2-notes` | `main` | rc.2 | release notes and changelog for v1.0.0-rc.2 |
+| [#17](https://github.com/magicdrive/hephaestus/pull/17) | `docs/v1.0.0-rc.2-notes` | `main` | rc.2 | release notes and changelog for v1.0.0-rc.2 |
+| [#18](https://github.com/magicdrive/hephaestus/pull/18) | `ci/verify-release-workflow` | `main` | rc.2 verification | `verify-release.yml`: run a published release's binaries on six platforms |
+| #19 | `docs/v1.0.0-stable-release` | `main` | 1.0 | release notes, changelog and docs for v1.0.0 |
 
 Merge in order; each base branch is merged into the next, so no rebase is
 needed.
@@ -49,6 +52,7 @@ needed.
 | magicdrive/t (Bash) | `check`, `preflight --tag v1.2.1`, `status --tag v1.2.0` | PASS (23 pass, 3 skip); the local rebuild of v1.2.0 is identical to the published immutable assets; one changed line is a conflict |
 | magicdrive/t as noarch (scratch copy) | archive, formula, then `brew style`, `install`, `test` in `homebrew/brew` | one archive, one url; installed with the bash completion link; `t --help` runs |
 | Rust fixture (`cargo new`, `init --template rust`) | build, archive, checksum, formula on macOS x86_64 | the archived binary runs; other targets need their Rust targets installed |
+| Published v1.0.0-rc.2 binary | `init` (go, rust, script, prebuilt) → `check` → `run --snapshot` → formula → `brew style`, `audit --strict`, `install`, `test`, `uninstall`; magicdrive/t read-only (`preflight`, `status`, formula); rebuild of the tag; `verify-release` on six platforms | all passed; the tag rebuild is identical to the published assets; t's formula is byte-identical to the tap's; Rust on the host target only |
 
 ## Platforms
 
@@ -59,10 +63,10 @@ needed.
 | macOS arm64 | CI `test`, `race`, `homebrew-e2e`, action jobs (`macos-latest`) |
 | macOS amd64 | `ci-extended` (`macos-15-intel`); local development machine (x86_64) |
 | Windows amd64 | CI `test`, `action-smoke`, `action-boundary` |
-| Windows arm64 | unverified (archives are built; no runner) |
+| Windows arm64 | published v1.0.0-rc.2 binary run by `verify-release` (`windows-11-arm`); no tests from source |
 
 ## Open items
 
 - Machine-readable configuration schema (optional; not planned for 1.0).
-- `config.release-notes`: RELEASE_NOTES.md and CHANGELOG.md name
-  v1.0.0-rc.2; they must be updated again for v1.0.0 before that tag.
+- Rust template cross-targets (aarch64-apple-darwin, *-linux-musl) are not
+  built in CI or locally; only the host target was verified.

@@ -148,7 +148,7 @@ GITHUB_TOKEN=... HOMEBREW_TAP_GITHUB_TOKEN=... hephaestus run --tag v1.2.3
 go install github.com/magicdrive/hephaestus@latest   # Go 1.26 以降
 ```
 
-最初のリリース後は、次の方法も使えます。
+Homebrew でもインストールできます。入るのは、[magicdrive/homebrew-tap](https://github.com/magicdrive/homebrew-tap) への Formula の pull request がマージ済みの、最新の安定版です（プレリリースは Tap に入りません）。
 
 ```sh
 brew install magicdrive/tap/hephaestus

@@ -14,7 +14,7 @@ change. Anything not listed here is internal and may change in any release.
 | **Artifact Manifest** (`dist/hephaestus-manifest.json`, `schema_version`) | existing fields; a manifest written by 1.x is readable by later 1.x | fields added |
 | **GitHub Action** (`action.yml`) | input and output names, their meaning, the `command` values | the internal steps; how the binary is obtained |
 | **Artifacts** | archive names from the same templates, checksum file format (`<sha256>  <name>`), formula semantics (url, sha256, install, test) | byte-level formula layout beyond `brew style`; ordering of stanzas Homebrew does not care about |
-| **Safety guarantees** | never move or delete a tag, never overwrite a differing asset, never write to an immutable release's assets, never force-push a tap branch, never merge a tap pull request, read-only `preflight` and `status` | — |
+| **Safety guarantees** | never move or delete a tag, never delete a release, never overwrite a differing asset, never edit a published release's title, notes or prerelease flag, never replace or delete a published release's assets, never force-push a tap branch, never merge a tap pull request, read-only `preflight` and `status` | — |
 
 ## What each version may change
 
