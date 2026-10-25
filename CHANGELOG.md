@@ -3,6 +3,18 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
+## v1.2.0
+
+The GitHub Action runs the verified release binary instead of compiling
+Hephaestus, `hephaestus publish` releases any project, and the fixes prepared
+for v1.1.1 (never released) are included. The full notes are in
+[RELEASE_NOTES.md](RELEASE_NOTES.md); the changes are listed under
+v1.2.0-rc.1 below.
+
+- Since v1.2.0-rc.1: `action/VERSION` names v1.2.0. CI runs the action of
+  v1.2.0-rc.1 through `uses:` on six platforms (`action-release`): the
+  release path, outputs and an unchanged toolchain.
+
 ## v1.2.0-rc.1
 
 First release candidate of 1.2; full notes in
