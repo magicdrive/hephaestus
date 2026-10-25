@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/magicdrive/hephaestus/internal/publish"
 )
 
 func runMain(t *testing.T, args ...string) (int, string, string) {
@@ -70,5 +73,79 @@ func TestArguments(t *testing.T) {
 	}
 	if code, out, _ := runMain(t, "help"); code != 0 || !strings.Contains(out, "never moved or deleted") || !strings.Contains(out, "make publish-watch") {
 		t.Errorf("help: %d %s", code, out)
+	}
+}
+
+// actionRepo is a repository root with this repository's configuration and
+// action/VERSION set to version ("" for no file).
+func actionRepo(t *testing.T, version string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cfg, err := os.ReadFile(repoConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hephaestus.yaml"), cfg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if version != "" {
+		if err := os.MkdirAll(filepath.Join(dir, "action"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "action", "VERSION"), []byte(version), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return filepath.Join(dir, "hephaestus.yaml")
+}
+
+// TestActionVersion: the Action downloads the release action/VERSION
+// names, so make publish and make publish-check stop on another tag before
+// anything else is read; status, watch and plan do not check it.
+func TestActionVersion(t *testing.T) {
+	for _, cmd := range []string{"publish", "check"} {
+		cfg := actionRepo(t, "v1.2.0-rc.1\n")
+		code, out, errs := runMain(t, cmd, "-config", cfg, "v1.2.0")
+		if want := "publish: action/VERSION is v1.2.0-rc.1, not v1.2.0: set it to v1.2.0 in a pull request first\n"; code != 1 || errs != want || out != "" {
+			t.Errorf("%s: %d stdout %q stderr %q", cmd, code, out, errs)
+		}
+	}
+	// plan is not checked (the release workflow enforces action/VERSION
+	// itself).
+	if code, out, errs := runMain(t, "plan", "-config", actionRepo(t, "v1.2.0-rc.1\n"), "v1.2.0"); code != 0 || !strings.Contains(out, "tag=v1.2.0\n") {
+		t.Errorf("plan: %d %s", code, errs)
+	}
+	for content, ok := range map[string]bool{
+		"":                 true, // no file: not checked
+		"v1.2.0\n":         true,
+		"v1.2.0\r\n":       true,
+		"v1.2.0":           true,
+		"v1.2.0-rc.1\n":    false,
+		"v1.2.0\nv1.3.0\n": false,
+		" v1.2.0\n":        false,
+		"\n":               false,
+	} {
+		v, err := publish.ParseVersion("v1.2.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := actionVersionMatches(actionRepo(t, content), v); (err == nil) != ok {
+			t.Errorf("%q: %v", content, err)
+		}
+	}
+	// status and watch do not check it: with a mismatch they go on to read
+	// the configuration (here: an invalid one, so nothing else runs).
+	dir := filepath.Dir(actionRepo(t, "v0.0.1\n"))
+	bad := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(bad, []byte("version: 1\nproject: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"status", "watch"} {
+		if code, _, errs := runMain(t, cmd, "-config", bad, "v1.2.0"); code != 1 || strings.Contains(errs, "action/VERSION") {
+			t.Errorf("%s: %d %s", cmd, code, errs)
+		}
+	}
+	if code, _, errs := runMain(t, "check", "-config", bad, "v1.2.0"); code != 1 || !strings.Contains(errs, "action/VERSION is v0.0.1") {
+		t.Errorf("check before the configuration: %d %s", code, errs)
 	}
 }

@@ -223,7 +223,8 @@ text, build code, configuration.
 - `.Env` hides the token variables, the variables `repository.token` reads
   and every variable whose name contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`,
   `CREDENTIAL`, `PRIVATE_KEY`, `API_KEY`, `APIKEY` or `ACCESS_KEY`, or has a
-  `_`-separated segment `PAT`, `AUTH`, `KEY`, `PASS` or `PWD` (ignoring case),
+  `_`-separated segment `PAT`, `AUTH`, `KEY`, `PASS` or `PWD` (ignoring case;
+  the shell's `PWD` and `OLDPWD` are not credentials),
   unless declared in top-level `env` (`internal/tmpl`). Only `builds[].env`
   values (the explicit opt-in for passing a credential to a build) and
   `brews[].repository.token` are rendered against the complete environment,
@@ -233,7 +234,10 @@ text, build code, configuration.
   release body, commit message or pull request title cannot carry it.
 - Redaction also covers base64 (including `x-access-token:<token>`),
   URL-encoded and quoted forms. Known tokens are redacted whatever their
-  length; values of variables recognized only by name, from 8 characters.
+  length; values of variables recognized only by name, from 8 characters,
+  unless the value is the absolute path of an existing file or directory
+  (`SSH_AUTH_SOCK`, `GOOGLE_APPLICATION_CREDENTIALS`): such a value says where
+  a credential is, and redacting it would hide every path below it.
 - The GitHub client never puts the token in an error message.
 - Build commands do not receive the tokens in their environment (see
   supply chain attack for what that does not prevent).

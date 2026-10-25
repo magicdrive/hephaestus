@@ -40,7 +40,7 @@ jobs:
       - name: govulncheck
         run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
       - name: shellcheck
-        run: shellcheck scripts/*.sh testdata/e2e/boundary/probe.sh testdata/e2e/completions/heph-comp cmd/hephaestus/completions/hephaestus.bash cmd/hephaestus/testdata/completion/complete.bash
+        run: shellcheck -x scripts/*.sh action/*.sh testdata/e2e/boundary/probe.sh testdata/e2e/completions/heph-comp cmd/hephaestus/completions/hephaestus.bash cmd/hephaestus/testdata/completion/complete.bash
 
   test:
     # Linux amd64 and arm64, macOS arm64, Windows amd64. macOS Intel runs
@@ -181,7 +181,74 @@ jobs:
           HEPHAESTUS_COMPLETION_SHELLS: "1"
         run: scripts/homebrew-completion-e2e.sh
 
+  action-binary:
+    # The hephaestus binaries of the six platforms the action supports,
+    # built from this commit, for the jobs that run the action from this
+    # checkout (uses: ./ takes HEPHAESTUS_ACTION_BINARY instead of a
+    # release download, see action/install-hephaestus.sh). Those jobs need
+    # no Go of their own.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Cross-build
+        run: |
+          v="$(tr -d '\r\n' < action/VERSION)-dev"
+          for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            os="${t%/*}" arch="${t#*/}" ext=""
+            [[ "$os" == windows ]] && ext=.exe
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=$v" \
+              -o "action-binaries/hephaestus-$os-$arch$ext" .
+          done
+          ls -l action-binaries
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: action-binaries
+          path: action-binaries/
+          if-no-files-found: error
+          retention-days: 1
+
+  action-install:
+    # The action's release path (action/install-hephaestus.sh) on every
+    # platform it supports: crafted archives, references and checksums
+    # (no network), then the published v1.1.0 release laid out as the
+    # runner checks out an action pinned to its commit: download, release
+    # checksum, provenance attestation bound to the commit and tag, version.
+    # Another commit and a branch reference must fail. The job's PATH and
+    # Go environment must be unchanged afterwards.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Crafted archives, references and checksums
+        run: bash action/install-hephaestus_test.sh
+      - name: Record the environment before
+        run: scripts/go-env-snapshot.sh > "$RUNNER_TEMP/env-before"
+      - name: Install the published v1.1.0 through the release path
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/action-install-e2e.sh v1.1.0 550d48f64917749742574b5c2ff1b292940ff71a b2ea250f3eaf2323735a96a787be517c26a248c1
+      - name: The environment is unchanged
+        run: |
+          scripts/go-env-snapshot.sh > "$RUNNER_TEMP/env-after"
+          diff -u "$RUNNER_TEMP/env-before" "$RUNNER_TEMP/env-after"
+
   action-smoke:
+    needs: [action-binary]
     # The composite action on every runner OS: Git Bash, the .exe suffix
     # and D:/a/_temp-style paths on Windows; BSD tools (env -u, mktemp) on
     # macOS.
@@ -197,9 +264,36 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: action-binaries
+          path: ${{ runner.temp }}/action-binaries
+      - name: Select the hephaestus binary built from this commit
+        # uses: ./ runs the action from this checkout, whose version is not
+        # released: it takes this binary (HEPHAESTUS_ACTION_BINARY) instead
+        # of a release download.
+        id: heph-bin
+        run: |
+          case "$RUNNER_OS/$RUNNER_ARCH" in
+            Linux/X64) p=linux-amd64 ;; Linux/ARM64) p=linux-arm64 ;;
+            macOS/X64) p=darwin-amd64 ;; macOS/ARM64) p=darwin-arm64 ;;
+            Windows/X64) p=windows-amd64.exe ;; Windows/ARM64) p=windows-arm64.exe ;;
+          esac
+          f="$RUNNER_TEMP/action-binaries/hephaestus-$p"
+          chmod +x "$f"
+          if [[ "$RUNNER_OS" == Windows ]]; then f="$(cygpath -m "$f")"; fi
+          echo "path=$f" >> "$GITHUB_OUTPUT"
+      # The fixture is a Go program: like any caller, set up the Go that
+      # builds it (the action does not provide one).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: testdata/e2e/fixture/go.mod
+          cache: false
       - name: Run the action (snapshot build, archive, checksum)
         id: heph
         uses: ./
+        env:
+          HEPHAESTUS_ACTION_BINARY: ${{ steps.heph-bin.outputs.path }}
         with:
           working-directory: testdata/e2e/fixture
           stages: build,archive,checksum
@@ -220,9 +314,34 @@ jobs:
           done
       - name: Check configuration
         uses: ./
+        env:
+          HEPHAESTUS_ACTION_BINARY: ${{ steps.heph-bin.outputs.path }}
         with:
           command: check
           working-directory: testdata/e2e/fixture
+      - name: Release plan of a stable tag
+        id: plan-stable
+        env:
+          HEPHAESTUS_ACTION_BINARY: ${{ steps.heph-bin.outputs.path }}
+        uses: ./
+        with:
+          command: plan
+          tag: v9.9.9
+      - name: Release plan of a prerelease
+        id: plan-rc
+        env:
+          HEPHAESTUS_ACTION_BINARY: ${{ steps.heph-bin.outputs.path }}
+        uses: ./
+        with:
+          command: plan
+          tag: v9.9.9-rc.1
+      - name: Check plan outputs
+        env:
+          STABLE: ${{ steps.plan-stable.outputs.prerelease }},${{ steps.plan-stable.outputs.tap }}
+          RC: ${{ steps.plan-rc.outputs.prerelease }},${{ steps.plan-rc.outputs.tap }}
+        run: |
+          echo "stable=$STABLE rc=$RC"
+          [[ "$STABLE" == "false,publish" && "$RC" == "true,skip" ]]
       - name: Release preflight (offline)
         # A pull request checks out a detached merge commit, so git.branch
         # fails; a push checks out a shallow clone without origin/HEAD, so
@@ -231,6 +350,8 @@ jobs:
         id: preflight
         continue-on-error: true
         uses: ./
+        env:
+          HEPHAESTUS_ACTION_BINARY: ${{ steps.heph-bin.outputs.path }}
         with:
           command: preflight
           tag: v9.9.9
@@ -255,6 +376,7 @@ jobs:
           jq -e '[.checks[] | select(.group == "github")] | all(.status == "SKIP")' "$REPORT"
 
   action-boundary:
+    needs: [action-binary]
     # Runs the action on a real runner with sentinel tokens in the job env,
     # the action inputs and an OIDC grant, and a build command (probe.sh)
     # that fails if any of them is visible to build code: in its own
@@ -282,6 +404,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: action-binaries
+          path: ${{ runner.temp }}/action-binaries
+      - name: Select the hephaestus binary built from this commit
+        # uses: ./ runs the action from this checkout, whose version is not
+        # released: it takes this binary (HEPHAESTUS_ACTION_BINARY) instead
+        # of a release download.
+        id: heph-bin
+        run: |
+          case "$RUNNER_OS/$RUNNER_ARCH" in
+            Linux/X64) p=linux-amd64 ;; Linux/ARM64) p=linux-arm64 ;;
+            macOS/X64) p=darwin-amd64 ;; macOS/ARM64) p=darwin-arm64 ;;
+            Windows/X64) p=windows-amd64.exe ;; Windows/ARM64) p=windows-arm64.exe ;;
+          esac
+          f="$RUNNER_TEMP/action-binaries/hephaestus-$p"
+          chmod +x "$f"
+          if [[ "$RUNNER_OS" == Windows ]]; then f="$(cygpath -m "$f")"; fi
+          echo "path=$f" >> "$GITHUB_OUTPUT"
       - name: Prefer Git Bash for the probe's build command
         if: runner.os == 'Windows'
         # Hephaestus runs "bash" by PATH lookup; make it Git Bash rather
@@ -290,6 +431,8 @@ jobs:
       - name: Run the action with sentinel tokens
         id: heph
         uses: ./
+        env:
+          HEPHAESTUS_ACTION_BINARY: ${{ steps.heph-bin.outputs.path }}
         with:
           working-directory: testdata/e2e/boundary
           stages: build
@@ -303,10 +446,128 @@ jobs:
           echo "status=$STATUS"
           [[ "$STATUS" == "no-op" ]]
 
+  action-isolation:
+    needs: [action-binary]
+    # The action must leave the caller's Go toolchain as it found it: PATH,
+    # which go, go version, GOTOOLCHAIN and every GO*/CGO_* variable are the
+    # same before and after it runs (scripts/go-env-snapshot.sh), on every
+    # GitHub-hosted platform, with Go 1.26 or 1.27 set up by the caller,
+    # without setup-go, and for a project that is not Go. The fixture's
+    # binary must be built by the caller's Go, not by the Go that built
+    # Hephaestus. The action runs twice per job (the second run reuses the
+    # downloaded toolchain archive after checking it again).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, go: "1.26", fixture: fixture}
+          - {os: ubuntu-latest, go: "1.27", fixture: fixture}
+          - {os: ubuntu-latest, go: "", fixture: noarch}
+          - {os: ubuntu-24.04-arm, go: "1.27", fixture: fixture}
+          - {os: macos-latest, go: "1.26", fixture: fixture}
+          - {os: macos-latest, go: "", fixture: noarch}
+          - {os: macos-15-intel, go: "1.27", fixture: fixture}
+          - {os: windows-latest, go: "1.27", fixture: fixture}
+          - {os: windows-latest, go: "", fixture: noarch}
+          - {os: windows-11-arm, go: "1.26", fixture: fixture}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: action-binaries
+          path: ${{ runner.temp }}/action-binaries
+      - name: Select the hephaestus binary built from this commit
+        # uses: ./ runs the action from this checkout, whose version is not
+        # released: it takes this binary (HEPHAESTUS_ACTION_BINARY) instead
+        # of a release download.
+        id: heph-bin
+        run: |
+          case "$RUNNER_OS/$RUNNER_ARCH" in
+            Linux/X64) p=linux-amd64 ;; Linux/ARM64) p=linux-arm64 ;;
+            macOS/X64) p=darwin-amd64 ;; macOS/ARM64) p=darwin-arm64 ;;
+            Windows/X64) p=windows-amd64.exe ;; Windows/ARM64) p=windows-arm64.exe ;;
+          esac
+          f="$RUNNER_TEMP/action-binaries/hephaestus-$p"
+          chmod +x "$f"
+          if [[ "$RUNNER_OS" == Windows ]]; then f="$(cygpath -m "$f")"; fi
+          echo "path=$f" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.go != ''
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - name: Record the Go environment before the action
+        run: scripts/go-env-snapshot.sh | tee "$RUNNER_TEMP/go-env-before"
+      - name: Run the action (snapshot)
+        uses: ./
+        env:
+          HEPHAESTUS_ACTION_BINARY: ${{ steps.heph-bin.outputs.path }}
+        with:
+          working-directory: testdata/e2e/${{ matrix.fixture }}
+          stages: ${{ matrix.fixture == 'noarch' && 'archive,checksum' || 'build,archive,checksum' }}
+          snapshot: "true"
+          github-token: ""
+      - name: Run the action again (check)
+        uses: ./
+        env:
+          HEPHAESTUS_ACTION_BINARY: ${{ steps.heph-bin.outputs.path }}
+        with:
+          command: check
+          working-directory: testdata/e2e/${{ matrix.fixture }}
+          github-token: ""
+      - name: Compare the Go environment after the action
+        run: |
+          scripts/go-env-snapshot.sh > "$RUNNER_TEMP/go-env-after"
+          diff -u "$RUNNER_TEMP/go-env-before" "$RUNNER_TEMP/go-env-after"
+      - name: The fixture was built by the caller's Go
+        if: matrix.fixture == 'fixture'
+        run: |
+          want="$(cd / && go env GOVERSION | tr -d '\r')"
+          got="$(go version testdata/e2e/fixture/dist/bin/linux_amd64/heph-fixture | tr -d '\r')"
+          echo "caller: $want; fixture binary: $got"
+          [[ "$got" == *": $want" ]]
+
+  action-isolation-detects-v1-1-0:
+    # The comparison above must be able to fail: v1.1.0 of the action
+    # (actions/setup-go inside) changes the caller's Go environment.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+          cache: false
+      - run: scripts/go-env-snapshot.sh | tee "$RUNNER_TEMP/go-env-before"
+      - uses: magicdrive/hephaestus@550d48f64917749742574b5c2ff1b292940ff71a # v1.1.0
+        with:
+          command: check
+          working-directory: testdata/e2e/fixture
+          github-token: ""
+      - name: The comparison reports the change
+        run: |
+          scripts/go-env-snapshot.sh > "$RUNNER_TEMP/go-env-after"
+          if diff -u "$RUNNER_TEMP/go-env-before" "$RUNNER_TEMP/go-env-after"; then
+            echo "::error::v1.1.0 changed nothing that go-env-snapshot.sh sees; the isolation check cannot fail"
+            exit 1
+          fi
+
   ci-gate:
     # The single required check, and what the release workflow waits for.
     if: always()
-    needs: [lint, test, completion, race, fuzz-smoke, snapshot, homebrew-e2e, action-smoke, action-boundary]
+    needs: [lint, test, completion, race, fuzz-smoke, snapshot, homebrew-e2e, action-binary, action-install, action-smoke, action-boundary, action-isolation, action-isolation-detects-v1-1-0]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

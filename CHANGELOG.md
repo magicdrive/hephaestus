@@ -3,6 +3,74 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
+## v1.2.0-rc.1
+
+First release candidate of 1.2; full notes in
+[RELEASE_NOTES.md](RELEASE_NOTES.md). It includes the fixes prepared for
+v1.1.1, which was never released.
+
+### Changed
+
+- **The GitHub Action runs the verified release binary instead of compiling
+  Hephaestus.** It reads the release from `action/VERSION`, then:
+  - downloads that release's archive for the runner, and its checksum file,
+    from `github.com/magicdrive/hephaestus/releases/download/<tag>/` only;
+  - checks the archive's SHA-256;
+  - verifies its provenance attestation: signed by `release.yml` on a
+    GitHub-hosted runner for that tag and, when pinned by SHA, for exactly
+    the pinned commit;
+  - extracts only the regular `hephaestus[.exe]` at the archive root, and
+    checks the version the binary reports.
+
+  Any failure stops the action, with no fallback. No Go toolchain is
+  downloaded or set up, and nothing is written to `$GITHUB_PATH` or
+  `$GITHUB_ENV`. Linux, macOS and Windows on x64 and ARM64 are supported, as
+  before. The action must be referenced by a release tag or the commit that
+  tag points to; a branch reference fails.
+- The release workflow refuses to build a tag that `action/VERSION` does not
+  name.
+
+### Added
+
+- `hephaestus publish`: the release tool Hephaestus uses for itself, for any
+  project with the same release workflow conventions
+  ([docs/publish.md](docs/publish.md)). `make publish vX.Y.Z` runs it in
+  order:
+  1. preflight;
+  2. confirmation;
+  3. annotated tag;
+  4. follow the release workflow;
+  5. verify assets, checksums, attestations and the tap pull request.
+- Action `command: plan`, with the outputs `prerelease` and `tap`: the
+  release plan of a tag, so a release job can skip, and never give the token
+  to, the tap steps of a prerelease. It refuses a prerelease that would
+  update the tap.
+
+### Fixed
+
+- **The Action no longer changes the caller's Go toolchain.** v1.1.0 ran
+  `actions/setup-go`, which put Go 1.26.0 first on the job's `PATH` and
+  exported `GOTOOLCHAIN=local`. A module requiring a newer Go failed, and
+  others were built with an older toolchain.
+- **Redaction no longer hides paths under the current directory.** The shell's
+  `PWD` and `OLDPWD` are not credentials. A value matched only by its
+  variable's name is not redacted when it is the path of an existing file or
+  directory. Known tokens are always redacted.
+- **`--fresh` deletes the previous run's archives, checksum files and
+  formulae from `dist`** when the run writes them again. Only unchanged files
+  that Hephaestus wrote itself are deleted.
+
+### Compatibility
+
+- No configuration key, flag, Action input or output, JSON field or check ID
+  was removed or renamed. `publish` is a new command.
+- **The Action now requires a release reference:** a release tag, or the full
+  SHA of the commit that tag points to. `@main` and other branches fail.
+- **The Action no longer provides Go:** a project that relied on the
+  Action's Go must set up its own. The examples always did.
+- `{{ .Env.PWD }}` and `{{ .Env.OLDPWD }}` are now visible to templates, and
+  build commands now receive `PWD` and `OLDPWD`.
+
 ## v1.1.0
 
 Shell completion; full notes in [RELEASE_NOTES.md](RELEASE_NOTES.md). A

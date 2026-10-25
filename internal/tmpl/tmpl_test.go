@@ -141,13 +141,13 @@ func TestIsCredentialName(t *testing.T) {
 	for _, n := range []string{
 		"GITHUB_TOKEN", "my_token", "AWS_SECRET_ACCESS_KEY", "DB_PASSWORD", "FTP_PASSWD", "SSH_PRIVATE_KEY",
 		"GOOGLE_APPLICATION_CREDENTIALS", "npmToken", "GPG_PASSPHRASE", "TAP_PAT", "SENTRY_API_KEY", "NPM_AUTH",
-		"GPG_KEY", "MYAPIKEY", "AWS_ACCESS_KEY_ID", "SMTP_PASS", "DB_PWD", "pat", "KEY",
+		"GPG_KEY", "MYAPIKEY", "AWS_ACCESS_KEY_ID", "SMTP_PASS", "DB_PWD", "pat", "KEY", "MYSQL_PWD", "PWD_HASH",
 	} {
 		if !IsCredentialName(n) {
 			t.Errorf("%s: not a credential", n)
 		}
 	}
-	for _, n := range []string{"HOME", "PATH", "GOPATH", "GOOS", "API_URL", "VERSION", "KEYCHAIN", "KEYBOARD", "AUTHOR", "PATCH", "COMPASS", "PASSENGER_ENV"} {
+	for _, n := range []string{"HOME", "PATH", "GOPATH", "GOOS", "API_URL", "VERSION", "KEYCHAIN", "KEYBOARD", "AUTHOR", "PATCH", "COMPASS", "PASSENGER_ENV", "PWD", "OLDPWD", "pwd", "TMPDIR", "GITHUB_WORKSPACE", "RUNNER_TEMP"} {
 		if IsCredentialName(n) {
 			t.Errorf("%s: credential", n)
 		}

@@ -81,21 +81,27 @@ func secretVars(v Vars) Vars {
 }
 
 // Substrings and "_"-separated name segments that mark an environment
-// variable name as a credential.
+// variable name as a credential, and names that match them but are set by
+// shells to a directory (PWD is "print working directory", not a password).
 var (
 	credentialSubstrings = []string{"TOKEN", "SECRET", "PASSWORD", "PASSWD", "PASSPHRASE", "CREDENTIAL", "PRIVATE_KEY", "API_KEY", "APIKEY", "ACCESS_KEY"}
 	credentialSegments   = []string{"PAT", "AUTH", "KEY", "PASS", "PWD"}
+	notCredentialNames   = []string{"PWD", "OLDPWD"}
 )
 
 // IsCredentialName reports whether an environment variable name looks like
 // it holds a credential, ignoring case: it contains TOKEN, SECRET, PASSWORD,
 // PASSWD, PASSPHRASE, CREDENTIAL, PRIVATE_KEY, API_KEY, APIKEY or
 // ACCESS_KEY, or one of its "_"-separated segments is PAT, AUTH, KEY, PASS
-// or PWD (so TAP_PAT and GPG_KEY match, but PATH and AUTHOR do not).
+// or PWD (so TAP_PAT, GPG_KEY and DB_PWD match, but PATH and AUTHOR do not).
+// The shell variables PWD and OLDPWD are not credentials.
 //
 // It is a heuristic: a credential under an unusual name is not recognized.
 func IsCredentialName(name string) bool {
 	u := strings.ToUpper(name)
+	if slices.Contains(notCredentialNames, u) {
+		return false
+	}
 	for _, w := range credentialSubstrings {
 		if strings.Contains(u, w) {
 			return true

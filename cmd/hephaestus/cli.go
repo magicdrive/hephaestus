@@ -54,6 +54,8 @@ func mainCmd(ctx context.Context, args []string, stdout, stderr io.Writer, red *
 		return preflightCmd(ctx, rest, stdout, stderr, red)
 	case "status":
 		return statusCmd(ctx, rest, stdout, stderr, red)
+	case "publish":
+		return publishCmd(ctx, rest, stdout, stderr, red)
 	case "init":
 		return initCmd(ctx, rest, stdout, stderr)
 	case "completion":

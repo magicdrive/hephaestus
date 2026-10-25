@@ -7,7 +7,7 @@ branding:
 
 inputs:
   command:
-    description: "hephaestus command: run, check, build, archive, checksum, release, formula, tap or preflight."
+    description: "hephaestus command: run, check, build, archive, checksum, release, formula, tap, preflight or plan."
     default: run
   stages:
     description: "With command=run: comma-separated stages (build,archive,checksum,release,formula,tap) or all. Default: every configured stage."
@@ -74,6 +74,12 @@ outputs:
   pull-request-url:
     description: Newline-separated tap pull request URLs.
     value: ${{ steps.publish.outputs.pull-request-url || steps.local.outputs.pull-request-url }}
+  prerelease:
+    description: 'With command=plan: "true" when the tag is released as a prerelease.'
+    value: ${{ steps.plan.outputs.prerelease }}
+  tap:
+    description: 'With command=plan: "publish" when the release updates the tap, "skip" otherwise.'
+    value: ${{ steps.plan.outputs.tap }}
   preflight-status:
     description: "With command=preflight: pass, warn, unknown or fail."
     value: ${{ steps.preflight.outputs.status }}
@@ -87,52 +93,25 @@ outputs:
 runs:
   using: composite
   steps:
-    # Hephaestus is built from this action's own pinned source, so the code
-    # that runs is exactly the code at the ref you reference (pin a SHA).
-    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-      with:
-        go-version-file: ${{ github.action_path }}/go.mod
-        cache: false
-    - name: Build hephaestus
+    # The release binary of the version in action/VERSION, downloaded from
+    # that GitHub Release and verified (action/install-hephaestus.sh): the
+    # release checksum, the provenance attestation binding it to this
+    # action's commit and tag, and the version it reports. Nothing is
+    # compiled and no toolchain is installed, so the job's PATH, Go and other
+    # settings stay as the caller set them. The job token (read-only use)
+    # lets gh read the attestation; no step that runs project code sees it.
+    - name: Install hephaestus
       id: build
       shell: bash
-      # The caller's Go settings (earlier steps, workflow env, $GITHUB_ENV)
-      # must not change how the action itself is built: pin the module
-      # proxy and checksum database, disable go.work, the go env file and
-      # private/insecure module patterns, and drop GOFLAGS such as
-      # -toolexec or -mod=mod. GOCACHE and GOMODCACHE are set in the script
-      # to a new directory, so a build or module cache restored by an
-      # earlier step (setup-go with cache: true, actions/cache) is not used.
       env:
         ACTION_PATH: ${{ github.action_path }}
-        GOFLAGS: -mod=readonly
-        GOPROXY: https://proxy.golang.org,direct
-        GOSUMDB: sum.golang.org
-        GONOSUMDB: ""
-        GONOSUMCHECK: ""
-        GONOPROXY: ""
-        GOPRIVATE: ""
-        GOINSECURE: ""
-        GOWORK: "off"
-        GOENV: "off"
-        GOTOOLCHAIN: auto
-        GOEXPERIMENT: ""
-        CGO_ENABLED: "0"
+        ACTION_REF: ${{ github.action_ref }}
+        GH_TOKEN: ${{ github.token }}
+        GITHUB_TOKEN: ""
       run: |
-        set -euo pipefail
-        tmp="$RUNNER_TEMP" src="$ACTION_PATH" bin_ext=""
-        if [[ "$RUNNER_OS" == "Windows" ]]; then
-          # Git Bash tools and the native go.exe both accept D:/a/_temp;
-          # RUNNER_TEMP arrives as D:\a\_temp.
-          tmp="$(cygpath -m "$RUNNER_TEMP")" src="$(cygpath -m "$ACTION_PATH")" bin_ext=".exe"
-        fi
-        gotmp="$(mktemp -d "$tmp/hephaestus-go.XXXXXXXX")"
-        export GOCACHE="$gotmp/cache" GOMODCACHE="$gotmp/mod"
-        cd "$src"
-        bin="$tmp/hephaestus-bin/hephaestus$bin_ext"
-        go build -trimpath -mod=readonly -o "$bin" .
-        chmod -R u+w "$gotmp" && rm -rf "$gotmp"
-        echo "bin=$bin" >> "$GITHUB_OUTPUT"
+        script="$ACTION_PATH/action/install-hephaestus.sh"
+        if [[ "$RUNNER_OS" == Windows ]]; then script="$(cygpath -u "$script")"; fi
+        bash "$script"
     # Local stages (build, archive, checksum) run in a step whose environment
     # holds no token at all: build commands run third-party code, which could
     # otherwise read the tokens from this step's processes. With command
@@ -140,7 +119,7 @@ runs:
     # continuing from the manifest in dist/.
     - name: Run hephaestus (local stages)
       id: local
-      if: inputs.command != 'release' && inputs.command != 'formula' && inputs.command != 'tap' && inputs.command != 'preflight'
+      if: inputs.command != 'release' && inputs.command != 'formula' && inputs.command != 'tap' && inputs.command != 'preflight' && inputs.command != 'plan'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -266,3 +245,34 @@ runs:
         echo "status=$status" >> "$GITHUB_OUTPUT"
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
         exit "$code"
+    # The release plan of a tag (hephaestus publish plan): whether it is a
+    # prerelease and whether the tap is published, decided from the
+    # configuration by the same code as the tap stage. It reads only the
+    # configuration: no token, no network, no project code. A prerelease
+    # that would update the tap is refused here, before any write.
+    - name: Run hephaestus (plan)
+      id: plan
+      if: inputs.command == 'plan'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_TAG: ${{ inputs.tag }}
+        HEPHAESTUS_BIN: ${{ steps.build.outputs.bin }}
+        GITHUB_TOKEN: ""
+        HOMEBREW_TAP_GITHUB_TOKEN: ""
+      run: |
+        set -euo pipefail
+        tag="$INPUT_TAG"
+        if [[ -z "$tag" && "${GITHUB_REF_TYPE:-}" == tag ]]; then tag="$GITHUB_REF_NAME"; fi
+        [[ -n "$tag" ]] || { echo "::error::command plan needs a tag (the tag input, or a tag push)"; exit 2; }
+        args=(publish plan)
+        [[ -n "$INPUT_CONFIG" ]] && args+=(-config "$INPUT_CONFIG")
+        plan="$("$HEPHAESTUS_BIN" "${args[@]}" "$tag" | tr -d '\r')"
+        echo "$plan"
+        grep -qxE 'tap=(publish|skip)' <<<"$plan" || { echo "::error::unexpected release plan"; exit 1; }
+        grep -qxE 'prerelease=(true|false)' <<<"$plan" || { echo "::error::unexpected release plan"; exit 1; }
+        if grep -qx 'prerelease=true' <<<"$plan" && ! grep -qx 'tap=skip' <<<"$plan"; then
+          echo "::error::a prerelease must not update the tap (brews.skip_upload: auto)"; exit 1
+        fi
+        grep -E '^(prerelease|tap)=' <<<"$plan" >> "$GITHUB_OUTPUT"

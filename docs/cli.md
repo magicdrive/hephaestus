@@ -15,6 +15,7 @@ Every command reads `hephaestus.yaml` from the current directory unless
 | `build`, `archive`, `checksum`, `release`, `formula`, `tap` | as `run` | run one stage (same flags as `run`) |
 | `preflight` | nothing | read-only release checks before pushing a tag |
 | `status` | nothing | read-only state of a tag's release and the next safe action |
+| `publish` | the release tag (local and pushed) | release a version: preflight, confirm, push the tag, follow and verify the release workflow |
 | `completion` | nothing | print the bash, zsh or fish completion script |
 | `version` | nothing | print the version |
 
@@ -44,7 +45,7 @@ Exit codes: `0` written, `1` the file exists or cannot be written, `2` usage.
 | `--snapshot` | off | build without a tag (`0.0.0-SNAPSHOT`); release, formula and tap stages (they need a tag) are skipped, and refused when named |
 | `--stages` (`run`) | every configured stage | comma-separated stages, or `all` |
 | `--phase` (`run`) | — | `local` (build, archive, checksum) or `publish` (release, formula, tap) |
-| `--fresh` | off | ignore an existing manifest instead of continuing from it |
+| `--fresh` | off | ignore an existing manifest instead of continuing from it; archives, checksum files and formulae that manifest records in `dist` are deleted first when this run writes them again (only files unchanged since, never imported ones) |
 | `--dry-run` | off | plan release and tap publication without writing to GitHub |
 | `--commit` | `$GITHUB_SHA` | commit SHA the release is made from |
 | `--repo` | config, then `$GITHUB_REPOSITORY` | release repository |
@@ -81,6 +82,39 @@ hephaestus status --tag v1.2.3 [--format json]
 States and their safe recovery are in [recovery.md](recovery.md). Exit
 codes: `0` read, `1` conflict, `2` usage, `3` GitHub could not be read.
 
+## publish
+
+```sh
+hephaestus publish [check|status|watch|plan|help] [flags] v1.2.3
+```
+
+Releases a version of the project in the current directory: a read-only
+preflight, a confirmation, one annotated tag pushed without force, then it
+follows the `release.yml` run the push starts and verifies the release
+(assets, checksums, attestations, Homebrew tap). It never publishes or writes
+to GitHub itself. Without a command it releases; `check` runs the preflight
+only, `status` shows what exists for a version, `watch` follows an already
+pushed tag, `plan` prints `tag=`, `version=`, `prerelease=` and `tap=` lines
+for the release workflow, `help` describes the safety rules. Flags come before
+the version.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `-config` | `hephaestus.yaml` | configuration file |
+| `-yes` | off | confirm without the prompt |
+| `-from-make` | off | read the version from `HEPHAESTUS_PUBLISH_ARGS`, `HEPHAESTUS_PUBLISH_VERSION` or `HEPHAESTUS_PUBLISH_TAG` (set by a Makefile) |
+| `-discover-timeout` | `5m` | wait for the release run to appear |
+| `-watch-timeout` | `90m` | wait for the release run to finish |
+| `-poll` | `15s` | polling interval |
+
+The project must follow publish's conventions (branch `main`, `ci.yml` with
+`ci-gate`, `release.yml`, environment `release`, tag and main rulesets, the
+tap step names). [publish.md](publish.md) lists them, with the Makefile for
+`make publish vX.Y.Z` and the recovery steps. Exit codes: `0` released and
+verified (`check`: passed; `status`: nothing failed), `1` failed or refused,
+`2` usage or an invalid version, `3` outcome unknown (monitoring stopped; the
+release may still be running).
+
 ## completion
 
 ```sh
@@ -88,7 +122,8 @@ hephaestus completion bash|zsh|fish
 ```
 
 Prints the shell's completion script on stdout (nothing else; errors go to
-stderr, an unknown shell exits `2`). The script completes commands, each
+stderr, an unknown shell exits `2`). The script completes commands, the
+commands of `publish` (`check`, `status`, `watch`, `plan`, `help`), each
 command's flags (`--flag` and `-flag`; a flag already given is not offered
 again unless it is repeatable), and the fixed values of `--format`,
 `--template`, `--phase`, `--stages` and `--skip` (comma-separated lists
