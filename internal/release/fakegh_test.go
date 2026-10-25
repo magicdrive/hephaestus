@@ -363,16 +363,14 @@ func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) 
 		f.refreshURLs(rel)
 		reply(w, 200, f.view(rel))
 
-	case r.Method == "DELETE" && len(parts) == 1 && parts[0] != "":
+	case r.Method == "GET" && len(parts) == 1 && parts[0] != "":
 		id, _ := strconv.ParseInt(parts[0], 10, 64)
-		for i, rel := range f.releases {
-			if rel.ID == id {
-				f.releases = append(f.releases[:i], f.releases[i+1:]...)
-				w.WriteHeader(204)
-				return
-			}
+		rel := f.release(id)
+		if rel == nil {
+			reply(w, 404, map[string]any{"message": "Not Found"})
+			return
 		}
-		reply(w, 404, map[string]any{"message": "Not Found"})
+		reply(w, 200, f.view(rel))
 
 	case r.Method == "PATCH" && len(parts) == 2 && parts[0] == "assets":
 		id, _ := strconv.ParseInt(parts[1], 10, 64)

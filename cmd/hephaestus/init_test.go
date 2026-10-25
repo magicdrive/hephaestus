@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -28,7 +29,8 @@ func TestInitTemplatesProduceReleases(t *testing.T) {
 			[]string{"mycli_1.0.0_darwin_arm64.tar.gz", "mycli_1.0.0_linux_amd64.tar.gz", "mycli_checksums.txt", "homebrew/mycli.rb"}},
 		{"go", map[string]string{"go.mod": "module example.com/mycli\n\ngo 1.22\n", "main.go": "package main\n\nvar version = \"dev\"\n\nfunc main() { println(version) }\n"}, "build,archive,checksum,formula",
 			[]string{"mycli_1.0.0_windows_amd64.zip", "mycli_1.0.0_linux_arm64.tar.gz", "homebrew/mycli.rb"}},
-		{"rust", map[string]string{"Cargo.toml": "[package]\nname = \"mycli\"\n"}, "", nil},
+		{"rust", map[string]string{"Cargo.toml": "[package]\nname = \"mycli\"\nversion = \"1.0.0\"\nedition = \"2021\"\n\n[dependencies]\n", "src/main.rs": "fn main() { println!(\"mycli\"); }\n", "README.md": "# mycli\n"}, "build,archive,checksum,formula",
+			[]string{"mycli_1.0.0_darwin_arm64.tar.gz", "mycli_1.0.0_linux_amd64.tar.gz", "mycli_checksums.txt", "homebrew/mycli.rb"}},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "mycli")
@@ -59,15 +61,24 @@ func TestInitTemplatesProduceReleases(t *testing.T) {
 					t.Skip("go is not installed")
 				}
 			}
-			if tc.kind != "go" {
-				// The next step init prints: a snapshot of every configured
-				// stage that needs no tag (no formula, release or tap).
-				if code, out, errs := runCLI(t, "run", "--config", cfg, "--snapshot"); code != 0 {
-					t.Fatalf("run --snapshot: %d\n%s%s", code, out, errs)
+			if tc.kind == "rust" {
+				if testing.Short() {
+					t.Skip("cross-compiles four targets")
 				}
-				if _, err := os.Stat(filepath.Join(dir, "dist", "homebrew", "mycli.rb")); err == nil {
-					t.Error("run --snapshot generated a formula")
+				if !rustTargetsInstalled(t, "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl") {
+					t.Skip("cargo or a rust target of the template is not installed")
 				}
+				if out, err := exec.Command("cargo", "generate-lockfile", "--manifest-path", filepath.Join(dir, "Cargo.toml")).CombinedOutput(); err != nil {
+					t.Fatalf("cargo generate-lockfile: %v\n%s", err, out)
+				}
+			}
+			// The next step init prints: a snapshot of every configured stage
+			// that needs no tag (no formula, release or tap).
+			if code, out, errs := runCLI(t, "run", "--config", cfg, "--snapshot"); code != 0 {
+				t.Fatalf("run --snapshot: %d\n%s%s", code, out, errs)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "dist", "homebrew", "mycli.rb")); err == nil {
+				t.Error("run --snapshot generated a formula")
 			}
 			if code, out, errs := runCLI(t, "run", "--config", cfg, "--tag", "v1.0.0", "--fresh", "--stages", tc.stages); code != 0 {
 				t.Fatalf("run: %d\n%s%s", code, out, errs)
@@ -114,4 +125,24 @@ func TestInitUsage(t *testing.T) {
 	if _, err := os.Stat(out); err == nil {
 		t.Error("a usage error wrote a file")
 	}
+}
+
+// rustTargetsInstalled reports whether cargo and every rust target are
+// installed (rustup lists the installed targets).
+func rustTargetsInstalled(t *testing.T, targets ...string) bool {
+	t.Helper()
+	if _, err := exec.LookPath("cargo"); err != nil {
+		return false
+	}
+	out, err := exec.Command("rustup", "target", "list", "--installed").Output()
+	if err != nil {
+		return false
+	}
+	installed := strings.Fields(string(out))
+	for _, target := range targets {
+		if !slices.Contains(installed, target) {
+			return false
+		}
+	}
+	return true
 }

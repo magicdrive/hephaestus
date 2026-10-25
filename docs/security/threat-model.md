@@ -290,12 +290,10 @@ mode writes to the branch immediately.
   others) and be unique case-insensitively; the manifest forbids two
   artifacts of one kind with the same name.
 - A same-named asset with different content is an error unless
-  `replace_existing_assets: true`; identical assets are left alone; an
-  incomplete upload is deleted and retried. Unexpected assets on a draft are
-  an error.
-
-**Residual:** with `replace_existing_assets: true` on a published mutable
-release, the asset is briefly missing between delete and upload.
+  `replace_existing_assets: true` and the release is a draft; a published
+  release's assets are never replaced or deleted. Identical assets are left
+  alone; an incomplete upload on a draft older than the grace period is
+  deleted and retried. Unexpected assets on a draft are an error.
 
 ### Concurrent publication
 
@@ -304,7 +302,12 @@ responses.
 
 - POST requests are never retried blindly; a lost create, upload, ref or pull
   request is followed by a lookup (`internal/release`, `internal/tap`).
-- Concurrent draft creation converges on one draft (the lowest id).
+- A run whose new draft loses to another release for the tag (a published
+  one, or a lower-id draft) stops with a conflict; no release is ever
+  deleted, so another run's draft cannot be destroyed.
+- The draft is re-read right before publishing: a release published
+  meanwhile is not edited, and a draft whose assets changed is not
+  published.
 - Pull requests for the same head are reused; a ref created concurrently is
   accepted.
 - Recommended: `concurrency: release-${{ github.ref }}` with

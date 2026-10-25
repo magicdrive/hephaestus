@@ -18,6 +18,25 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   verification of a correct release (seen on v1.0.0-rc.1, verified with
   `make publish-watch`).
 
+### Changed (release safety)
+
+- Hephaestus never deletes a release. A run whose new draft loses a race
+  for the tag (another run's lower-id draft, or a published release) now
+  stops with a conflict and leaves its empty draft for the owner, instead
+  of deleting it: once listed, another run could already be using it.
+- The draft is re-read right before it is published: a release published
+  meanwhile is not edited, and a draft whose assets changed (added,
+  removed, incomplete or different) or that lost to another release is not
+  published. A draft is also re-read before one of its assets is deleted
+  and before `draft: true` updates its title or notes; after publishing,
+  each asset's digest is checked before its URL is recorded.
+- A published release's assets are never replaced or deleted, on mutable
+  releases too: `replace_existing_assets` now applies to drafts only, and
+  an incomplete asset on a published release is reported, not removed.
+- An incomplete asset seen right after a failed upload is deleted only when
+  it is older than the 10-minute grace period: a recent one cannot be told
+  apart from another run's upload in progress.
+
 ## v1.0.0-rc.1
 
 First release candidate of 1.0; full notes in

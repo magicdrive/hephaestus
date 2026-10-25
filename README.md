@@ -272,8 +272,9 @@ conditions and modes. Output is byte-for-byte reproducible. Reference:
   published — compatible with immutable releases.
 - Re-running is safe: an identical asset is left alone, an incomplete one is
   uploaded again, a different one is an error unless
-  `replace_existing_assets: true`. A lost response is followed by a lookup,
-  never by a duplicate create.
+  `replace_existing_assets: true` on a draft. A lost response is followed by
+  a lookup, never by a duplicate create. A published release's assets are
+  never replaced or deleted, and no release is ever deleted.
 - A published release is never edited: its title, notes and prerelease flag
   are set while it is a draft and published with it; a re-run that would
   change them only reports the difference.

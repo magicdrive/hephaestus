@@ -12,34 +12,40 @@
 //     by a blind second POST, so no duplicate release is created.
 //     Right after a create, the release list is read again: when a
 //     concurrent run created a draft for the same tag first (lower id), or
-//     published one, the draft this run just created is deleted and the
-//     other one is used, so concurrent runs converge on one release. Only
-//     the draft created by this very call is ever deleted.
+//     published one, this run stops with a conflict. Nothing is deleted:
+//     the empty draft this run created is left in place and reported, and
+//     a re-run continues with the release that won. Hephaestus never
+//     deletes a release, so it cannot destroy another run's draft.
 //  3. An existing draft that is about to be published must not hold assets
 //     that are not in the manifest (left over from an older naming scheme,
 //     or placed by someone else): that is an error, and they are never
 //     deleted automatically. On a published release they are only reported.
 //  4. Assets are processed one by one. An identical asset is left alone; an
-//     incomplete one ("starter") is deleted and uploaded again; a different
-//     one is an error unless replace_existing_assets is set. Every upload is
-//     verified against the size and digest GitHub reports.
+//     incomplete one ("starter") on a draft is deleted and uploaded again; a
+//     different one is an error unless replace_existing_assets is set and
+//     the release is a draft. Every upload is verified against the size and
+//     digest GitHub reports.
 //  5. Only when every asset is in place is the release published (unless
-//     draft: true). A failure leaves the release a draft and returns an
-//     error; the next run resumes where this one stopped.
+//     draft: true). Right before publishing, the release and its assets are
+//     read again: when it was published meanwhile (by a concurrent run) it
+//     is not edited; when another release for the tag appeared, or its
+//     assets changed, it is not published. A failure leaves the release a
+//     draft and returns an error; the next run resumes where this one
+//     stopped.
 //
 // A published release's title, notes and prerelease flag are never edited:
 // they are set while the release is a draft and published with it. A
 // re-run that would change them only reports the difference.
 //
-// Replacing an asset of a published, mutable release
-// (replace_existing_assets) uploads the new content under a temporary name
-// (<name>.hephaestus-tmp) and verifies it, then deletes the old asset and
-// renames the new one. Known limitation: GitHub cannot swap two assets
-// atomically, so the asset is missing between the delete and the rename
-// (one API call). If the rename fails, the verified content stays on the
-// release under the temporary name and the error says so; re-running
-// uploads the asset again under its real name. On a draft the old asset is
-// simply deleted and the new one uploaded, since nobody downloads it yet.
+// The assets of a published release (mutable or immutable) are never
+// replaced or deleted, and the release itself is never deleted: a
+// published asset that differs is an error even with
+// replace_existing_assets (which applies to drafts only), and an incomplete
+// asset left on a published release is reported, not removed. Missing
+// assets may still be uploaded to a published mutable release
+// ("published-incomplete"). The one deletion that can touch a published
+// release is of an asset this run has just uploaded and whose verification
+// failed (its id comes from this run's own upload response).
 //
 // Tag handling: the tag must match the release's tag_name exactly. When the
 // git tag does not exist yet, GitHub creates it when the release is
@@ -58,9 +64,10 @@
 // "starter") whose created_at/updated_at is within the last
 // starterGracePeriod may be a concurrent run's upload in progress; it is
 // not deleted and the asset fails with an error asking to re-run later.
-// Older ones are leftovers of failed uploads and are deleted. A starter
-// left by this run's own failed upload attempt (seen while retrying) is
-// deleted regardless of its age.
+// Older ones are leftovers of failed uploads and are deleted. This also
+// applies to a starter seen while retrying a failed upload: it may be this
+// run's own failed attempt or a concurrent upload, which cannot be told
+// apart, so a recent one is left in place and the asset fails.
 package release
 
 import (
@@ -96,9 +103,6 @@ const (
 	MaxBodyLength = 125000
 
 	maxNotesFile = 1 << 20
-	// tmpSuffix names the temporary asset used while replacing an asset of
-	// a published release.
-	tmpSuffix = ".hephaestus-tmp"
 	// starterGracePeriod is how recent an incomplete asset must be to be
 	// treated as an upload in progress rather than a leftover.
 	starterGracePeriod = 10 * time.Minute
@@ -581,12 +585,13 @@ func (r *runner) run(ctx context.Context) (*Result, error) {
 		return r.res, fmt.Errorf("release %s: %d of %d assets failed; %s: %w", r.tag, len(failed), len(r.assets), what, errors.Join(failed...))
 	}
 
+	wasDraft := rel.Draft
 	if rel, err = r.finalize(ctx, rel); err != nil {
 		return r.res, err
 	}
 	r.res.ReleaseURL = rel.HTMLURL
 	r.res.Published = !rel.Draft
-	if err := r.recordURLs(ctx, rel, remote); err != nil {
+	if err := r.recordURLs(ctx, rel, remote, wasDraft); err != nil {
 		return r.res, err
 	}
 	if r.in.DryRun {
@@ -669,7 +674,7 @@ func (r *runner) createDraft(ctx context.Context) (*github.Release, error) {
 		rel, err := r.c.CreateRelease(ctx, r.owner, r.repo, req)
 		if err == nil {
 			r.logf("created draft release %d", rel.ID)
-			return r.settleConcurrent(ctx, rel), nil
+			return r.settleConcurrent(ctx, rel)
 		}
 		lastErr = err
 		if github.IsAlreadyExists(err) {
@@ -713,6 +718,8 @@ func (r *runner) processAsset(ctx context.Context, rel *github.Release, byName m
 			switch {
 			case immutable:
 				return fail(fmt.Errorf("the immutable release already has a different %s (%s; local sha256:%s, %d bytes); a published immutable release cannot be changed, release a new version", l.name, desc, l.sha256, l.size))
+			case !rel.Draft:
+				return fail(fmt.Errorf("the published release already has a different %s (%s; local sha256:%s, %d bytes); a published release's assets are never replaced (replace_existing_assets applies to drafts only), release a new version", l.name, desc, l.sha256, l.size))
 			case !r.cfg.ReplaceExistingAssets:
 				return fail(fmt.Errorf("the release already has a different %s (%s; local sha256:%s, %d bytes); set release.github.replace_existing_assets: true to replace it", l.name, desc, l.sha256, l.size))
 			}
@@ -722,18 +729,13 @@ func (r *runner) processAsset(ctx context.Context, rel *github.Release, byName m
 				ar.Status = StatusPlanned
 				return ar
 			}
-			if !rel.Draft {
-				a, err := r.replacePublished(ctx, rel, byName, e, l, desc)
-				if err != nil {
-					return fail(err)
-				}
-				ar.Status, ar.URL = StatusReplaced, a.BrowserDownloadURL
-				return ar
-			}
 			r.action("delete %s (%s) to replace it", l.name, desc)
 		} else {
 			if immutable {
 				return fail(fmt.Errorf("the immutable release has an incomplete asset (state %q) that cannot be removed", e.State))
+			}
+			if !rel.Draft {
+				return fail(fmt.Errorf("the published release has an incomplete %s (state %q); a published release's assets are never deleted: delete it on GitHub if it is a leftover, then re-run", l.name, e.State))
 			}
 			if age, recent := assetAge(e); recent {
 				return fail(fmt.Errorf("an incomplete %s (state %q) was updated %s ago: another upload may be in progress; re-run after %s if it is a leftover", l.name, e.State, age.Round(time.Second), starterGracePeriod))
@@ -744,6 +746,9 @@ func (r *runner) processAsset(ctx context.Context, rel *github.Release, byName m
 				return ar
 			}
 			r.action("delete incomplete %s (state %q)", l.name, e.State)
+		}
+		if err := r.stillDraft(ctx, rel.ID); err != nil {
+			return fail(err)
 		}
 		if err := r.deleteAsset(ctx, e.ID); err != nil {
 			return fail(fmt.Errorf("deleting the existing asset: %w", err))
@@ -756,7 +761,7 @@ func (r *runner) processAsset(ctx context.Context, rel *github.Release, byName m
 		ar.Status = StatusPlanned
 		return ar
 	}
-	a, err := r.upload(ctx, rel.ID, l)
+	a, err := r.upload(ctx, rel, l)
 	if err != nil {
 		return fail(err)
 	}
@@ -764,56 +769,33 @@ func (r *runner) processAsset(ctx context.Context, rel *github.Release, byName m
 	return ar
 }
 
-// replacePublished replaces asset e of a published, mutable release with l
-// while keeping the time without an asset of that name as short as GitHub
-// allows: the new content is uploaded and verified under a temporary name
-// first, then the old asset is deleted and the new one renamed (see the
-// package documentation for the remaining gap).
-func (r *runner) replacePublished(ctx context.Context, rel *github.Release, byName map[string]github.Asset, e github.Asset, l *local, desc string) (*github.Asset, error) {
-	tmp := *l
-	tmp.name = l.name + tmpSuffix
-	if old, ok := byName[tmp.name]; ok {
-		r.action("delete %s left by an earlier replacement", tmp.name)
-		if err := r.deleteAsset(ctx, old.ID); err != nil {
-			return nil, fmt.Errorf("deleting the leftover %s: %w", tmp.name, err)
-		}
-	}
-	a, err := r.upload(ctx, rel.ID, &tmp)
-	if err != nil {
-		return nil, fmt.Errorf("uploading the replacement as %s (the published %s is untouched): %w", tmp.name, l.name, err)
-	}
-	r.action("delete %s (%s) to replace it with %s", l.name, desc, tmp.name)
-	if err := r.deleteAsset(ctx, e.ID); err != nil {
-		return nil, fmt.Errorf("deleting the previous %s (the verified replacement is on the release as %s): %w", l.name, tmp.name, err)
-	}
-	r.action("rename %s to %s", tmp.name, l.name)
-	r.writes++
-	renamed, err := r.c.RenameReleaseAsset(ctx, r.owner, r.repo, a.ID, l.name)
-	if err != nil {
-		return nil, fmt.Errorf("%s is missing from the published release: renaming the verified replacement %s failed (re-run, or rename it on GitHub): %w", l.name, tmp.name, err)
-	}
-	if renamed.Name != l.name {
-		return nil, fmt.Errorf("renaming %s: GitHub stored the asset as %q", tmp.name, renamed.Name)
-	}
-	return renamed, nil
-}
-
 // settleConcurrent is called right after this run created draft mine. When
 // another run created a draft for the same tag concurrently (GitHub accepts
 // several drafts with one tag_name), the one with the lowest id wins, and a
-// published release for the tag wins over any draft. A losing mine, which
-// this call has just created and which holds no assets, is deleted; nothing
-// else is ever deleted. Errors only produce warnings: mine stays usable.
-func (r *runner) settleConcurrent(ctx context.Context, mine *github.Release) *github.Release {
+// published release for the tag wins over any draft. A losing mine is not
+// deleted (a release is never deleted: once it is listed, another run may
+// already be using it): this run stops with a conflict and leaves mine, an
+// empty draft, for the owner to delete. A failed re-read only warns; the
+// check before publishing (checkBeforePublish) repeats it.
+func (r *runner) settleConcurrent(ctx context.Context, mine *github.Release) (*github.Release, error) {
 	all, err := r.c.ListReleases(ctx, r.owner, r.repo)
 	if err != nil {
 		r.logf("warning: could not re-read the releases to check for a concurrent run: %v", err)
-		return mine
+		return mine, nil
 	}
+	if keep := winner(all, r.tag, mine.ID); keep != nil {
+		return nil, r.conflict(keep, mine.ID)
+	}
+	return mine, nil
+}
+
+// winner returns the release for tag that takes precedence over release id
+// (a published one, or a draft with a lower id), or nil when id wins.
+func winner(all []github.Release, tag string, id int64) *github.Release {
 	var keep *github.Release
 	for i := range all {
 		x := &all[i]
-		if x.TagName != r.tag || x.ID == mine.ID {
+		if x.TagName != tag || x.ID == id {
 			continue
 		}
 		switch {
@@ -821,27 +803,22 @@ func (r *runner) settleConcurrent(ctx context.Context, mine *github.Release) *gi
 			if keep == nil || keep.Draft {
 				keep = x
 			}
-		case x.ID < mine.ID && (keep == nil || (keep.Draft && x.ID < keep.ID)):
+		case x.ID < id && (keep == nil || (keep.Draft && x.ID < keep.ID)):
 			keep = x
 		}
 	}
-	if keep == nil || !mine.Draft {
-		return mine
-	}
-	r.action("delete draft release %d just created: release %d for %s was created concurrently", mine.ID, keep.ID, r.tag)
-	r.writes++
-	if err := r.c.DeleteRelease(ctx, r.owner, r.repo, mine.ID); err != nil && !errors.Is(err, github.ErrNotFound) {
-		r.logf("warning: deleting the duplicate draft release %d failed (delete it manually): %v", mine.ID, err)
-	}
-	r.res.Created = false
-	if !r.bodySet && r.cfg.GenerateNotes && mine.Body != "" {
-		// The other draft's body was not written by this configuration
-		// (another run's generation, or someone else's text): publish the
-		// notes GitHub generated for this run's draft instead.
-		r.body, r.bodySet = mine.Body, true
-	}
-	r.logf("using release %d created by a concurrent run", keep.ID)
 	return keep
+}
+
+// conflict reports that release other for the tag takes precedence over
+// release id, which this run therefore leaves alone.
+func (r *runner) conflict(other *github.Release, id int64) error {
+	state := "draft"
+	if !other.Draft {
+		state = "published release"
+	}
+	r.logf("conflict: %s %d for %s exists alongside release %d; nothing was deleted or published", state, other.ID, r.tag, id)
+	return fmt.Errorf("release: conflict: another run is releasing %s (%s %d); release %d was left as it is (an unpublished draft) and nothing was deleted: wait for the other run, delete draft %d on GitHub if it is not needed, and re-run", r.tag, state, other.ID, id, id)
 }
 
 // checkUnexpectedAssets refuses to publish a draft that holds assets which
@@ -932,6 +909,20 @@ func assetAge(e github.Asset) (time.Duration, bool) {
 	return age, age < starterGracePeriod
 }
 
+// stillDraft re-reads release id right before an existing asset of it is
+// deleted: the release may have been published by a concurrent run since
+// it was read, and a published release's assets are never deleted.
+func (r *runner) stillDraft(ctx context.Context, id int64) error {
+	cur, err := r.c.GetRelease(ctx, r.owner, r.repo, id)
+	if err != nil {
+		return fmt.Errorf("re-reading release %d before deleting an asset (nothing was deleted): %w", id, err)
+	}
+	if !cur.Draft {
+		return fmt.Errorf("release %d was published meanwhile (by a concurrent run); a published release's assets are never deleted, so nothing was deleted", id)
+	}
+	return nil
+}
+
 func (r *runner) deleteAsset(ctx context.Context, id int64) error {
 	r.writes++
 	err := r.c.DeleteReleaseAsset(ctx, r.owner, r.repo, id)
@@ -966,7 +957,7 @@ func (r *runner) compare(ctx context.Context, e github.Asset, l *local) (bool, s
 // upload uploads l, retrying a limited number of times. Before each retry
 // the asset list is re-read: a lost success is accepted after verification
 // and an incomplete leftover is deleted.
-func (r *runner) upload(ctx context.Context, releaseID int64, l *local) (*github.Asset, error) {
+func (r *runner) upload(ctx context.Context, rel *github.Release, l *local) (*github.Asset, error) {
 	var lastErr error
 	for attempt := 0; attempt < uploadAttempts; attempt++ {
 		if attempt > 0 {
@@ -974,7 +965,7 @@ func (r *runner) upload(ctx context.Context, releaseID int64, l *local) (*github
 			if err := r.c.Wait(ctx, wait); err != nil {
 				return nil, err
 			}
-			a, err := r.recover(ctx, releaseID, l)
+			a, err := r.recover(ctx, rel, l)
 			if err != nil {
 				return nil, fmt.Errorf("%w (while recovering from: %v)", err, lastErr)
 			}
@@ -983,7 +974,7 @@ func (r *runner) upload(ctx context.Context, releaseID int64, l *local) (*github
 			}
 		}
 		r.action("upload %s (%d bytes)", l.name, l.size)
-		a, err := r.uploadOnce(ctx, releaseID, l)
+		a, err := r.uploadOnce(ctx, rel.ID, l)
 		if err == nil {
 			return a, nil
 		}
@@ -1002,9 +993,10 @@ func (r *runner) upload(ctx context.Context, releaseID int64, l *local) (*github
 
 // recover inspects the asset list after a failed upload. It returns the
 // asset when an earlier attempt completed with the right content, deletes
-// an incomplete leftover, and fails if a different asset appeared.
-func (r *runner) recover(ctx context.Context, releaseID int64, l *local) (*github.Asset, error) {
-	list, err := r.c.ListReleaseAssets(ctx, r.owner, r.repo, releaseID)
+// an old incomplete leftover from a draft, and fails if a different asset
+// appeared.
+func (r *runner) recover(ctx context.Context, rel *github.Release, l *local) (*github.Asset, error) {
+	list, err := r.c.ListReleaseAssets(ctx, r.owner, r.repo, rel.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1013,7 +1005,16 @@ func (r *runner) recover(ctx context.Context, releaseID int64, l *local) (*githu
 			continue
 		}
 		if e.State != github.AssetStateUploaded {
-			r.action("delete incomplete %s (state %q) left by the failed upload", l.name, e.State)
+			if !rel.Draft {
+				return nil, fmt.Errorf("an incomplete %s (state %q) is on the published release after the failed upload; a published release's assets are never deleted: delete it on GitHub, then re-run", l.name, e.State)
+			}
+			if age, recent := assetAge(e); recent {
+				return nil, fmt.Errorf("an incomplete %s (state %q, updated %s ago) is on the release after the failed upload; it may be another run's upload in progress, so it was left: re-run after %s", l.name, e.State, age.Round(time.Second), starterGracePeriod)
+			}
+			if err := r.stillDraft(ctx, rel.ID); err != nil {
+				return nil, err
+			}
+			r.action("delete incomplete %s (state %q) left by a failed upload", l.name, e.State)
 			if err := r.deleteAsset(ctx, e.ID); err != nil {
 				return nil, fmt.Errorf("deleting incomplete asset: %w", err)
 			}
@@ -1087,6 +1088,18 @@ func (r *runner) uploadOnce(ctx context.Context, releaseID int64, l *local) (*gi
 // release (mutable or immutable) is never edited: what differs from this
 // run's configuration is reported and left as it was published.
 func (r *runner) finalize(ctx context.Context, rel *github.Release) (*github.Release, error) {
+	if rel.Draft && !r.in.DryRun {
+		var err error
+		if r.cfg.Draft {
+			// Only the title, notes or prerelease flag may be updated; the
+			// release may have been published meanwhile.
+			if rel, err = r.c.GetRelease(ctx, r.owner, r.repo, rel.ID); err != nil {
+				return nil, fmt.Errorf("release: re-reading the draft release before updating it (it was not changed): %w", err)
+			}
+		} else if rel, err = r.checkBeforePublish(ctx, rel); err != nil {
+			return nil, err
+		}
+	}
 	if !rel.Draft {
 		var drift []string
 		if rel.Name != r.name {
@@ -1165,9 +1178,58 @@ func (r *runner) finalize(ctx context.Context, rel *github.Release) (*github.Rel
 	return updated, nil
 }
 
-// recordURLs stores each asset's download URL in the manifest. Drafts are
-// skipped: their URLs ("untagged-...") change when they are published.
-func (r *runner) recordURLs(ctx context.Context, rel *github.Release, remote []github.Asset) error {
+// checkBeforePublish re-reads draft rel right before it is published and
+// returns its current state. A release that was published meanwhile is
+// returned as it is (finalize then never edits it). It refuses to publish
+// when another release for the tag takes precedence, or when the draft's
+// assets are no longer exactly the verified ones (an asset is missing,
+// incomplete or different, or one was added).
+func (r *runner) checkBeforePublish(ctx context.Context, rel *github.Release) (*github.Release, error) {
+	cur, err := r.c.GetRelease(ctx, r.owner, r.repo, rel.ID)
+	if err != nil {
+		return nil, fmt.Errorf("release: re-reading release %d before publishing it (it was not published): %w", rel.ID, err)
+	}
+	if cur.TagName != r.tag {
+		return nil, fmt.Errorf("release: release %d now has tag %q, expected %q; it was not published", cur.ID, cur.TagName, r.tag)
+	}
+	if !cur.Draft {
+		r.logf("release %d for %s was published meanwhile (by a concurrent run); it is not edited", cur.ID, r.tag)
+		return cur, nil
+	}
+	all, err := r.c.ListReleases(ctx, r.owner, r.repo)
+	if err != nil {
+		return nil, fmt.Errorf("release: re-reading the releases before publishing %d (it was not published): %w", cur.ID, err)
+	}
+	if keep := winner(all, r.tag, cur.ID); keep != nil {
+		return nil, r.conflict(keep, cur.ID)
+	}
+	remote, err := r.c.ListReleaseAssets(ctx, r.owner, r.repo, cur.ID)
+	if err != nil {
+		return nil, fmt.Errorf("release: re-reading the assets of release %d before publishing it (it was not published): %w", cur.ID, err)
+	}
+	if err := r.checkUnexpectedAssets(cur, remote); err != nil {
+		return nil, err
+	}
+	byName := map[string]github.Asset{}
+	for _, a := range remote {
+		byName[a.Name] = a
+	}
+	for _, l := range r.assets {
+		a, ok := byName[l.name]
+		if !ok || a.State != github.AssetStateUploaded || a.Size != l.size ||
+			(a.Digest != nil && *a.Digest != "" && !strings.EqualFold(*a.Digest, "sha256:"+l.sha256)) {
+			return nil, fmt.Errorf("release: %s on draft release %d is missing or changed since it was verified; the release was not published (re-run)", l.name, cur.ID)
+		}
+	}
+	return cur, nil
+}
+
+// recordURLs stores each asset's download URL in the manifest, after
+// checking each asset against this build's size and digest (the list is
+// re-read when this run wrote, or when the release was a draft: a
+// concurrent run may have published other content). Drafts are skipped:
+// their URLs ("untagged-...") change when they are published.
+func (r *runner) recordURLs(ctx context.Context, rel *github.Release, remote []github.Asset, wasDraft bool) error {
 	if r.in.DryRun {
 		return nil
 	}
@@ -1175,7 +1237,7 @@ func (r *runner) recordURLs(ctx context.Context, rel *github.Release, remote []g
 		r.logf("release %s is a draft; download URLs are recorded once it is published", r.tag)
 		return nil
 	}
-	if r.writes > 0 || r.res.Created {
+	if r.writes > 0 || r.res.Created || wasDraft {
 		var err error
 		if remote, err = r.c.ListReleaseAssets(ctx, r.owner, r.repo, rel.ID); err != nil {
 			return fmt.Errorf("release: listing assets after publishing: %w", err)
@@ -1189,6 +1251,9 @@ func (r *runner) recordURLs(ctx context.Context, rel *github.Release, remote []g
 		a, ok := byName[l.name]
 		if !ok || a.State != github.AssetStateUploaded || a.BrowserDownloadURL == "" || a.Size != l.size {
 			return fmt.Errorf("release: asset %s is missing or incomplete on release %d after publishing", l.name, rel.ID)
+		}
+		if a.Digest != nil && *a.Digest != "" && !strings.EqualFold(*a.Digest, "sha256:"+l.sha256) {
+			return fmt.Errorf("release: asset %s on release %d is %s, not this build's sha256:%s (published by a concurrent run?); its URL was not recorded", l.name, rel.ID, *a.Digest, l.sha256)
 		}
 		r.res.Assets[i].URL = a.BrowserDownloadURL
 		r.in.Manifest.Artifacts[l.idx].DownloadURL = a.BrowserDownloadURL
