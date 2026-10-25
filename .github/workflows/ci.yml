@@ -40,7 +40,7 @@ jobs:
       - name: govulncheck
         run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
       - name: shellcheck
-        run: shellcheck scripts/*.sh testdata/e2e/boundary/probe.sh testdata/e2e/completions/heph-comp cmd/hephaestus/completions/hephaestus.bash cmd/hephaestus/testdata/completion/complete.bash
+        run: shellcheck scripts/*.sh action/*.sh testdata/e2e/boundary/probe.sh testdata/e2e/completions/heph-comp cmd/hephaestus/completions/hephaestus.bash cmd/hephaestus/testdata/completion/complete.bash
 
   test:
     # Linux amd64 and arm64, macOS arm64, Windows amd64. macOS Intel runs
@@ -197,6 +197,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The fixture is a Go program: like any caller, set up the Go that
+      # builds it (the action does not provide one).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: testdata/e2e/fixture/go.mod
+          cache: false
       - name: Run the action (snapshot build, archive, checksum)
         id: heph
         uses: ./
@@ -303,10 +309,104 @@ jobs:
           echo "status=$STATUS"
           [[ "$STATUS" == "no-op" ]]
 
+  action-isolation:
+    # The action must leave the caller's Go toolchain as it found it: PATH,
+    # which go, go version, GOTOOLCHAIN and every GO*/CGO_* variable are the
+    # same before and after it runs (scripts/go-env-snapshot.sh), on every
+    # GitHub-hosted platform, with Go 1.26 or 1.27 set up by the caller,
+    # without setup-go, and for a project that is not Go. The fixture's
+    # binary must be built by the caller's Go, not by the Go that built
+    # Hephaestus. The action runs twice per job (the second run reuses the
+    # downloaded toolchain archive after checking it again).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, go: "1.26", fixture: fixture}
+          - {os: ubuntu-latest, go: "1.27", fixture: fixture}
+          - {os: ubuntu-latest, go: "", fixture: noarch}
+          - {os: ubuntu-24.04-arm, go: "1.27", fixture: fixture}
+          - {os: macos-latest, go: "1.26", fixture: fixture}
+          - {os: macos-latest, go: "", fixture: noarch}
+          - {os: macos-15-intel, go: "1.27", fixture: fixture}
+          - {os: windows-latest, go: "1.27", fixture: fixture}
+          - {os: windows-latest, go: "", fixture: noarch}
+          - {os: windows-11-arm, go: "1.26", fixture: fixture}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.go != ''
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - name: Record the Go environment before the action
+        run: scripts/go-env-snapshot.sh | tee "$RUNNER_TEMP/go-env-before"
+      - name: Run the action (snapshot)
+        uses: ./
+        with:
+          working-directory: testdata/e2e/${{ matrix.fixture }}
+          stages: ${{ matrix.fixture == 'noarch' && 'archive,checksum' || 'build,archive,checksum' }}
+          snapshot: "true"
+          github-token: ""
+      - name: Run the action again (check)
+        uses: ./
+        with:
+          command: check
+          working-directory: testdata/e2e/${{ matrix.fixture }}
+          github-token: ""
+      - name: Compare the Go environment after the action
+        run: |
+          scripts/go-env-snapshot.sh > "$RUNNER_TEMP/go-env-after"
+          diff -u "$RUNNER_TEMP/go-env-before" "$RUNNER_TEMP/go-env-after"
+      - name: The fixture was built by the caller's Go
+        if: matrix.fixture == 'fixture'
+        run: |
+          want="$(cd / && go env GOVERSION | tr -d '\r')"
+          got="$(go version testdata/e2e/fixture/dist/bin/linux_amd64/heph-fixture | tr -d '\r')"
+          echo "caller: $want; fixture binary: $got"
+          [[ "$got" == *": $want" ]]
+
+  action-isolation-detects-v1-1-0:
+    # The comparison above must be able to fail: v1.1.0 of the action
+    # (actions/setup-go inside) changes the caller's Go environment.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+          cache: false
+      - run: scripts/go-env-snapshot.sh | tee "$RUNNER_TEMP/go-env-before"
+      - uses: magicdrive/hephaestus@550d48f64917749742574b5c2ff1b292940ff71a # v1.1.0
+        with:
+          command: check
+          working-directory: testdata/e2e/fixture
+          github-token: ""
+      - name: The comparison reports the change
+        run: |
+          scripts/go-env-snapshot.sh > "$RUNNER_TEMP/go-env-after"
+          if diff -u "$RUNNER_TEMP/go-env-before" "$RUNNER_TEMP/go-env-after"; then
+            echo "::error::v1.1.0 changed nothing that go-env-snapshot.sh sees; the isolation check cannot fail"
+            exit 1
+          fi
+
   ci-gate:
     # The single required check, and what the release workflow waits for.
     if: always()
-    needs: [lint, test, completion, race, fuzz-smoke, snapshot, homebrew-e2e, action-smoke, action-boundary]
+    needs: [lint, test, completion, race, fuzz-smoke, snapshot, homebrew-e2e, action-smoke, action-boundary, action-isolation, action-isolation-detects-v1-1-0]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

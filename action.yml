@@ -88,51 +88,20 @@ runs:
   using: composite
   steps:
     # Hephaestus is built from this action's own pinned source, so the code
-    # that runs is exactly the code at the ref you reference (pin a SHA).
-    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-      with:
-        go-version-file: ${{ github.action_path }}/go.mod
-        cache: false
+    # that runs is exactly the code at the ref you reference (pin a SHA). The
+    # Go toolchain that builds it is private to this step
+    # (action/build-hephaestus.sh): the job's PATH, GOTOOLCHAIN and other Go
+    # settings are left as the caller set them, so the project's own build
+    # commands use the caller's toolchain.
     - name: Build hephaestus
       id: build
       shell: bash
-      # The caller's Go settings (earlier steps, workflow env, $GITHUB_ENV)
-      # must not change how the action itself is built: pin the module
-      # proxy and checksum database, disable go.work, the go env file and
-      # private/insecure module patterns, and drop GOFLAGS such as
-      # -toolexec or -mod=mod. GOCACHE and GOMODCACHE are set in the script
-      # to a new directory, so a build or module cache restored by an
-      # earlier step (setup-go with cache: true, actions/cache) is not used.
       env:
         ACTION_PATH: ${{ github.action_path }}
-        GOFLAGS: -mod=readonly
-        GOPROXY: https://proxy.golang.org,direct
-        GOSUMDB: sum.golang.org
-        GONOSUMDB: ""
-        GONOSUMCHECK: ""
-        GONOPROXY: ""
-        GOPRIVATE: ""
-        GOINSECURE: ""
-        GOWORK: "off"
-        GOENV: "off"
-        GOTOOLCHAIN: auto
-        GOEXPERIMENT: ""
-        CGO_ENABLED: "0"
       run: |
-        set -euo pipefail
-        tmp="$RUNNER_TEMP" src="$ACTION_PATH" bin_ext=""
-        if [[ "$RUNNER_OS" == "Windows" ]]; then
-          # Git Bash tools and the native go.exe both accept D:/a/_temp;
-          # RUNNER_TEMP arrives as D:\a\_temp.
-          tmp="$(cygpath -m "$RUNNER_TEMP")" src="$(cygpath -m "$ACTION_PATH")" bin_ext=".exe"
-        fi
-        gotmp="$(mktemp -d "$tmp/hephaestus-go.XXXXXXXX")"
-        export GOCACHE="$gotmp/cache" GOMODCACHE="$gotmp/mod"
-        cd "$src"
-        bin="$tmp/hephaestus-bin/hephaestus$bin_ext"
-        go build -trimpath -mod=readonly -o "$bin" .
-        chmod -R u+w "$gotmp" && rm -rf "$gotmp"
-        echo "bin=$bin" >> "$GITHUB_OUTPUT"
+        script="$ACTION_PATH/action/build-hephaestus.sh"
+        if [[ "$RUNNER_OS" == Windows ]]; then script="$(cygpath -u "$script")"; fi
+        bash "$script"
     # Local stages (build, archive, checksum) run in a step whose environment
     # holds no token at all: build commands run third-party code, which could
     # otherwise read the tokens from this step's processes. With command

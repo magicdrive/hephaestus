@@ -1,110 +1,106 @@
-# Hephaestus v1.1.0
+# Hephaestus v1.1.1
 
-Shell completion, for Hephaestus itself and for the formulae it generates.
-A minor release: it adds a command and a configuration key, as the
-[compatibility policy](https://github.com/magicdrive/hephaestus/blob/v1.1.0/docs/compatibility/policy.md)
-allows in 1.x.0.
+A patch release that fixes problems found while migrating five projects to
+v1.1.0. Two of them matter most: the GitHub Action changed the Go toolchain
+that your project is built with, and redaction hid paths under the current
+directory.
 
-## Hephaestus completes itself
+## The Action no longer changes your Go toolchain
 
-`hephaestus completion bash|zsh|fish` prints a completion script for bash
-(3.2 or later), zsh and fish. It completes:
+The v1.1.0 Action set up the Go that builds Hephaestus with
+`actions/setup-go`. That step put Go 1.26.0 first on the job's `PATH` and
+exported `GOTOOLCHAIN=local` for the rest of the job. Build commands that
+ran after it, including your own `go build` inside the Action, used that Go
+instead of the one your workflow set up:
 
-- commands;
-- each command's flags, in `--flag` or `-flag` form. A flag already given
-  is not offered again, unless it can be repeated.
-- the fixed values of `--format`, `--template`, `--phase`, `--stages` and
-  `--skip`, as `--flag value` or `--flag=value`. Comma-separated lists
-  continue after a comma.
-- file names for `--config`, `--report` and `--output`.
+- a module that requires a newer Go failed to build (`go.mod requires
+  go >= 1.27.0 (running go 1.26.0; GOTOOLCHAIN=local)`);
+- other modules were silently built with Go 1.26.0. This could mean an older
+  toolchain than your previous release, or a standard-library vulnerability
+  your `govulncheck` reported as fixed.
 
-Candidates come from the same flag definitions the commands parse, so
-completion offers only what Hephaestus accepts. Generating them reads no
-configuration, token or repository and uses no network.
+From v1.1.1, the Go that builds Hephaestus is private to the Action's build
+step. It is the version in the `toolchain` line of the Action's `go.mod`
+(go1.27.3), and it is obtained in one of two ways:
 
-**Homebrew users get the completions with this release.** The formula
-installs the three scripts into Homebrew's completion directories, on a new
-install and on `brew upgrade` from 1.0.0:
+- **On GitHub-hosted runners** (Linux, macOS and Windows, x64 and ARM64),
+  the Action downloads the official archive from `dl.google.com` and checks
+  it against a SHA-256 pinned in the Action's source
+  (`action/go-toolchain.sha256`). Pinning the Action's commit therefore also
+  pins the exact Go that builds Hephaestus. The archive is unpacked under
+  `$RUNNER_TEMP` and called by absolute path.
+- **Elsewhere**, a `go` (1.21 or later) on `PATH` downloads the same version
+  through the module proxy, and the checksum database verifies it.
 
-- `etc/bash_completion.d/hephaestus`
-- `share/zsh/site-functions/_hephaestus`
-- `share/fish/vendor_completions.d/hephaestus.fish`
+Nothing is written to `$GITHUB_PATH` or `$GITHUB_ENV`. Before and after the
+Action, your steps see the same `PATH`, `go`, `go version`, `GOTOOLCHAIN`
+and `GO*` variables. CI checks this on Linux, macOS and Windows, x64 and
+ARM64: with Go 1.26 or 1.27 set up by the caller, without `setup-go`, and
+for a project that is not written in Go. A control job checks that the same
+comparison detects the change v1.1.0 made.
 
-Homebrew installs the files, but each shell must also be set up to load
-them. A fish installed by Homebrew needs nothing more. bash needs
-`bash-completion@2`, and zsh needs Homebrew's `site-functions` on `FPATH`
-before `compinit`. The
-[README](https://github.com/magicdrive/hephaestus/blob/v1.1.0/README.md#shell-completion)
-has the lines to add, and the commands for installing without Homebrew.
+**If your workflow relied on the Action's Go** (a Go build without your own
+`actions/setup-go`), add `actions/setup-go` before the Action, as the
+[documentation](https://github.com/magicdrive/hephaestus/blob/v1.1.1/docs/github-action.md)
+and examples always did. All inputs and outputs are unchanged.
 
-## Completions in the formulae Hephaestus generates
+## Redaction no longer hides paths under the current directory
 
-`brews[].completions` installs bash, zsh and fish completions with a
-formula, whatever language the CLI is written in. There are two ways to
-provide them, and they can be combined for different shells:
+Names containing a `PWD` segment were treated as credentials (as in
+`DB_PWD`). This matched the shell's `PWD`, whose value is the current
+directory, so every path below it was printed as `***`, for example
+`configuration OK: project goreg, root ***`. The same rule also removed
+`PWD` from build commands' environment and hid it from `{{ .Env.PWD }}`.
 
-- **Generated**: the installed executable prints each script at install
-  time, through Homebrew's `generate_completions_from_executable`. You set
-  the arguments (`args`, e.g. `[completion]`), how the shell is passed
-  (`shell_parameter_format`: `arg`, `flag`, `none`, `cobra`, `clap`,
-  `click` or `typer`) and the shells.
-- **Shipped**: the scripts are included in the archive (`files`) and
-  installed with `bash_completion.install`, `zsh_completion.install` and
-  `fish_completion.install` under the names Homebrew expects.
+- `PWD` and `OLDPWD` are no longer treated as credentials.
+- A variable that looks like a credential only because of its name is no
+  longer redacted when its value is the absolute path of an existing file or
+  directory (`SSH_AUTH_SOCK`, `GOOGLE_APPLICATION_CREDENTIALS`): it says
+  where a credential is, not what it is.
+- The tokens Hephaestus knows (`GITHUB_TOKEN`, `HOMEBREW_TAP_GITHUB_TOKEN`,
+  `GH_TOKEN`, ...) are redacted whatever their value, as before. Other
+  credential-like values are redacted from 8 characters, as before.
 
-```yaml
-brews:
-  - name: mycli
-    completions:
-      generate:
-        args: [completion]
-```
+## `--fresh` removes the previous run's outputs
 
-The configuration is checked before anything is published:
+`--fresh` (and the Action's `fresh` input) ignored the old manifest but left
+its files in `dist/`. A script that packs or uploads `dist/*.tar.gz` could
+then pick up an archive of an earlier version.
 
-- the shell names and the format are valid;
-- the executable is installed into `bin` for every archive;
-- no shell's completion is installed twice;
-- every shipped file exists in each archive.
+Before starting, `--fresh` now deletes the archives, checksum files and
+formulae that the old manifest records, when this run writes them again. A
+file is deleted only if all of these hold:
 
-Every value is written as a Ruby string literal. A formula without
-`completions` is generated exactly as before. Details are in the
-[configuration reference](https://github.com/magicdrive/hephaestus/blob/v1.1.0/docs/configuration.md#formula-completions).
+- it is inside `dist`;
+- Hephaestus wrote it;
+- its SHA-256 is unchanged since it was recorded.
 
-## Testing
-
-- **Real shells**: bash 5 and macOS's bash 3.2, zsh (through its completion
-  system, in a pseudo-terminal) and fish, on Linux and macOS in CI. The
-  cases cover commands, flags, values, `--flag=value`, comma lists, file
-  names, a quoted value with a space, an already given flag, `--` and an
-  invalid shell.
-- **Homebrew**, with a shell-script fixture whose bash and zsh completions
-  are generated and whose fish completion is shipped: `brew style`,
-  `brew audit --strict`, install, the three files in place, completion in
-  the three shells, `brew test`, uninstall.
-- **Homebrew, upgrading Hephaestus itself**: v1.0.0 is installed from the
-  production tap's formula, then upgraded with `brew upgrade` to a formula
-  generated from this release's `hephaestus.yaml`. The three completion
-  files appear and match `hephaestus completion`, completion works in the
-  three shells with the installed binary, and `brew test` and uninstall
-  pass.
+Imported archives, files outside `dist`, other files in `dist/`, and files
+changed since are left alone.
 
 ## Compatibility
 
-- Additions only: the `completion` command and the `brews[].completions`
-  key. No existing command, flag, configuration key, Action input or
-  output, JSON field or check ID changed. `hephaestus help` lists two more
-  commands (`completion`, `help`).
-- A configuration that uses `brews[].completions` is rejected by
-  Hephaestus 1.0.0 and older, because unknown keys are errors.
+- **Configuration, CLI and JSON:** no configuration key, command, flag,
+  Action input or output, JSON field or check ID changed.
+- **The Action's Go:** the Action no longer provides Go to your build
+  commands (see above).
+- **Template variables:** `{{ .Env.PWD }}` and `{{ .Env.OLDPWD }}` are now
+  visible to templates.
+- **Build environment:** build commands now receive `PWD` and `OLDPWD`.
 
-## Limitations
+## Known limitations
 
-- Tags, repositories and other free-form values are not completed.
-- PowerShell completion is not provided. `generate` installs only bash,
-  zsh and fish, including with `shell_parameter_format: cobra` or `typer`,
-  whose Homebrew default would add PowerShell.
-- A custom `shell_parameter_format` prefix string is not supported; use
-  `extra_install` for such a case.
+- **Homebrew 4.6 misreads the version.** It parses `64` as the version of
+  archive URLs such as `tool_1.2.3_darwin_arm64.tar.gz`. Homebrew 7.0 parses
+  `1.2.3`. Generated formulae still omit `version` when Homebrew can read it
+  from the URL, because `brew audit --strict` rejects a redundant `version`.
+  `brew update`, which delivers tap updates, also updates Homebrew itself.
+  An environment that pins an old Homebrew should upgrade it.
+- **`hephaestus check` shows the tap pull request branch as its template**
+  (`{{ .ProjectName }}-{{ .Version }}`), because `check` has no tag.
+  `hephaestus preflight --tag` shows the rendered branch.
+- **Testing a formula against local archives** (`file://` URLs) still needs
+  a configuration of its own for the test, with
+  `HEPHAESTUS_ALLOW_FILE_URLS=1`.
 
-**Full Changelog**: https://github.com/magicdrive/hephaestus/compare/v1.0.0...v1.1.0
+**Full Changelog**: https://github.com/magicdrive/hephaestus/compare/v1.1.0...v1.1.1

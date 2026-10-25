@@ -417,3 +417,66 @@ func TestDocs_ConfigurationExamplesAreValid(t *testing.T) {
 		t.Errorf("only %d configuration examples checked", checked)
 	}
 }
+
+// The action builds Hephaestus with the toolchain go.mod names, from an
+// official archive checked against action/go-toolchain.sha256: one pinned
+// SHA-256 for every GitHub-hosted platform, for that exact version.
+// scripts/update-action-go.sh rewrites the file when the toolchain changes.
+func TestAction_GoToolchainPins(t *testing.T) {
+	gomod, err := os.ReadFile("go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^toolchain (go[0-9.]+)\s*$`).FindStringSubmatch(string(gomod))
+	if m == nil {
+		t.Fatal("go.mod has no toolchain line")
+	}
+	version := m[1]
+	data, err := os.ReadFile("action/go-toolchain.sha256")
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := regexp.MustCompile(`^([0-9a-f]{64})  (go[0-9.]+)\.([a-z]+-[a-z0-9]+)\.(tar\.gz|zip)$`)
+	got := map[string]bool{}
+	for _, l := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		f := line.FindStringSubmatch(l)
+		if f == nil {
+			t.Errorf("malformed line %q", l)
+			continue
+		}
+		if f[2] != version {
+			t.Errorf("%q pins %s, go.mod's toolchain is %s: run scripts/update-action-go.sh", l, f[2], version)
+		}
+		wantExt := "tar.gz"
+		if strings.HasPrefix(f[3], "windows-") {
+			wantExt = "zip"
+		}
+		if f[4] != wantExt {
+			t.Errorf("%q: want a .%s archive", l, wantExt)
+		}
+		got[f[3]] = true
+	}
+	for _, p := range []string{"linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64", "windows-arm64"} {
+		if !got[p] {
+			t.Errorf("no SHA-256 pinned for %s", p)
+		}
+	}
+}
+
+// The action must not change the caller's Go environment (action-isolation
+// in ci.yml checks the behavior): no setup-go, and nothing written to
+// GITHUB_PATH or GITHUB_ENV.
+func TestAction_DoesNotChangeTheCallersEnvironment(t *testing.T) {
+	for _, f := range []string{"action.yml", "action/build-hephaestus.sh"} {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code := regexp.MustCompile(`(?m)^\s*#.*$`).ReplaceAllString(string(data), "")
+		for _, bad := range []string{"actions/setup-go", "GITHUB_PATH", "GITHUB_ENV"} {
+			if strings.Contains(code, bad) {
+				t.Errorf("%s uses %s", f, bad)
+			}
+		}
+	}
+}

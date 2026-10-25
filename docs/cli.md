@@ -44,7 +44,7 @@ Exit codes: `0` written, `1` the file exists or cannot be written, `2` usage.
 | `--snapshot` | off | build without a tag (`0.0.0-SNAPSHOT`); release, formula and tap stages (they need a tag) are skipped, and refused when named |
 | `--stages` (`run`) | every configured stage | comma-separated stages, or `all` |
 | `--phase` (`run`) | — | `local` (build, archive, checksum) or `publish` (release, formula, tap) |
-| `--fresh` | off | ignore an existing manifest instead of continuing from it |
+| `--fresh` | off | ignore an existing manifest instead of continuing from it; archives, checksum files and formulae that manifest records in `dist` are deleted first when this run writes them again (only files unchanged since, never imported ones) |
 | `--dry-run` | off | plan release and tap publication without writing to GitHub |
 | `--commit` | `$GITHUB_SHA` | commit SHA the release is made from |
 | `--repo` | config, then `$GITHUB_REPOSITORY` | release repository |

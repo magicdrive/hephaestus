@@ -18,11 +18,37 @@ your repository and does not install your build toolchain: add
 
 Pin the action to a full commit SHA. Because the action compiles Hephaestus
 from that commit, the code that runs is exactly the code you pinned; there is
-no downloaded binary to trust. The self-build runs with a fixed Go
-environment (`GOFLAGS`, `GOPROXY`, `GOSUMDB`, `GOPRIVATE`, `GONOSUMDB`,
-`GOINSECURE`, `GOWORK`, `GOENV` are reset) and a new, empty `GOCACHE` and
-`GOMODCACHE` under `$RUNNER_TEMP`, so variables set and caches restored by
-earlier steps cannot change how Hephaestus itself is built.
+no downloaded Hephaestus binary to trust. The self-build runs with a fixed Go
+environment (every `GO*` and `CGO_*` variable is cleared, then `GOFLAGS`,
+`GOPROXY`, `GOSUMDB`, `GOWORK` and `GOENV` are pinned) and a new, empty
+`GOCACHE` and `GOMODCACHE` under `$RUNNER_TEMP`, so variables set and caches
+restored by earlier steps cannot change how Hephaestus itself is built.
+
+### The action does not change your Go toolchain
+
+The Go that builds Hephaestus is private to the action's build step
+([action/build-hephaestus.sh](../action/build-hephaestus.sh)). It is the
+version in the `toolchain` line of the action's `go.mod`:
+
+- On GitHub-hosted runners (Linux, macOS and Windows, x64 and ARM64), the
+  action downloads the official archive from `dl.google.com`. It checks the
+  archive against the SHA-256 pinned in
+  [action/go-toolchain.sha256](../action/go-toolchain.sha256), which is part
+  of the commit you pinned. It then unpacks the archive under `$RUNNER_TEMP`
+  and calls it by absolute path.
+- On other platforms, a `go` (1.21 or later) on `PATH` downloads that
+  version through the module proxy, and the checksum database verifies it.
+
+Nothing is written to `$GITHUB_PATH` or `$GITHUB_ENV`. Your build commands
+therefore run with the `PATH`, `go` and `GOTOOLCHAIN` your own steps set up,
+before and after the action. CI checks this on six platforms
+(`action-isolation`).
+
+Up to v1.1.0, the action ran `actions/setup-go` itself. That step put the
+action's Go first on `PATH` and exported `GOTOOLCHAIN=local` for the rest of
+the job, so projects were built with the action's Go. A project that relied
+on this, without setting up its own Go, now needs `actions/setup-go` before
+the action, as the examples always had.
 
 The action runs on Linux, macOS and Windows runners (CI runs `action-smoke`
 and `action-boundary` on all three). Its steps use `bash`; on Windows that is
@@ -43,7 +69,7 @@ could shadow it.
 | `offline` | `"false"` | With `command: preflight`: `"true"` runs only the checks that need no network. |
 | `snapshot` | `"false"` | `"true"` builds without a tag (version `0.0.0-SNAPSHOT`). Configured release, formula and tap stages (they need a tag) are skipped; naming them in `stages` is an error. |
 | `dry-run` | `"false"` | `"true"` plans release and tap writes without performing them (reads still use the tokens when given). |
-| `fresh` | `"false"` | `"true"` ignores an existing manifest instead of continuing from it. |
+| `fresh` | `"false"` | `"true"` ignores an existing manifest instead of continuing from it, and deletes the outputs it records that this run writes again ([`--fresh`](cli.md)). |
 | `working-directory` | `.` | Directory to run in (the project root when the configuration is there). |
 | `github-token` | `${{ github.token }}` | Token for the release repository, exported as `GITHUB_TOKEN`. Needs `contents: write` to publish. Set only in the publishing step (`release`, `formula`, `tap`, and the publish phase of `run`). |
 | `tap-token` | `""` | Token for the Homebrew tap, exported as `HOMEBREW_TAP_GITHUB_TOKEN`. `contents: write` (and `pull-requests: write` for pull request mode) on the tap. `GITHUB_TOKEN` cannot write to another repository. Set only in the publishing step, like `github-token`. |
@@ -128,7 +154,8 @@ Declare `permissions: contents: read` at the top of the workflow and grant
   variables, the variables `repository.token` reads, and variables whose
   name contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`,
   `CREDENTIAL`, `PRIVATE_KEY`, `API_KEY`, `APIKEY` or `ACCESS_KEY`, or has a
-  `_`-separated segment `PAT`, `AUTH`, `KEY`, `PASS` or `PWD`, unless they
+  `_`-separated segment `PAT`, `AUTH`, `KEY`, `PASS` or `PWD` (except the
+  shell's `PWD` and `OLDPWD`), unless they
   are declared in the configuration's top-level `env`. A rendered value that
   contains a token is an error. Only `builds[].env` values and
   `brews[].repository.token` see the complete environment. Name detection
@@ -281,9 +308,12 @@ triggered only by tags.
 
 ## Behavior notes
 
-- The action runs `actions/setup-go` with the Go version from the action's
-  own `go.mod` and builds with `CGO_ENABLED=0 -trimpath -mod=readonly`. The
-  first step of a job takes the Go download and build time.
+- The action builds Hephaestus with the Go toolchain named in its own
+  `go.mod` (see [the action does not change your Go
+  toolchain](#the-action-does-not-change-your-go-toolchain)), using
+  `CGO_ENABLED=0 -trimpath -mod=readonly`. Every run of the action takes the
+  build time. The Go archive is downloaded once per job and checked again on
+  every later run.
 - `GITHUB_SHA` provides `.Commit`; `GITHUB_REPOSITORY` provides the release
   repository unless the configuration names one; `GITHUB_API_URL` provides
   the API URL on GitHub Enterprise Server.

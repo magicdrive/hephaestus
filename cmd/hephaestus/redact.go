@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -88,7 +90,8 @@ func variants(v string) []string {
 
 // addEnviron registers the credentials in environ: the variables named in
 // names and build.DefaultScrubEnv, and long values of variables whose name
-// looks like a credential.
+// looks like a credential, unless such a value is the path of an existing
+// file or directory (see locationValue).
 func (r *redactor) addEnviron(environ []string, names ...string) {
 	known := map[string]bool{}
 	for _, n := range append(append([]string(nil), build.DefaultScrubEnv...), names...) {
@@ -102,10 +105,25 @@ func (r *redactor) addEnviron(environ []string, names ...string) {
 		switch {
 		case known[strings.ToUpper(k)]:
 			r.add(v)
-		case tmpl.IsCredentialName(k) && len(strings.TrimSpace(v)) >= minLikelySecretLen:
+		case tmpl.IsCredentialName(k) && len(strings.TrimSpace(v)) >= minLikelySecretLen && !locationValue(v):
 			r.add(v)
 		}
 	}
+}
+
+// locationValue reports whether v, the value of a variable that looks like a
+// credential only by its name, is the absolute path of an existing file or
+// directory: SSH_AUTH_SOCK, GOOGLE_APPLICATION_CREDENTIALS or KEY_DIR name
+// where a credential is, not the credential. Redacting such a value would
+// hide every path below it (the project root, dist/...) and reveal nothing
+// secret. Variables known to hold tokens are redacted whatever their value.
+func locationValue(v string) bool {
+	v = strings.TrimSpace(v)
+	if !filepath.IsAbs(v) {
+		return false
+	}
+	_, err := os.Lstat(v)
+	return err == nil
 }
 
 const (
