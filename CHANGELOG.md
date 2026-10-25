@@ -3,7 +3,7 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
-## Unreleased
+## v1.0.0-rc.2
 
 ### Fixed
 
@@ -36,6 +36,22 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
 - An incomplete asset seen right after a failed upload is deleted only when
   it is older than the 10-minute grace period: a recent one cannot be told
   apart from another run's upload in progress.
+
+### Compatibility
+
+- No configuration key, CLI flag, Action input or output, or check ID was
+  removed or renamed; v0.2.0 and rc.1 configurations load unchanged.
+- Narrower for safety: `replace_existing_assets` applies to drafts only,
+  and a lost concurrent race stops with a conflict instead of deleting a
+  draft.
+
+### Limitations
+
+- Windows arm64 archives are built but not run (no CI runner).
+- GitHub has no conditional update: between a re-read and the write that
+  follows it, another writer could still change the release.
+- A transient upload failure that leaves an incomplete asset fails the run;
+  re-run after 10 minutes.
 
 ## v1.0.0-rc.1
 
