@@ -1,6 +1,6 @@
-# Hephaestus v1.2.0-rc.1
+# Hephaestus v1.2.0
 
-Release candidate of v1.2.0. The GitHub Action no longer compiles
+The GitHub Action no longer compiles
 Hephaestus: it installs the release binary that belongs to the commit you
 pinned, verified by its checksum and its provenance attestation, and leaves
 your toolchain alone. This release also brings `hephaestus publish`, and the
@@ -59,7 +59,7 @@ The tool that releases Hephaestus is now a command for any project:
 5. verifies the release: assets, checksums, attestations and the tap pull
    request.
 
-See [docs/publish.md](https://github.com/magicdrive/hephaestus/blob/v1.2.0-rc.1/docs/publish.md).
+See [docs/publish.md](https://github.com/magicdrive/hephaestus/blob/v1.2.0/docs/publish.md).
 
 The Action gains `command: plan`, with the outputs `prerelease` and `tap`.
 The steps that use the tap token can then run only when the tap is
@@ -76,6 +76,22 @@ published. A prerelease never even receives the token.
   directory. Known tokens are always redacted.
 - **`--fresh` removes the previous run's outputs** (archives, checksum files
   and formulae) from `dist`, if they are unchanged and Hephaestus wrote them.
+
+## Release candidate
+
+`v1.2.0-rc.1` (commit `bae0e2b`) was published as a prerelease. Before this
+release, it was verified on GitHub in two ways:
+
+- **The Action's release path, pinned to that commit.** The Action
+  downloaded the release binary, checked its checksum, verified its
+  attestation, extracted it and checked its version. This ran on Linux,
+  macOS and Windows, x64 and ARM64. The job's toolchain was unchanged
+  afterwards.
+- **The five projects that adopted Hephaestus.** git-parallel, kjak, ark,
+  enma and goreg ran CI, snapshots and Homebrew end-to-end tests.
+
+v1.2.0 differs from the release candidate only in `action/VERSION`, these
+notes, the changelog and CI.
 
 ## Compatibility
 
@@ -95,4 +111,4 @@ published. A prerelease never even receives the token.
 - `hephaestus check` shows the tap pull request branch as a template;
   `hephaestus preflight --tag` renders it.
 
-**Full Changelog**: https://github.com/magicdrive/hephaestus/compare/v1.1.0...v1.2.0-rc.1
+**Full Changelog**: https://github.com/magicdrive/hephaestus/compare/v1.1.0...v1.2.0
