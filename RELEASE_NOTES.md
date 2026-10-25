@@ -1,94 +1,101 @@
-# Hephaestus v1.0.0-rc.1
+# Hephaestus v1.0.0-rc.2
 
-The first release candidate of Hephaestus 1.0. It completes the release
-safety story (check before tagging, verify while releasing, inspect and
-resume after a failure) and defines what 1.0 keeps stable. A prerelease:
-it is not marked latest and does not update the Homebrew tap; v0.2.0
-stays the latest stable release.
+The second release candidate of Hephaestus 1.0. It fixes what dogfooding
+v1.0.0-rc.1 found (snapshots of `init` configurations, the `init` formula
+test, a false failure in `make publish`'s verification) and hardens
+concurrent and repeated releases: Hephaestus no longer deletes a release
+in any situation. A prerelease: it is not marked latest and does not update
+the Homebrew tap; v0.2.0 stays the latest stable release.
 
-## Added
+For everything new in 1.0 (preflight in the Action, `status`, `init`,
+noarch archives, the recovery guide, the compatibility policy), see the
+[v1.0.0-rc.1 notes](https://github.com/magicdrive/hephaestus/releases/tag/v1.0.0-rc.1)
+and the [changelog](https://github.com/magicdrive/hephaestus/blob/v1.0.0-rc.2/CHANGELOG.md).
 
-- **Preflight in the GitHub Action**: `command: preflight` runs
-  `hephaestus preflight` for the tag. Inputs `strict` and `offline`; outputs
-  `preflight-status`, `preflight-exit-code` and `preflight-report` (JSON
-  report path). Failures become workflow annotations; the step summary and
-  report are redacted.
-- **`config.release-notes` check**: the `release.github.notes_file` and the
-  optional `preflight.changelog` must name the tag as a whole version
-  (`v1.2.0` is not satisfied by `v1.2.0-rc.1`). Plus `preflight --report
-  FILE`.
-- **`make publish` gated on the generic preflight**: `make publish-check`
-  and `make publish` run `hephaestus preflight --strict` for the tag in
-  addition to their own checks.
-- **Noarch archives** (`targets: [{os: all, arch: all}]`): one archive for
-  every platform, and one formula with a single top-level `url`/`sha256`
-  (no `on_macos`/`on_linux` blocks). Mixing a noarch and per-platform
-  archive in one formula is an error (select with `ids`).
-- **Formula install verification** rejects installs that cannot all
-  succeed: a file installed twice, a directory and a file inside it, two
-  installs to the same destination. Per-platform exclusive installs are
-  allowed.
-- **`hephaestus status --tag`**: read-only (`GET` only) state of a release:
-  `not-started`, `tagged`, `draft`, `published-incomplete`, `conflict`,
-  `published`, `completed`, comparing assets by digest with the local
-  manifest and finding each formula's tap pull request; prints the next
-  safe action. `--format json`; exit codes `0` read, `1` conflict, `2`
-  usage, `3` GitHub could not be read.
-- **`hephaestus init --template go|rust|script|prebuilt`**: a starting
-  `hephaestus.yaml` (prereleases skip the tap: `skip_upload: auto`). Never
-  overwrites a file.
-- **Documentation**: [recovery guide](https://github.com/magicdrive/hephaestus/blob/v1.0.0-rc.1/docs/recovery.md)
-  (states, what each state allows, 12 failure scenarios and how each is
-  verified), [CLI reference](https://github.com/magicdrive/hephaestus/blob/v1.0.0-rc.1/docs/cli.md),
-  [compatibility policy](https://github.com/magicdrive/hephaestus/blob/v1.0.0-rc.1/docs/compatibility/policy.md).
+## Fixed since rc.1
 
-## Changed
+- **Snapshots of `init` configurations**: `run --snapshot` skips the formula
+  stage as well as release and tap (all three need a tag). With `brews`
+  configured, which every `init` template has, rc.1's `run --snapshot`
+  failed with "a tag is required". Naming one of them in `--stages` with
+  `--snapshot` is an error.
+- **`init` formula test**: the templates' test is
+  `system bin/"NAME", "--version"`; rc.1's `"#{bin}/NAME"` failed
+  `brew audit --strict`.
+- **`make publish` verification**: right after the release run, GitHub can
+  report the job's steps only partially. The tap-step check now reads them
+  again (6 reads, 20 seconds apart) and, if they are still incomplete,
+  reports the check as inconclusive (exit 3, re-run `make publish-watch`)
+  instead of failing a correct release. A step with the wrong result is
+  still a failure. rc.1's `make publish` exited 1 for this reason; the
+  release itself was correct.
 
-- **A published release is never edited.** Its title, notes and
-  prerelease flag are set while it is a draft and published with it. A
-  re-run whose configuration differs (for example, changed notes) logs a
-  warning and continues, so the formula and tap can still be resumed. Up to
-  v0.2.0, a re-run updated them on a published release, immutable or not.
-- **Formula verification** now rejects a formula that installs the same
-  file twice; such a formula could never install.
+## Changed: release safety
 
-## Safety and testing
+- **No release is ever deleted.** When two runs race for one tag, the run
+  whose new draft loses (to another run's lower-id draft, or to a published
+  release) now stops with a conflict and leaves its empty draft for you to
+  delete. rc.1 deleted that draft, but once a draft is listed another run
+  may already be using it. The GitHub client has no call to delete a
+  release.
+- **The draft is re-read right before it is published.** A release
+  published meanwhile is not edited; a draft whose assets changed (added,
+  removed, incomplete or different) or that lost to another release is not
+  published. A draft is also re-read before one of its assets is deleted
+  and before `draft: true` updates its title or notes, and after publishing
+  each asset's digest is checked before its URL is recorded in the
+  manifest.
+- **A published release's assets are never replaced or deleted**, on
+  mutable releases too. `replace_existing_assets` now applies to drafts
+  only; an incomplete asset on a published release is reported, not
+  removed. (rc.1 and v0.2.0 replaced a differing asset of a published
+  mutable release when `replace_existing_assets: true` was set.)
+- **An incomplete asset seen right after a failed upload** is deleted only
+  when it is older than the 10-minute grace period: a recent one cannot be
+  told apart from another run's upload in progress, so the asset fails and
+  a later re-run continues.
 
-- Full-pipeline E2E tests of the CLI against a fake GitHub API: stable,
-  prerelease, draft, immutable (complete and missing asset), recovery after
-  a failed publish, tap-only re-run, tap pull request failure after
-  publishing, and an immutable release resuming the tap. No run leaks a
-  token in its output or requests.
-- Recovery tests: lost create, upload and publish responses; concurrent
-  drafts; digest conflicts on drafts and published releases; tag pointing
-  to another commit; immutable re-runs write nothing.
-- CI on Linux amd64 and arm64, macOS arm64 and Windows amd64 for every
-  change; macOS Intel weekly. Homebrew install tests of generated formulas
-  (including noarch) on macOS and Linux.
-- The release workflow stops a prerelease whose plan would publish the tap,
-  in addition to `skip_upload: auto` and the tap token reaching only the
-  tap steps.
+## Testing
+
+- Regression tests for each fix: snapshots of every `init` template (Go,
+  script and prebuilt in CI; Rust when cargo and the template's four
+  targets are installed), the formula test line, and lagging step data
+  (complete later; never complete is inconclusive).
+- Recovery and concurrency tests against a fake GitHub API: the losing
+  draft (to a lower-id draft and to a published release) deletes nothing
+  and a re-run continues with the winner; a lost create reusing another
+  run's draft; the pre-publish re-read (published meanwhile, asset added,
+  changed or removed, another release published); a draft published
+  before an asset delete or a `draft: true` update; another build's
+  content published meanwhile; starters after a failed
+  upload; published assets never replaced or deleted. Plus the rc.1 suite:
+  lost create, upload and publish responses, digest conflicts, tag pointing
+  to another commit, immutable re-runs, tap pull request failure after
+  publishing.
 
 ## Compatibility
 
-- v0.2.0 configurations load unchanged; Hephaestus's own and
-  magicdrive/t's are kept as regression fixtures.
-- Configuration, CLI, Action and JSON changes are additions only:
-  `preflight.changelog`, noarch targets; `status`, `init`, `preflight
-  --report`; Action inputs `strict`, `offline` and the preflight outputs.
-- `brews[].skip_upload` still defaults to `false`: a prerelease is
-  published to the tap unless `skip_upload: auto` (or `true`) is set. The
-  default changes only in a major release.
-- From 1.0.0, the stable surface follows the compatibility policy above.
+- v0.2.0 and rc.1 configurations load unchanged. No configuration key,
+  CLI flag, Action input or output, or check ID was removed or renamed.
+- Two behaviors are narrower, both for safety: `replace_existing_assets`
+  no longer touches a published release, and a lost concurrent race stops
+  with a conflict instead of deleting a draft.
+- `brews[].skip_upload` still defaults to `false`; `init` templates set
+  `skip_upload: auto`.
 
 ## Limitations
 
-- Windows arm64 archives are built but not tested (no CI runner).
+- Windows arm64 archives are built but not run (no CI runner).
 - The Rust template does not cross-compile by itself: each target needs its
   Rust target and a linker, or a build per runner imported as prebuilt
   binaries.
 - Recovery is tested against a fake GitHub API; against the real API only
   the normal release path is exercised. The attestation step is covered by
   real releases, not by a test.
+- GitHub has no conditional update: between a re-read and the write that
+  follows it (one API call), another writer could still change the
+  release.
+- A transient upload failure that leaves an incomplete asset now fails the
+  run instead of retrying at once; re-run after 10 minutes.
 
-**Full Changelog**: https://github.com/magicdrive/hephaestus/compare/v0.2.0...v1.0.0-rc.1
+**Full Changelog**: https://github.com/magicdrive/hephaestus/compare/v1.0.0-rc.1...v1.0.0-rc.2

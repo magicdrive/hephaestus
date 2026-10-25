@@ -3,7 +3,8 @@
 Working record of the road to v1.0.0 ([v1-roadmap.md](v1-roadmap.md)).
 The stack was developed without merging; for v1.0.0-rc.1 the owner
 authorized merging it in order and publishing the release candidate (not
-v1.0.0).
+v1.0.0). v1.0.0-rc.1 was published from #14's merge (fe71b01); rc.2
+follows #15 to #17.
 
 ## Pull requests (stacked)
 
@@ -17,7 +18,11 @@ v1.0.0).
 | [#10](https://github.com/magicdrive/hephaestus/pull/10) | `feat/developer-experience` | #9 | 5 | `hephaestus init` templates |
 | [#11](https://github.com/magicdrive/hephaestus/pull/11) | `test/v1-stabilization` | #10 | 8 | CLI reference, changelog, this record |
 | [#12](https://github.com/magicdrive/hephaestus/pull/12) | `fix/published-release-immutability` | #11 | RC audit | a published release is never edited; tap-failure and immutable E2E; prerelease tap guard in `release.yml` |
-| #13 | `docs/v1.0.0-rc.1-notes` | #12 | RC | release notes and changelog for v1.0.0-rc.1 |
+| [#13](https://github.com/magicdrive/hephaestus/pull/13) | `docs/v1.0.0-rc.1-notes` | #12 | RC | release notes and changelog for v1.0.0-rc.1 |
+| [#14](https://github.com/magicdrive/hephaestus/pull/14) | `fix/ci-preflight-smoke-unknown` | `main` | RC | action smoke accepts an unknown preflight on push and tag checkouts |
+| [#15](https://github.com/magicdrive/hephaestus/pull/15) | `fix/snapshot-skips-formula` | `main` | rc.1 dogfooding | snapshot skips formula; init formula test; lagging tap step data |
+| [#16](https://github.com/magicdrive/hephaestus/pull/16) | `fix/never-delete-releases` | `main` | rc.2 audit | no release is ever deleted; re-reads before publishing, deleting assets and updating drafts; published assets never replaced |
+| #17 | `docs/v1.0.0-rc.2-notes` | `main` | rc.2 | release notes and changelog for v1.0.0-rc.2 |
 
 Merge in order; each base branch is merged into the next, so no rebase is
 needed.
@@ -60,4 +65,4 @@ needed.
 
 - Machine-readable configuration schema (optional; not planned for 1.0).
 - `config.release-notes`: RELEASE_NOTES.md and CHANGELOG.md name
-  v1.0.0-rc.1; they must be updated again for v1.0.0 before that tag.
+  v1.0.0-rc.2; they must be updated again for v1.0.0 before that tag.
