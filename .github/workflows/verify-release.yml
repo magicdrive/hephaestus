@@ -1,0 +1,64 @@
+name: Verify release
+
+# Runs the binaries of a published release on every platform it ships for:
+# downloads the platform's archive and the checksum file from the release,
+# checks the archive's SHA-256, then runs version, --help, init and check.
+# Read-only: it never writes to the release or the repository.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to verify (e.g. v1.0.0-rc.2)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-latest, os: linux, arch: amd64, ext: tar.gz}
+          - {runner: ubuntu-24.04-arm, os: linux, arch: arm64, ext: tar.gz}
+          - {runner: macos-15-intel, os: darwin, arch: amd64, ext: tar.gz}
+          - {runner: macos-latest, os: darwin, arch: arm64, ext: tar.gz}
+          - {runner: windows-latest, os: windows, arch: amd64, ext: zip}
+          - {runner: windows-11-arm, os: windows, arch: arm64, ext: zip}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      OS: ${{ matrix.os }}
+      ARCH: ${{ matrix.arch }}
+      EXT: ${{ matrix.ext }}
+    steps:
+      - name: Download and check the archive
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::not a release tag: $TAG"; exit 1; }
+          echo "runner: $(uname -s) $(uname -m)"
+          archive="hephaestus_${TAG#v}_${OS}_${ARCH}.${EXT}"
+          mkdir -p "$RUNNER_TEMP/rel" && cd "$RUNNER_TEMP/rel"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "$archive" -p hephaestus_checksums.txt
+          grep -F "  $archive" hephaestus_checksums.txt > expected.txt
+          if command -v sha256sum >/dev/null; then sha256sum -c expected.txt; else shasum -a 256 -c expected.txt; fi
+          mkdir x
+          if [[ "$EXT" == zip ]]; then unzip -q "$archive" -d x; else tar -xzf "$archive" -C x; fi
+          ls -l x
+      - name: Run the binary
+        run: |
+          cd "$RUNNER_TEMP/rel"
+          bin="$PWD/x/hephaestus"; [[ "$OS" == windows ]] && bin="$bin.exe"
+          out="$("$bin" version)"; echo "$out"
+          [[ "$out" == "hephaestus $TAG" ]] || { echo "::error::unexpected version output: $out"; exit 1; }
+          "$bin" --help >/dev/null
+          mkdir -p proj/mycli && cd proj/mycli
+          printf 'module example.com/mycli\n\ngo 1.22\n' > go.mod
+          "$bin" init --template go --repo acme/mycli
+          "$bin" check

@@ -124,6 +124,12 @@ the preflight; use `publish-status` and `publish-watch` instead. Two
 `make publish` processes in one clone are prevented by a lock file in the git
 directory (`hephaestus-publish.lock`); `make -j` runs the tool once.
 
+To run the published binaries on every platform they ship for (Linux,
+macOS and Windows, amd64 and arm64), start the read-only **Verify release**
+workflow: `gh workflow run verify-release.yml -f tag=v1.2.3`. Each job
+downloads its archive from the release, checks it against the checksum
+file, and runs `version`, `--help`, `init` and `check`.
+
 ### Homebrew tap pull request
 
 For a stable version the workflow opens a pull request on
