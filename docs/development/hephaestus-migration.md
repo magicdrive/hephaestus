@@ -62,10 +62,10 @@ that runs on a tag push and uses the environment will be rejected.
 
 ## 3. The Go toolchain in the GitHub Action
 
-The Action builds Hephaestus with `actions/setup-go`, from its own `go.mod`.
-setup-go puts that Go version on `PATH` and exports `GOTOOLCHAIN=local` to
-the rest of the job. The 1.1.0 Action uses Go 1.26.0. Your build commands
-run after this step, so by default they use that Go:
+**Up to 1.1.0**, the Action built Hephaestus with `actions/setup-go`, from
+its own `go.mod`. setup-go puts that Go version on `PATH` and exports
+`GOTOOLCHAIN=local` to the rest of the job. The 1.1.0 Action uses Go 1.26.0.
+Your build commands run after this step, so by default they used that Go:
 
 - a module that requires a newer Go fails (`go.mod requires go >= 1.27.0
   (running go 1.26.0; GOTOOLCHAIN=local)`);
@@ -73,7 +73,17 @@ run after this step, so by default they use that Go:
   the one you chose. This can mean a downgrade, or a standard library
   vulnerability that `govulncheck` reported as fixed.
 
-Do both of the following:
+**The fix** ([#22](https://github.com/magicdrive/hephaestus/pull/22),
+planned for 1.1.1) builds Hephaestus with a Go private to the Action's build
+step: the official archive, checked against a SHA-256 pinned in the
+Action's source. Nothing is written to `$GITHUB_PATH` or `$GITHUB_ENV`. With
+that version, your build uses the Go that your own `actions/setup-go` step
+set up. A Go project must therefore run setup-go before the Action, as the
+examples always did.
+
+Whatever the Action version, keep the release toolchain explicit and
+checked. The Action is then not the only thing that decides which Go builds
+the release. Do both of the following:
 
 ```yaml
 version: 1
@@ -177,20 +187,44 @@ fixed or reported, with its history.
   `HEPHAESTUS ?= go run github.com/magicdrive/hephaestus@$(HEPHAESTUS_VERSION)`,
   without other variables in front: scripts that expand
   `$(HEPHAESTUS)` cannot run `VAR=value cmd` prefixes.
-- Run `rm -rf dist` before `snapshot`. `--fresh` ignores the old manifest,
-  but it does not delete archives left in `dist/`.
+- Run `rm -rf dist` before `snapshot`. In 1.1.0, `--fresh` ignores the old
+  manifest but does not delete the archives left in `dist/`. In 1.1.1, it
+  deletes the archives, checksum files and formulae that the old manifest
+  records. `rm -rf dist` still clears everything else.
 - `make publish` (pushing a tag) runs `preflight` first. With `--strict`
   it stops on any WARN; some projects run the non-strict version until
   their ruleset WARNs are resolved.
 
 ## 8. Pull request and review
 
-- Create worktrees with `--no-track`, and push with an explicit refspec:
-  `git push -u origin <branch>:refs/heads/<branch>`. With
-  `push.default=tracking` and a branch created from `origin/main`, a bare
-  `git push origin <branch>` updates `main`. This happened once during this
-  migration and was undone with a revert pull request.
-- Compare `git ls-remote origin refs/heads/main` before and after each push.
+### Safe pushes
+
+During this migration, one push reached `main` instead of the pull request
+branch, and a revert pull request undid it. The cause: the clone has
+`push.default=tracking`, and the worktree was created from `origin/main`
+without `--no-track`. The branch therefore tracked `main`, and
+`git push -u origin <branch>` sent it there. A ruleset that blocks only
+deletion and force pushes did not stop it. Do not rely on the ruleset.
+
+1. Create worktrees with `--no-track`:
+   `git worktree add --no-track -b <branch> <dir> origin/main`.
+2. Never run a bare `git push`. Always name the destination:
+   `git push origin HEAD:refs/heads/<branch>`.
+3. Before pushing, print and check:
+   - the local branch and `HEAD`, the remote URL, `push.default` and the
+     upstream;
+   - the pull request's number, state, head ref and base ref.
+
+   The local branch must equal the pull request's head ref, and must not be
+   `main`. The remote head must be an ancestor of `HEAD` (fast-forward
+   only; never force).
+4. After pushing, check that `git ls-remote origin refs/heads/main` is
+   unchanged and that the pull request's head is the new `HEAD`.
+
+Put these rules in every brief you give to another agent or contributor.
+
+### Pull request contents
+
 - The pull request lists:
   - a before/after summary;
   - a compatibility table;
@@ -212,6 +246,19 @@ fixed or reported, with its history.
    re-create a published release or tag. To roll back the migration
    itself, revert its pull request.
 
+### Updating the Action pin
+
+Pin the Action only to a commit that a release tag points to, never to an
+unreleased commit. Use the commit of the tag (`git rev-parse vX.Y.Z^{commit}`),
+with a `# vX.Y.Z` comment. Set the same version in the Makefile's
+`HEPHAESTUS_VERSION`.
+
+To verify an unreleased fix in a project's CI, push a commit that pins the
+fix's commit, with its Go pseudo-version as the comment and as
+`HEPHAESTUS_VERSION`. Once CI is green, revert that commit, so that the pull
+request never asks to merge an unreleased pin. The five migration pull
+requests verified #22 this way.
+
 ## 10. Per-project differences
 
 | Project | Shape | Notable choices |
@@ -224,12 +271,14 @@ fixed or reported, with its history.
 
 ## 11. Gaps found in Hephaestus 1.1.0
 
-These are worked around in the projects. Fix them in Hephaestus later.
+The projects work around each of these. Where one is fixed, the fix is in
+[#22](https://github.com/magicdrive/hephaestus/pull/22), planned for 1.1.1.
 
-- **The Action leaks its Go into the caller's job.** It puts its own Go on
-  `PATH` and exports `GOTOOLCHAIN=local`, so build commands run with the
-  Action's Go (§3). The docs do not say so.
-- **`--fresh` leaves old archives in `dist/`.**
+- **The Action leaks its Go into the caller's job** (§3). It puts its own Go
+  on `PATH` and exports `GOTOOLCHAIN=local`, so build commands run with the
+  Action's Go. *Fixed in #22.*
+- **`--fresh` leaves old archives in `dist/`.** *Fixed in #22*: the outputs
+  that the old manifest records are deleted.
 - **Testing a generated formula against local archives takes a separate
   configuration.** `run --snapshot` skips the formula stage, and
   `url_template` cannot read an optional variable, so the project's own
@@ -239,16 +288,22 @@ These are worked around in the projects. Fix them in Hephaestus later.
   `file://` URLs, `HEPHAESTUS_ALLOW_FILE_URLS=1` is set, and the build and
   formula stages run with a tag.
 - **Old Homebrew versions misread the version.** The generated formula
-  omits `version` when Homebrew can infer it from the URL, but Homebrew
-  4.6 infers `64` from archive names that end in `_arm64.tar.gz`. A formula with an explicit
-  `version`, or a minimum Homebrew version, would avoid this.
+  omits `version` when Homebrew can infer it from the URL. Homebrew 4.6.20
+  infers `64` from platform-specific archive names such as
+  `tool_1.2.3_darwin_arm64.tar.gz`; Homebrew 7.0.10 infers `1.2.3`. Both
+  results were checked. *Not changed*: `brew audit --strict` rejects a
+  redundant `version`, and `brew update`, which delivers tap updates, also
+  updates Homebrew itself.
 - **The shell's `PWD` is redacted as a credential.** `PWD` matches the
   credential-name heuristic: a `PWD` segment, meant for "password". Its
   value is the current directory, so every path under the current
   directory is printed as `***`. For example, `hephaestus check` prints
-  `root ***`. `env -u PWD` works around it. `PWD` and `OLDPWD` should be
-  exempt.
+  `root ***`. `env -u PWD` works around it. *Fixed in #22*: `PWD` and
+  `OLDPWD` are exempt. A value matched only by its variable's name is not
+  redacted when it is an existing path. Known tokens are still always
+  redacted.
 - **`hephaestus check` shows the tap pull request branch unexpanded**
-  (`{{ .ProjectName }}-{{ .Version }}`). `preflight` shows it rendered.
+  (`{{ .ProjectName }}-{{ .Version }}`). *By design*: `check` has no tag.
+  `preflight --tag` shows the branch rendered.
 - **The noarch docs have no example of the stages for a project without
   builds.**
