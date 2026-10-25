@@ -437,6 +437,7 @@ Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
 | [GitHub Action](docs/github-action.md) | Inputs, outputs, permissions, tokens, workflows |
 | [GoReleaser compatibility](docs/compatibility/goreleaser.md) | Field-by-field status of `brews`, archives, templates |
 | [Migrating from GoReleaser](docs/migration/from-goreleaser.md) | Step-by-step migration |
+| [Migration playbook](docs/development/hephaestus-migration.md) | Audit, compatibility, CI and first release when adopting Hephaestus in an existing project |
 | [Architecture overview](docs/architecture/overview.md) | Stages, the Artifact Manifest, ownership, data flow |
 | [Threat model](docs/security/threat-model.md) | Assets, attackers, defenses, residual risk |
 | [Development](docs/development.md) | Make targets, tests, golden files, fuzzing, E2E |
