@@ -1,54 +1,84 @@
 # GitHub Action
 
-`action.yml` at the repository root is a composite action. It builds
-Hephaestus from the action's own source (the exact commit you reference),
-then runs the `hephaestus` command in your workspace: the local stages
-(`build`, `archive`, `checksum`) in a step without tokens, then the
-publishing stages (`release`, `formula`, `tap`) in a step with them. It does
-not check out
+`action.yml` at the repository root is a composite action. It installs the
+Hephaestus release binary that belongs to the commit you reference, then runs
+the `hephaestus` command in your workspace: the local stages (`build`,
+`archive`, `checksum`) in a step without tokens, then the publishing stages
+(`release`, `formula`, `tap`) in a step with them. It does not check out
 your repository and does not install your build toolchain: add
 `actions/checkout` and, for example, `actions/setup-go` before it.
 
 ```yaml
-- uses: magicdrive/hephaestus@<full-commit-sha>  # pin a commit, not a branch
+- uses: magicdrive/hephaestus@<full commit SHA of the release tag> # vX.Y.Z
   with:
     command: run
     stages: build,archive,checksum
 ```
 
-Pin the action to a full commit SHA. Because the action compiles Hephaestus
-from that commit, the code that runs is exactly the code you pinned; there is
-no downloaded Hephaestus binary to trust. The self-build runs with a fixed Go
-environment (every `GO*` and `CGO_*` variable is cleared, then `GOFLAGS`,
-`GOPROXY`, `GOSUMDB`, `GOWORK` and `GOENV` are pinned) and a new, empty
-`GOCACHE` and `GOMODCACHE` under `$RUNNER_TEMP`, so variables set and caches
-restored by earlier steps cannot change how Hephaestus itself is built.
+### Pinning and the release binary
 
-### The action does not change your Go toolchain
+Pin the action to the full commit SHA that a release tag points to (for
+v1.2.0: `git rev-parse v1.2.0^{commit}`), or reference it by that tag. The
+action does not compile anything. Its first step
+([action/install-hephaestus.sh](../action/install-hephaestus.sh)) runs before
+any of your build code, and does the following:
 
-The Go that builds Hephaestus is private to the action's build step
-([action/build-hephaestus.sh](../action/build-hephaestus.sh)). It is the
-version in the `toolchain` line of the action's `go.mod`:
+1. Reads the release named in `action/VERSION` of the pinned commit. The
+   release workflow refuses to publish a tag that this file does not name,
+   so a release commit always names its own release.
+2. Downloads `hephaestus_<version>_<os>_<arch>.tar.gz` (Windows: `.zip`) and
+   `hephaestus_checksums.txt`, from
+   `https://github.com/magicdrive/hephaestus/releases/download/<tag>/` only
+   (https, redirects https only).
+3. Checks the archive's SHA-256 against the checksum file.
+4. Verifies the archive's provenance attestation with `gh attestation
+   verify`. The attestation must have been signed by
+   `magicdrive/hephaestus/.github/workflows/release.yml` on a GitHub-hosted
+   runner, for `refs/tags/<tag>` and, when pinned by SHA, for exactly that
+   commit (`--source-digest`). This binds the binary to the commit you
+   pinned.
+5. Extracts only the regular file `hephaestus[.exe]` at the archive root:
+   links, directories, nested paths and duplicates are rejected, and no
+   other member is written. It then checks that the binary reports
+   `hephaestus <tag>`.
 
-- On GitHub-hosted runners (Linux, macOS and Windows, x64 and ARM64), the
-  action downloads the official archive from `dl.google.com`. It checks the
-  archive against the SHA-256 pinned in
-  [action/go-toolchain.sha256](../action/go-toolchain.sha256), which is part
-  of the commit you pinned. It then unpacks the archive under `$RUNNER_TEMP`
-  and calls it by absolute path.
-- On other platforms, a `go` (1.21 or later) on `PATH` downloads that
-  version through the module proxy, and the checksum database verifies it.
+Any failure stops the action. There is no fallback, and no other version is
+tried. A branch reference (`@main`) or the tag of another release fails,
+because the action could not tell which binary belongs to it.
 
-Nothing is written to `$GITHUB_PATH` or `$GITHUB_ENV`. Your build commands
-therefore run with the `PATH`, `go` and `GOTOOLCHAIN` your own steps set up,
-before and after the action. CI checks this on six platforms
-(`action-isolation`).
+Requirements: a GitHub-hosted runner, or another runner with `bash`,
+`curl`, `tar` and `gh`, on Linux, macOS or Windows, x64 or ARM64. The step
+uses the job's `github.token` for the read-only attestation lookup. No step
+that runs your code sees that token, and it does not depend on the
+`github-token` input.
 
-Up to v1.1.0, the action ran `actions/setup-go` itself. That step put the
-action's Go first on `PATH` and exported `GOTOOLCHAIN=local` for the rest of
-the job, so projects were built with the action's Go. A project that relied
-on this, without setting up its own Go, now needs `actions/setup-go` before
-the action, as the examples always had.
+### The action does not change your toolchain
+
+No Go (or any other toolchain) is downloaded or set up, and nothing is
+written to `$GITHUB_PATH` or `$GITHUB_ENV`. Your build commands run with the
+`PATH`, `go` and `GOTOOLCHAIN` that your own steps set up, before and after
+the action. A runner without Go can run the action for a project that is
+not written in Go. CI compares the environment before and after the action
+on six platforms (`action-isolation`, `action-install`).
+
+Earlier versions behaved differently:
+
+- **v1.1.0** ran `actions/setup-go`. That step put its Go first on `PATH` and
+  exported `GOTOOLCHAIN=local` for the rest of the job.
+- **The unreleased v1.1.1 fixes** compiled Hephaestus with a private Go. They
+  ship in v1.2.0.
+
+From v1.2.0, a project that relied on the action's Go must set up its own
+Go, as the examples always did.
+
+### Hephaestus's own checkout
+
+When a workflow runs the action from its own checkout of this repository
+(`uses: ./`), the version in `action/VERSION` is usually not released yet.
+Only in that case does the action use the binary named by the
+`HEPHAESTUS_ACTION_BINARY` environment variable. Hephaestus's CI sets it to
+a binary built from the same commit (the `action-binary` job). Every other
+caller ignores the variable.
 
 The action runs on Linux, macOS and Windows runners (CI runs `action-smoke`
 and `action-boundary` on all three). Its steps use `bash`; on Windows that is
@@ -308,12 +338,9 @@ triggered only by tags.
 
 ## Behavior notes
 
-- The action builds Hephaestus with the Go toolchain named in its own
-  `go.mod` (see [the action does not change your Go
-  toolchain](#the-action-does-not-change-your-go-toolchain)), using
-  `CGO_ENABLED=0 -trimpath -mod=readonly`. Every run of the action takes the
-  build time. The Go archive is downloaded once per job and checked again on
-  every later run.
+- Every run of the action downloads and verifies the release binary (about
+  5 MB) again; nothing is cached between steps, which other steps could
+  modify.
 - `GITHUB_SHA` provides `.Commit`; `GITHUB_REPOSITORY` provides the release
   repository unless the configuration names one; `GITHUB_API_URL` provides
   the API URL on GitHub Enterprise Server.

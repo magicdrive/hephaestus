@@ -31,9 +31,20 @@ release before anything is tagged.
 
 ## Cutting a release
 
-Before tagging, describe the version in `RELEASE_NOTES.md` (published as
-the release body through `release.github.notes_file`; its heading names the
-version) and add it to `CHANGELOG.md`, through a pull request.
+Before tagging, make these changes through a pull request:
+
+- Describe the version in `RELEASE_NOTES.md`. It is published as the release
+  body through `release.github.notes_file`, and its heading names the
+  version.
+- Add the version to `CHANGELOG.md`.
+- Set `action/VERSION` to the tag.
+
+The GitHub Action at a release commit installs the binaries of the release
+that `action/VERSION` names ([github-action.md](github-action.md#pinning-and-the-release-binary)).
+The release workflow therefore refuses to build a tag that the file does not
+name, and so do `make publish` and `make publish-check`. A release candidate
+and its stable release are two commits: `v1.2.0-rc.1` is followed by a pull
+request that changes `action/VERSION` (and the notes) to `v1.2.0`.
 
 ```sh
 make publish-check v0.1.0-rc.1    # optional: the preflight alone

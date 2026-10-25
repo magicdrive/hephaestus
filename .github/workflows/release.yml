@@ -40,8 +40,14 @@ jobs:
           go-version-file: go.mod
       - name: Check the release tag
         # Rejects a tag that is not vMAJOR.MINOR.PATCH[-PRERELEASE] before
-        # anything is built (internal/publish.ParseVersion).
-        run: go run ./internal/cmd/publish plan "$GITHUB_REF_NAME"
+        # anything is built (internal/publish.ParseVersion), and a tag that
+        # action/VERSION does not name: the action at the tagged commit
+        # downloads the binaries of the release action/VERSION names
+        # (action/install-hephaestus.sh), which must be this one.
+        run: |
+          go run ./internal/cmd/publish plan "$GITHUB_REF_NAME"
+          [[ "$(tr -d '\r\n' < action/VERSION)" == "$GITHUB_REF_NAME" ]] ||
+            { echo "::error::action/VERSION is $(cat action/VERSION), not $GITHUB_REF_NAME"; exit 1; }
       - name: Build hephaestus from the tagged source
         run: make build
       - name: Build, archive and checksum

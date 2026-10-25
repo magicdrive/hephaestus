@@ -87,19 +87,23 @@ outputs:
 runs:
   using: composite
   steps:
-    # Hephaestus is built from this action's own pinned source, so the code
-    # that runs is exactly the code at the ref you reference (pin a SHA). The
-    # Go toolchain that builds it is private to this step
-    # (action/build-hephaestus.sh): the job's PATH, GOTOOLCHAIN and other Go
-    # settings are left as the caller set them, so the project's own build
-    # commands use the caller's toolchain.
-    - name: Build hephaestus
+    # The release binary of the version in action/VERSION, downloaded from
+    # that GitHub Release and verified (action/install-hephaestus.sh): the
+    # release checksum, the provenance attestation binding it to this
+    # action's commit and tag, and the version it reports. Nothing is
+    # compiled and no toolchain is installed, so the job's PATH, Go and other
+    # settings stay as the caller set them. The job token (read-only use)
+    # lets gh read the attestation; no step that runs project code sees it.
+    - name: Install hephaestus
       id: build
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
+        ACTION_REF: ${{ github.action_ref }}
+        GH_TOKEN: ${{ github.token }}
+        GITHUB_TOKEN: ""
       run: |
-        script="$ACTION_PATH/action/build-hephaestus.sh"
+        script="$ACTION_PATH/action/install-hephaestus.sh"
         if [[ "$RUNNER_OS" == Windows ]]; then script="$(cygpath -u "$script")"; fi
         bash "$script"
     # Local stages (build, archive, checksum) run in a step whose environment
