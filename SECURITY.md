@@ -77,9 +77,10 @@ What Hephaestus does not trust, and how it defends itself:
 
 - A release is created as a draft and published only after every asset has
   been re-hashed against the manifest, uploaded, and verified against what
-  GitHub reports. Unexpected assets on a draft are an error. Concurrent runs
-  for one tag converge on one draft.
-- A published immutable release is never modified.
+  GitHub reports. Unexpected assets on a draft are an error. A run that
+  loses a race for a tag stops with a conflict; no release is ever deleted.
+- A published release (mutable or immutable) is never edited, and its assets
+  are never replaced or deleted.
 - Tap updates never force-push. An existing pull request branch that contains
   changes other than the formula is an error. A newer formula on the tap is
   not overwritten by an older version unless downgrades are explicitly

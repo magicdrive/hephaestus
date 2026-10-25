@@ -310,7 +310,8 @@ type GitHubRelease struct {
 	// TargetCommitish is used only when the tag does not exist yet.
 	TargetCommitish string `yaml:"target_commitish"`
 	// ReplaceExistingAssets allows replacing a same-named asset whose
-	// content differs. Identical assets are always a no-op.
+	// content differs on a draft release. A published release's assets are
+	// never replaced. Identical assets are always a no-op.
 	ReplaceExistingAssets bool `yaml:"replace_existing_assets"`
 	// Include selects which manifest kinds are uploaded.
 	Include []string `yaml:"include"`

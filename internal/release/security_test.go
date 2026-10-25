@@ -6,7 +6,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
+	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -128,41 +129,83 @@ func TestNotesFileInsideRoot(t *testing.T) {
 
 // --- F12: concurrent runs, unexpected assets, replacing published assets ---
 
-func TestConcurrentDraftLoserDeletesOnlyItsOwnDraft(t *testing.T) {
-	f := newFakeGitHub(t)
-	fx := newFixture(t)
-	var other *fakeRelease
-	f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
-		if r.Method == "POST" && r.URL.Path == "/repos/acme/tool/releases" && other == nil {
-			// A concurrent run created its draft first (lower id).
-			other = f.addRelease(tag, true, false, map[string]string{linuxName: defaultFiles[linuxName]})
-		}
-		return false
-	}
-	res, err := Run(context.Background(), fx.input(f.client(t)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	rels := f.byTag(tag)
-	if len(rels) != 1 || rels[0].ID != other.ID || rels[0].Draft {
-		t.Fatalf("server state: %d releases, first id %d (want %d, published)", len(rels), rels[0].ID, other.ID)
-	}
-	if res.ReleaseID != other.ID || res.Created || !res.Published {
-		t.Fatalf("result %+v", res)
-	}
-	deletes := 0
+// noReleaseDeleted fails when any release (not asset) was deleted.
+func noReleaseDeleted(t *testing.T, f *fakeGitHub) {
+	t.Helper()
 	for _, l := range f.writes() {
-		if strings.HasPrefix(l, "DELETE /repos/acme/tool/releases/") {
-			deletes++
-			if l == "DELETE /repos/acme/tool/releases/"+strconv.FormatInt(other.ID, 10) {
-				t.Fatal("deleted the other run's draft")
-			}
+		if p, ok := strings.CutPrefix(l, "DELETE /repos/acme/tool/releases/"); ok && !strings.HasPrefix(p, "assets/") {
+			t.Fatalf("a release was deleted: %s", l)
 		}
 	}
-	if deletes != 1 {
-		t.Fatalf("writes %v", f.writes())
+}
+
+func TestClientCannotDeleteReleases(t *testing.T) {
+	if _, ok := reflect.TypeOf(&github.Client{}).MethodByName("DeleteRelease"); ok {
+		t.Fatal("github.Client has DeleteRelease: hephaestus must never delete a release")
 	}
-	wantStatuses(t, res, map[string]string{linuxName: StatusUnchanged, darwinName: StatusUploaded, checksumName: StatusUploaded})
+}
+
+func TestConcurrentDraftLoserStopsWithoutDeleting(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		published bool
+	}{
+		{"lower id draft", false},
+		{"published release", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeGitHub(t)
+			fx := newFixture(t)
+			var other *fakeRelease
+			f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+				if r.Method == "POST" && r.URL.Path == "/repos/acme/tool/releases" && other == nil {
+					// A concurrent run created its draft first (lower id);
+					// it may already have published it.
+					other = f.addRelease(tag, true, false, map[string]string{linuxName: defaultFiles[linuxName]})
+					f.mu.Lock()
+					f.route(w, r, body)
+					other.Draft = !tc.published
+					f.mu.Unlock()
+					return true
+				}
+				return false
+			}
+			res, err := Run(context.Background(), fx.input(f.client(t)))
+			if err == nil || !strings.Contains(err.Error(), "conflict") || !strings.Contains(err.Error(), "nothing was deleted") {
+				t.Fatalf("err = %v", err)
+			}
+			if res != nil && res.Published {
+				t.Fatal("published")
+			}
+			noReleaseDeleted(t, f)
+			if n := f.count("POST /repos/acme/tool/releases/"); n != 0 {
+				t.Fatalf("uploaded %d assets after the conflict", n)
+			}
+			if n := f.count("PATCH "); n != 0 {
+				t.Fatalf("edited a release after the conflict: %v", f.writes())
+			}
+			rels := f.byTag(tag)
+			if len(rels) != 2 || rels[0].ID != other.ID || rels[0].Draft == tc.published || len(rels[0].assets) != 1 || !rels[1].Draft || len(rels[1].assets) != 0 {
+				t.Fatalf("server state changed: %d releases", len(rels))
+			}
+
+			// The re-run continues with the release that won; the empty
+			// draft is left for the owner.
+			f.hook = nil
+			f.resetLog()
+			res, err = Run(context.Background(), fx.input(f.client(t)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			noReleaseDeleted(t, f)
+			if res.ReleaseID != other.ID || !res.Published {
+				t.Fatalf("result %+v", res)
+			}
+			if rels := f.byTag(tag); len(rels) != 2 || !rels[1].Draft {
+				t.Fatal("the leftover draft was touched")
+			}
+		})
+	}
 }
 
 func TestConcurrentDraftWinnerKeepsItsDraft(t *testing.T) {
@@ -188,6 +231,9 @@ func TestConcurrentDraftWinnerKeepsItsDraft(t *testing.T) {
 	}
 	if !res.Created || f.count("DELETE ") != 0 {
 		t.Fatalf("result %+v writes %v", res, f.writes())
+	}
+	if rels := f.byTag(tag); len(rels) != 2 || !rels[1].Draft {
+		t.Fatal("the concurrent run's draft was touched")
 	}
 	if rels := f.byTag(tag); len(rels) != 2 || rels[0].ID != res.ReleaseID {
 		t.Fatal("the winner's draft was not kept")
@@ -238,104 +284,67 @@ func TestUnexpectedAssetsOnDraft(t *testing.T) {
 	})
 }
 
-func TestReplaceOnPublishedMutableReleaseUsesTemporaryName(t *testing.T) {
-	f := newFakeGitHub(t)
-	fx := newFixture(t)
-	fx.gh().ReplaceExistingAssets = true
-	f.addRelease(tag, false, false, map[string]string{linuxName: "other bytes", darwinName: defaultFiles[darwinName], checksumName: defaultFiles[checksumName]})
-	var seq []string
-	f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
-		switch r.Method {
-		case "POST":
-			seq = append(seq, "upload "+r.URL.Query().Get("name"))
-		case "DELETE":
-			seq = append(seq, "delete")
-		case "PATCH":
-			if strings.Contains(r.URL.Path, "/assets/") {
-				var b map[string]string
-				_ = json.Unmarshal(body, &b)
-				seq = append(seq, "rename "+b["name"])
+// TestPublishedReleaseAssetsAreNeverReplacedOrDeleted: on a published
+// mutable release, a differing asset is an error even with
+// replace_existing_assets, and an incomplete asset is reported, not
+// deleted. Nothing is written.
+func TestPublishedReleaseAssetsAreNeverReplacedOrDeleted(t *testing.T) {
+	t.Run("differing asset with replace_existing_assets", func(t *testing.T) {
+		f := newFakeGitHub(t)
+		fx := newFixture(t)
+		fx.gh().ReplaceExistingAssets = true
+		f.addRelease(tag, false, false, map[string]string{linuxName: "other bytes", darwinName: defaultFiles[darwinName], checksumName: defaultFiles[checksumName]})
+		res, err := Run(context.Background(), fx.input(f.client(t)))
+		if err == nil || !strings.Contains(err.Error(), "never replaced") || !strings.Contains(err.Error(), "left as it was") {
+			t.Fatalf("err = %v", err)
+		}
+		if w := f.writes(); len(w) != 0 {
+			t.Fatalf("wrote to a published release: %v", w)
+		}
+		wantStatuses(t, res, map[string]string{linuxName: StatusFailed, darwinName: StatusUnchanged, checksumName: StatusUnchanged})
+		if a := f.byTag(tag)[0].assets[0]; string(a.data) != "other bytes" {
+			t.Fatal("published asset modified")
+		}
+	})
+	t.Run("old incomplete asset", func(t *testing.T) {
+		f := newFakeGitHub(t)
+		fx := newFixture(t)
+		rel := f.addRelease(tag, false, false, map[string]string{linuxName: defaultFiles[linuxName], checksumName: defaultFiles[checksumName]})
+		f.mu.Lock()
+		st := f.addAssetLocked(rel, darwinName, nil, github.AssetStateStarter)
+		st.CreatedAt, st.UpdatedAt = time.Now().Add(-time.Hour), time.Now().Add(-time.Hour)
+		f.mu.Unlock()
+		_, err := Run(context.Background(), fx.input(f.client(t)))
+		if err == nil || !strings.Contains(err.Error(), "never deleted") {
+			t.Fatalf("err = %v", err)
+		}
+		if w := f.writes(); len(w) != 0 {
+			t.Fatalf("wrote to a published release: %v", w)
+		}
+	})
+	t.Run("incomplete asset appears after a failed upload", func(t *testing.T) {
+		f := newFakeGitHub(t)
+		fx := newFixture(t)
+		f.addRelease(tag, false, false, map[string]string{linuxName: defaultFiles[linuxName], checksumName: defaultFiles[checksumName]})
+		f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+			if r.Method == "POST" && r.URL.Query().Get("name") == darwinName {
+				f.mu.Lock()
+				st := f.addAssetLocked(f.byTagLocked(tag), darwinName, nil, github.AssetStateStarter)
+				st.CreatedAt, st.UpdatedAt = time.Now().Add(-time.Hour), time.Now().Add(-time.Hour)
+				f.mu.Unlock()
+				reply(w, 502, map[string]any{"message": "Bad Gateway"})
+				return true
 			}
+			return false
 		}
-		return false
-	}
-	res, err := Run(context.Background(), fx.input(f.client(t)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"upload " + linuxName + tmpSuffix, "delete", "rename " + linuxName}
-	if strings.Join(seq, "|") != strings.Join(want, "|") {
-		t.Fatalf("sequence %v, want %v", seq, want)
-	}
-	wantStatuses(t, res, map[string]string{linuxName: StatusReplaced, darwinName: StatusUnchanged, checksumName: StatusUnchanged})
-	rel := f.byTag(tag)[0]
-	if len(rel.assets) != 3 {
-		t.Fatalf("%d assets", len(rel.assets))
-	}
-	for _, a := range rel.assets {
-		if a.Name == linuxName && string(a.data) != defaultFiles[linuxName] {
-			t.Fatal("asset not replaced")
+		_, err := Run(context.Background(), fx.input(f.client(t)))
+		if err == nil || !strings.Contains(err.Error(), "never deleted") {
+			t.Fatalf("err = %v", err)
 		}
-		if strings.HasSuffix(a.Name, tmpSuffix) {
-			t.Fatal("temporary asset left behind")
+		if n := f.count("DELETE "); n != 0 {
+			t.Fatalf("deleted from a published release: %v", f.writes())
 		}
-	}
-	if fx.downloadURL(linuxName) != webBase+"/releases/download/"+tag+"/"+linuxName {
-		t.Fatalf("download URL %q", fx.downloadURL(linuxName))
-	}
-}
-
-func TestReplaceOnPublishedReleaseFailedUploadKeepsOldAsset(t *testing.T) {
-	f := newFakeGitHub(t)
-	fx := newFixture(t)
-	fx.gh().ReplaceExistingAssets = true
-	f.addRelease(tag, false, false, map[string]string{linuxName: "other bytes"})
-	f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
-		if r.Method == "POST" && r.URL.Query().Get("name") == linuxName+tmpSuffix {
-			reply(w, 400, map[string]any{"message": "Bad Request"})
-			return true
-		}
-		return false
-	}
-	_, err := Run(context.Background(), fx.input(f.client(t)))
-	if err == nil || !strings.Contains(err.Error(), "is untouched") {
-		t.Fatalf("err = %v", err)
-	}
-	for _, a := range f.byTag(tag)[0].assets {
-		if a.Name == linuxName && string(a.data) != "other bytes" {
-			t.Fatal("old asset modified")
-		}
-	}
-	if f.count("DELETE ") != 0 {
-		t.Fatalf("deleted although the replacement failed: %v", f.writes())
-	}
-}
-
-func TestReplaceOnPublishedReleaseRenameFailureIsExplained(t *testing.T) {
-	f := newFakeGitHub(t)
-	fx := newFixture(t)
-	fx.gh().ReplaceExistingAssets = true
-	f.addRelease(tag, false, false, map[string]string{linuxName: "other bytes"})
-	f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
-		if r.Method == "PATCH" && strings.Contains(r.URL.Path, "/assets/") {
-			reply(w, 400, map[string]any{"message": "Bad Request"})
-			return true
-		}
-		return false
-	}
-	_, err := Run(context.Background(), fx.input(f.client(t)))
-	if err == nil || !strings.Contains(err.Error(), linuxName+tmpSuffix) || !strings.Contains(err.Error(), "missing from the published release") {
-		t.Fatalf("err = %v", err)
-	}
-	found := false
-	for _, a := range f.byTag(tag)[0].assets {
-		if a.Name == linuxName+tmpSuffix && string(a.data) == defaultFiles[linuxName] {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("verified replacement not kept under the temporary name")
-	}
+	})
 }
 
 func TestDraftReplaceStillDeletesThenUploads(t *testing.T) {
@@ -521,42 +530,100 @@ func TestExistingTagMustPointToBuiltCommit(t *testing.T) {
 
 // --- N12: concurrent drafts' notes and uploads in progress ---
 
-func TestSwitchedDraftGetsThisRunsNotes(t *testing.T) {
+// TestLostCreateDoesNotClaimAnotherRunsDraft: the create's response is
+// lost and the re-read finds a draft another run created. It is used (as
+// the lowest id draft for the tag) but never deleted, and its assets are
+// only compared, not replaced.
+func TestLostCreateDoesNotClaimAnotherRunsDraft(t *testing.T) {
+	f := newFakeGitHub(t)
+	fx := newFixture(t)
+	var other *fakeRelease
+	f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+		if r.Method == "POST" && r.URL.Path == "/repos/acme/tool/releases" && other == nil {
+			other = f.addRelease(tag, true, false, map[string]string{linuxName: defaultFiles[linuxName]})
+			reply(w, http.StatusBadGateway, map[string]any{"message": "Bad Gateway"})
+			return true
+		}
+		return false
+	}
+	res, err := Run(context.Background(), fx.input(f.client(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	noReleaseDeleted(t, f)
+	if res.ReleaseID != other.ID {
+		t.Fatalf("release %d, want %d", res.ReleaseID, other.ID)
+	}
+	if n := f.count("POST /repos/acme/tool/releases"); n != 1+2 {
+		t.Fatalf("writes %v", f.writes())
+	}
+	wantStatuses(t, res, map[string]string{linuxName: StatusUnchanged, darwinName: StatusUploaded, checksumName: StatusUploaded})
+}
+
+// TestCheckBeforePublish: the draft is re-read right before it is
+// published; what changed meanwhile decides whether it is published.
+func TestCheckBeforePublish(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		setup    func(fx *fixture)
-		wantBody string
+		name    string
+		change  func(f *fakeGitHub, rel *fakeRelease)
+		wantErr string // "" = no error; the release must not be PATCHed
 	}{
-		{"notes", func(fx *fixture) { fx.gh().Notes = "ours" }, "ours"},
-		{"generate_notes", func(fx *fixture) { fx.gh().GenerateNotes = true }, "generated notes for " + tag},
-		{"nothing configured keeps the body", func(fx *fixture) {}, "theirs"},
+		{"published meanwhile is not edited", func(f *fakeGitHub, rel *fakeRelease) {
+			rel.Draft, rel.Immutable = false, true
+			f.refreshURLs(rel)
+		}, ""},
+		{"asset added meanwhile", func(f *fakeGitHub, rel *fakeRelease) {
+			f.addAssetLocked(rel, "extra.txt", []byte("x"), github.AssetStateUploaded)
+		}, "not in the manifest"},
+		{"asset changed meanwhile", func(f *fakeGitHub, rel *fakeRelease) {
+			for _, a := range rel.assets {
+				if a.Name == darwinName {
+					d := "sha256:" + sum("other")
+					a.Digest = &d
+				}
+			}
+		}, "missing or changed"},
+		{"asset removed meanwhile", func(f *fakeGitHub, rel *fakeRelease) {
+			rel.assets = rel.assets[1:]
+		}, "missing or changed"},
+		{"another release published meanwhile", func(f *fakeGitHub, rel *fakeRelease) {
+			o := &fakeRelease{Release: github.Release{ID: f.id(), TagName: tag}}
+			f.refreshURLs(o)
+			f.releases = append(f.releases, o)
+		}, "conflict"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeGitHub(t)
 			fx := newFixture(t)
-			tc.setup(fx)
-			var other *fakeRelease
+			changed := false
 			f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
-				if r.Method == "POST" && r.URL.Path == "/repos/acme/tool/releases" && other == nil {
-					other = f.addRelease(tag, true, false, nil)
+				if r.Method == "GET" && regexp.MustCompile(`^/repos/acme/tool/releases/\d+$`).MatchString(r.URL.Path) && !changed {
+					changed = true
 					f.mu.Lock()
-					other.Body = "theirs"
-					f.route(w, r, body)
+					tc.change(f, f.releases[0])
 					f.mu.Unlock()
-					return true
 				}
 				return false
 			}
 			res, err := Run(context.Background(), fx.input(f.client(t)))
-			if err != nil {
-				t.Fatal(err)
+			if !changed {
+				t.Fatal("the release was not re-read before publishing")
 			}
-			rels := f.byTag(tag)
-			if len(rels) != 1 || rels[0].ID != other.ID || res.ReleaseID != other.ID {
-				t.Fatalf("releases %d, result %+v", len(rels), res)
+			if n := f.count("PATCH "); n != 0 {
+				t.Fatalf("release edited: %v", f.writes())
 			}
-			if rels[0].Body != tc.wantBody {
-				t.Fatalf("body %q, want %q", rels[0].Body, tc.wantBody)
+			noReleaseDeleted(t, f)
+			if tc.wantErr == "" {
+				if err != nil || !res.Published {
+					t.Fatalf("err %v result %+v", err, res)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v", err)
+			}
+			if !f.releases[0].Draft {
+				t.Fatal("published")
 			}
 		})
 	}

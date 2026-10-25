@@ -367,7 +367,60 @@ func TestCompareWithoutDigestDownloadsWithoutToken(t *testing.T) {
 	}
 }
 
+// TestRecoverFromUpload502LeavingStarter: a failed upload leaves a
+// starter. A recent one may be a concurrent upload, so it is not deleted
+// and the asset fails; once it is older than the grace period, a re-run
+// deletes it and uploads the asset again.
 func TestRecoverFromUpload502LeavingStarter(t *testing.T) {
+	f := newFakeGitHub(t)
+	fx := newFixture(t)
+	var starter *fakeAsset
+	f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/assets") && r.URL.Query().Get("name") == darwinName && starter == nil {
+			f.mu.Lock()
+			starter = f.addAssetLocked(f.byTagLocked(tag), darwinName, nil, github.AssetStateStarter)
+			f.mu.Unlock()
+			reply(w, 502, map[string]any{"message": "Bad Gateway"})
+			return true
+		}
+		return false
+	}
+	res, err := Run(context.Background(), fx.input(f.client(t)))
+	if err == nil || !strings.Contains(err.Error(), "another run's upload in progress") {
+		t.Fatalf("err = %v", err)
+	}
+	if f.count("DELETE ") != 0 || res.Published {
+		t.Fatalf("deleted or published: %v", f.writes())
+	}
+
+	f.mu.Lock()
+	starter.CreatedAt = time.Now().Add(-time.Hour)
+	starter.UpdatedAt = starter.CreatedAt
+	f.mu.Unlock()
+	f.resetLog()
+	res, err = Run(context.Background(), fx.input(f.client(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStatuses(t, res, map[string]string{linuxName: StatusUnchanged, darwinName: StatusUploaded, checksumName: StatusUnchanged})
+	if f.count("DELETE ") != 1 {
+		t.Fatalf("requests %v", f.writes())
+	}
+	rel := f.byTag(tag)[0]
+	if len(rel.assets) != 3 || rel.Draft {
+		t.Fatalf("server state %+v", rel)
+	}
+	for _, a := range rel.assets {
+		if a.State != github.AssetStateUploaded {
+			t.Fatalf("leftover %s in state %s", a.Name, a.State)
+		}
+	}
+}
+
+// TestRecoverDeletesOldStarterAfterFailedUpload: a starter older than the
+// grace period seen after a failed upload is a leftover: it is deleted and
+// the upload retried within the same run.
+func TestRecoverDeletesOldStarterAfterFailedUpload(t *testing.T) {
 	f := newFakeGitHub(t)
 	fx := newFixture(t)
 	failed := false
@@ -375,8 +428,8 @@ func TestRecoverFromUpload502LeavingStarter(t *testing.T) {
 		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/assets") && r.URL.Query().Get("name") == darwinName && !failed {
 			failed = true
 			f.mu.Lock()
-			rel := f.byTagLocked(tag)
-			f.addAssetLocked(rel, darwinName, nil, github.AssetStateStarter)
+			st := f.addAssetLocked(f.byTagLocked(tag), darwinName, nil, github.AssetStateStarter)
+			st.CreatedAt, st.UpdatedAt = time.Now().Add(-time.Hour), time.Now().Add(-time.Hour)
 			f.mu.Unlock()
 			reply(w, 502, map[string]any{"message": "Bad Gateway"})
 			return true
@@ -388,17 +441,8 @@ func TestRecoverFromUpload502LeavingStarter(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantStatuses(t, res, all(StatusUploaded))
-	if f.count("DELETE ") != 1 || f.count("POST /repos/acme/tool/releases/") != 4 {
+	if f.count("DELETE ") != 1 || !res.Published {
 		t.Fatalf("requests %v", f.writes())
-	}
-	rel := f.byTag(tag)[0]
-	if len(rel.assets) != 3 || rel.Draft {
-		t.Fatalf("server state %+v", rel)
-	}
-	for _, a := range rel.assets {
-		if a.State != github.AssetStateUploaded {
-			t.Fatalf("leftover %s in state %s", a.Name, a.State)
-		}
 	}
 }
 

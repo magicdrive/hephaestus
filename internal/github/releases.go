@@ -244,15 +244,6 @@ func (c *Client) DownloadReleaseAsset(ctx context.Context, owner, repo string, a
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
-// DeleteRelease deletes a release (not its git tag). A 404 is returned as
-// an error matching ErrNotFound.
-func (c *Client) DeleteRelease(ctx context.Context, owner, repo string, id int64) error {
-	if err := checkRepo(owner, repo); err != nil {
-		return err
-	}
-	return c.doJSON(ctx, http.MethodDelete, repoURL(c.api, owner, repo, nil, "releases", itoa(id)), nil, nil)
-}
-
 // RenameReleaseAsset changes an asset's name (PATCH
 // /repos/{owner}/{repo}/releases/assets/{id}). GitHub rejects a name that
 // another asset of the release already has.

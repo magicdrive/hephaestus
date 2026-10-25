@@ -3,7 +3,6 @@ package github
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -39,16 +38,12 @@ func TestCompareCommits(t *testing.T) {
 	}
 }
 
-func TestDeleteReleaseAndRenameAsset(t *testing.T) {
+func TestRenameAsset(t *testing.T) {
 	var log []string
 	var renameBody map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log = append(log, r.Method+" "+r.URL.Path)
 		switch {
-		case r.Method == http.MethodDelete && r.URL.Path == "/repos/o/r/releases/7":
-			w.WriteHeader(204)
-		case r.Method == http.MethodDelete:
-			writeJSON(w, 404, map[string]any{"message": "Not Found"})
 		case r.Method == http.MethodPatch && r.URL.Path == "/repos/o/r/releases/assets/9":
 			b, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(b, &renameBody)
@@ -60,12 +55,6 @@ func TestDeleteReleaseAndRenameAsset(t *testing.T) {
 	defer srv.Close()
 	c, _ := newTestClient(t, srv)
 	ctx := context.Background()
-	if err := c.DeleteRelease(ctx, "o", "r", 7); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.DeleteRelease(ctx, "o", "r", 8); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v", err)
-	}
 	a, err := c.RenameReleaseAsset(ctx, "o", "r", 9, "tool.tar.gz")
 	if err != nil {
 		t.Fatal(err)

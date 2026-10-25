@@ -307,6 +307,14 @@ func (f *e2eGitHub) serveRelease(w http.ResponseWriter, r *http.Request, p []str
 		f.releases = append(f.releases, rel)
 		e2eReply(w, 201, f.view(rel))
 
+	case m == "GET" && len(p) == 2 && p[0] == "releases" && p[1] != "assets":
+		rel := f.release(p[1])
+		if rel == nil {
+			e2eNotFound(w)
+			return
+		}
+		e2eReply(w, 200, f.view(rel))
+
 	case m == "PATCH" && len(p) == 2 && p[0] == "releases":
 		rel := f.release(p[1])
 		if rel == nil {

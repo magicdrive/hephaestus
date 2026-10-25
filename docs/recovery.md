@@ -37,12 +37,12 @@ Exit codes: `0` read, `1` conflict, `2` usage, `3` GitHub could not be read.
 | 3 | **checksum** | the checksum file is rewritten from the manifest's archives each run | run again; a file changed after archiving is detected (digest) |
 | 4 | **GitHub temporarily unavailable** (5xx, 429, network) | GET, PUT, PATCH and DELETE are retried with backoff (and `Retry-After`); POST never blindly: the release and asset creations re-read state first | run again if it still failed; nothing is duplicated |
 | 5 | **after the draft was created** | a draft release with some assets | run again: the draft is found and reused, identical assets are skipped |
-| 6 | **during an upload** | possibly a "starter" (incomplete) asset | run again: a completed upload whose response was lost is verified and kept; an old incomplete one is deleted and uploaded again (a recent one is left alone in case another run is uploading) |
-| 7 | **asset digest mismatch** | an asset that differs from the local file | the upload is rejected (deleted, not kept); an **existing** asset that differs is an error, never overwritten unless `replace_existing_assets` on a mutable release. `status` shows `conflict` |
+| 6 | **during an upload** | possibly a "starter" (incomplete) asset | run again: a completed upload whose response was lost is verified and kept; on a draft, an incomplete one older than 10 minutes is deleted and uploaded again; a recent one is left alone, even right after this run's own failed attempt, since it cannot be told apart from another run's upload in progress. On a published release an incomplete asset is reported, never deleted |
+| 7 | **asset digest mismatch** | an asset that differs from the local file | the upload is rejected (deleted, not kept); an **existing** asset that differs is an error, never overwritten (`replace_existing_assets` replaces it on a draft only, never on a published release). `status` shows `conflict` |
 | 8 | **attestation** (workflow step before publishing) | nothing published | re-run the job; a repeated attestation of the same digests is harmless (each run adds one) |
 | 9 | **tap pull request after publishing** | the published release | re-run only `hephaestus run --stages formula,tap` (or the failed job): the formula comes from the manifest, an existing branch or pull request with the same content is reused, a branch with other content is refused |
 | 10 | **same tag again** | whatever earlier runs left | identical assets are no-ops; a tag pointing to another commit than the one built is an error before anything is written; a non-reproducible rebuild differs from the draft's assets and stops (`conflict`) |
-| 11 | **two runs at once** | one draft (the lowest id wins) | the release workflow serializes runs per tag (`concurrency`); if two runs still race, the one that created a second draft deletes only its own draft and continues on the winner's |
+| 11 | **two runs at once** | the winning release (published, else the lowest-id draft) and possibly an empty duplicate draft | the release workflow serializes runs per tag (`concurrency`). If two runs still race, the one whose new draft loses stops with a **conflict** and deletes nothing; its empty draft is left for you to delete. Right before publishing, every run re-reads the draft: one published meanwhile is not edited, and a draft whose assets changed or that lost to another release is not published. Re-run once the other run has finished |
 | 12 | **re-run on an immutable release** | the published release | identical assets: no-op; anything else (missing or different assets) is an error before any write. Title, notes and prerelease flag are never edited (on any published release); a difference is a warning |
 
 ## What each state allows
@@ -53,13 +53,22 @@ another commit than the one built is an error before anything is written.
 | Release | May be written | Never written |
 | --- | --- | --- |
 | none | a draft is created (after a lookup, never a blind second create), assets uploaded, then published | — |
-| draft | missing assets uploaded; incomplete leftovers (older than the grace period) deleted; title, notes and prerelease flag updated; published once complete | a differing asset (unless `replace_existing_assets`); publishing with assets not in the manifest; deleting the draft (only a duplicate this run just created) |
-| published, mutable | missing assets uploaded; a differing asset only with `replace_existing_assets` (uploaded under a temporary name first) | title, notes, prerelease flag; unpublishing; deleting the release |
+| draft | missing assets uploaded; incomplete leftovers (older than the grace period) deleted; title, notes and prerelease flag updated; published once complete and re-read | a differing asset (unless `replace_existing_assets`); publishing with assets not in the manifest, or after its assets changed; deleting the draft |
+| published, mutable | missing assets uploaded ("published-incomplete") | any existing asset (replacing or deleting it, even with `replace_existing_assets`, or an incomplete one); title, notes, prerelease flag; unpublishing; deleting the release |
 | published, immutable | nothing: assets are compared read-only | any asset, title, notes or prerelease flag; deleting the release |
 | conflict | nothing | the differing asset |
 
 A difference in title, notes or prerelease flag on a published release is
 logged as a warning; the run continues, so formula and tap can resume.
+
+Hephaestus never deletes a release, in any state: its GitHub client has no
+call for it. The only asset it may delete from a published release is one
+it has just uploaded itself and whose verification failed (the id comes
+from its own upload response).
+
+Known limit: GitHub has no conditional update, so between the re-read
+before publishing and the publish request itself (one API call) another
+writer could still change the draft.
 
 ## How each scenario is verified
 
@@ -69,12 +78,12 @@ logged as a warning; the run continues, so formula and tap can resume.
 | 3 | unit tests: `TestTamperDetected` (checksum), `TestSourceChangedBetweenPlanAndWrite` (archive) |
 | 4 | unit tests: `internal/github` retry tests; `TestCreateFailureDoesNotDuplicateRelease`, `TestRateLimitRetries` |
 | 5 | unit test `TestReusesExistingDraft`; E2E `recovery` |
-| 6 | unit tests: `TestRecoverFromUpload502LeavingStarter`, `TestUploadLostResponseIsVerifiedNotRepeated`, `TestRecentStarterAssetIsNotDeleted` |
-| 7 | unit tests: `TestExistingAssetSameDifferentReplace`, `TestDigestConflictOnPublishedRelease`, `TestImmutablePublishedRelease`; `status` conflict: `internal/status` tests |
+| 6 | unit tests: `TestRecoverFromUpload502LeavingStarter`, `TestRecoverDeletesOldStarterAfterFailedUpload`, `TestUploadLostResponseIsVerifiedNotRepeated`, `TestRecentStarterAssetIsNotDeleted`, `TestPublishedReleaseAssetsAreNeverReplacedOrDeleted` |
+| 7 | unit tests: `TestExistingAssetSameDifferentReplace`, `TestDigestConflictOnPublishedRelease`, `TestImmutablePublishedRelease`, `TestPublishedReleaseAssetsAreNeverReplacedOrDeleted`; `status` conflict: `internal/status` tests |
 | 8 | **documentation only**: the attestation is a workflow step (`release.yml`), exercised by every real release, not by a test |
 | 9 | E2E `tap-failure` (pull request creation fails after publishing; the full re-run writes nothing to the release and opens the pull request) and `tap-only`; tap unit tests for reused branches and pull requests |
 | 10 | unit tests: `TestRerunIsNoOp`, `TestExistingTagMustPointToBuiltCommit`; E2E `stable` (second run writes nothing) |
-| 11 | unit tests: `TestConcurrentDraftLoserDeletesOnlyItsOwnDraft`, `TestConcurrentDraftWinnerKeepsItsDraft`; the workflow's `concurrency` group is configuration, not tested |
+| 11 | unit tests: `TestConcurrentDraftLoserStopsWithoutDeleting` (lower-id draft, published release), `TestConcurrentDraftWinnerKeepsItsDraft`, `TestLostCreateDoesNotClaimAnotherRunsDraft`, `TestCheckBeforePublish` (published, asset added, changed or removed, another release published meanwhile), `TestClientCannotDeleteReleases`; the workflow's `concurrency` group is configuration, not tested |
 | 12 | unit tests: `TestImmutablePublishedRelease`, `TestPublishedReleaseIsNeverEdited`, `TestImmutableReleaseRerunWritesNothing`; E2E `immutable` and `immutable-resumes-tap` |
 | lost publish response | unit test `TestPublishLostResponseIsNotPublishedTwice` |
 
@@ -99,9 +108,11 @@ in the GitHub UI and run again.
 ## What is never done automatically
 
 - moving, deleting or re-creating a tag;
-- deleting a published release or replacing its assets (only with
-  `replace_existing_assets`, only on a mutable release, never on an
-  immutable one);
-- deleting a draft this run did not create;
+- deleting a release (published or draft, including a duplicate draft this
+  run created);
+- replacing or deleting an asset of a published release (mutable or
+  immutable; `replace_existing_assets` applies to drafts only);
+- deleting an incomplete asset that may be another run's upload in progress
+  (updated within the last 10 minutes);
 - force-pushing a tap branch, or merging a tap pull request;
 - rolling back a partly published release.
