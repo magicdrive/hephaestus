@@ -109,6 +109,9 @@ type fakeGit struct {
 	// afterCreate runs once the tag was created locally, between the
 	// preflight and the checks right before the push.
 	afterCreate func()
+	// beforePush runs when PushTag is called, before the push itself:
+	// another clone pushing the same tag after the last check.
+	beforePush func()
 	// remoteTagErr is returned by RemoteTag while non-nil.
 	remoteTagErr    error
 	created, pushed []string
@@ -184,6 +187,9 @@ func (g *fakeGit) CreateTag(_ context.Context, tag, commit, _ string) error {
 	return nil
 }
 func (g *fakeGit) PushTag(_ context.Context, tag string) error {
+	if g.beforePush != nil {
+		g.beforePush()
+	}
 	g.mu.Lock()
 	g.pushTried = true
 	if g.pushVanishes {
