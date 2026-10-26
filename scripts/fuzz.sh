@@ -3,8 +3,12 @@
 set -euo pipefail
 time="${1:-10s}"
 cd "$(dirname "$0")/.."
-for pkg in $(go list ./...); do
-  for fn in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true); do
+# The lists are read into variables first: a failure inside a for loop's
+# word list, or before `|| true`, would otherwise fuzz nothing and pass.
+pkgs="$(go list ./...)"
+for pkg in $pkgs; do
+  list="$(go test -list '^Fuzz' "$pkg")"
+  for fn in $(grep '^Fuzz' <<<"$list" || true); do
     echo "==> $pkg $fn"
     go test "$pkg" -run '^$' -fuzz "^${fn}\$" -fuzztime "$time"
   done

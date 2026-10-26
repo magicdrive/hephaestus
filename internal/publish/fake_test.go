@@ -106,7 +106,12 @@ type fakeGit struct {
 	// moveMainOnCreate moves origin/main when the tag is created (a push
 	// to main while the prompt was open).
 	moveMainOnCreate bool
-	created, pushed  []string
+	// afterCreate runs once the tag was created locally, between the
+	// preflight and the checks right before the push.
+	afterCreate func()
+	// remoteTagErr is returned by RemoteTag while non-nil.
+	remoteTagErr    error
+	created, pushed []string
 }
 
 func newFakeGit(t *testing.T) *fakeGit {
@@ -154,6 +159,9 @@ func (g *fakeGit) RemoteTag(_ context.Context, tag string) (string, bool, error)
 	if g.lostAfterPush && g.pushTried {
 		return "", false, errors.New("network down")
 	}
+	if g.remoteTagErr != nil {
+		return "", false, g.remoteTagErr
+	}
 	c, ok := g.remoteTags[tag]
 	return c, ok, nil
 }
@@ -167,6 +175,11 @@ func (g *fakeGit) CreateTag(_ context.Context, tag, commit, _ string) error {
 	g.created = append(g.created, tag)
 	if g.moveMainOnCreate {
 		g.originMain = otherSHA
+	}
+	if g.afterCreate != nil {
+		g.mu.Unlock()
+		g.afterCreate()
+		g.mu.Lock()
 	}
 	return nil
 }
