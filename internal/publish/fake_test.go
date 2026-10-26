@@ -73,20 +73,27 @@ func testPlan(t *testing.T, p *Project, tag string) *Plan {
 	return pl
 }
 
-// fakeGit is an in-memory clone of magicdrive/hephaestus on main.
+// fakeGit is an in-memory clone of magicdrive/hephaestus on main (the
+// default branch, originBranch).
 type fakeGit struct {
-	mu         sync.Mutex
-	dir        string
-	branch     string
-	status     string
-	origin     string
-	pushURL    string
-	head       string
-	originMain string
-	localTags  map[string]string
-	remoteTags map[string]string
-	fetchErr   error
-	pushErr    error
+	mu     sync.Mutex
+	dir    string
+	branch string
+	// originBranch is the branch whose origin ref is originMain; remoteHead
+	// is what refs/remotes/origin/HEAD names ("" when it is not set).
+	originBranch  string
+	remoteHead    string
+	remoteHeadErr error
+	fetched       []string // the branches FetchBranch was called with
+	status        string
+	origin        string
+	pushURL       string
+	head          string
+	originMain    string
+	localTags     map[string]string
+	remoteTags    map[string]string
+	fetchErr      error
+	pushErr       error
 	// lostAfterPush makes RemoteTag fail once the push was attempted.
 	lostAfterPush bool
 	// pushVanishes makes a "successful" push leave no remote tag.
@@ -104,7 +111,7 @@ type fakeGit struct {
 
 func newFakeGit(t *testing.T) *fakeGit {
 	return &fakeGit{
-		dir: t.TempDir(), branch: "main", origin: "git@github.com:magicdrive/hephaestus.git",
+		dir: t.TempDir(), branch: "main", originBranch: "main", remoteHead: "main", origin: "git@github.com:magicdrive/hephaestus.git",
 		head: testCommit, originMain: testCommit, localTags: map[string]string{}, remoteTags: map[string]string{},
 	}
 }
@@ -121,14 +128,20 @@ func (g *fakeGit) RemoteURL(_ context.Context, _ string, push bool) (string, err
 	}
 	return g.origin, nil
 }
-func (g *fakeGit) FetchMain(context.Context) error { return g.fetchErr }
+func (g *fakeGit) FetchBranch(_ context.Context, branch string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.fetched = append(g.fetched, branch)
+	return g.fetchErr
+}
+func (g *fakeGit) RemoteHead(context.Context) (string, error) { return g.remoteHead, g.remoteHeadErr }
 func (g *fakeGit) Commit(_ context.Context, ref string) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	switch {
 	case ref == "HEAD":
 		return g.head, nil
-	case ref == "refs/remotes/origin/main":
+	case ref == "refs/remotes/origin/"+g.originBranch:
 		return g.originMain, nil
 	case strings.HasPrefix(ref, "refs/tags/"):
 		return g.localTags[strings.TrimPrefix(ref, "refs/tags/")], nil
@@ -197,6 +210,8 @@ type fakeGH struct {
 	mu          sync.Mutex
 	t           *testing.T
 	repo        string // the release repository (owner/name)
+	defBranch   string // the release repository's default branch
+	repoErr     error  // returned by Repo
 	noTapSteps  bool   // the release job has no tap steps
 	authErr     error
 	ciRuns      []Run
@@ -227,8 +242,8 @@ type fakeGH struct {
 
 func newFakeGH(t *testing.T) *fakeGH {
 	return &fakeGH{
-		t:      t,
-		repo:   "magicdrive/hephaestus",
+		t:    t,
+		repo: "magicdrive/hephaestus", defBranch: "main",
 		ciRuns: []Run{{ID: 10, Path: ".github/workflows/ci.yml", Event: "push", HeadBranch: "main", HeadSHA: testCommit, Status: "completed", Conclusion: "success", HTMLURL: "https://ci/10", CreatedAt: time.Unix(100, 0)}},
 		rulesets: []Ruleset{
 			ruleset("Protect main", "branch", "active", []string{"refs/heads/main"}, "deletion", "non_fast_forward", "required_status_checks"),
@@ -331,7 +346,13 @@ func formulaFor(pl *Plan, rel Release) string {
 
 func (f *fakeGH) AuthStatus(context.Context) error { return f.authErr }
 func (f *fakeGH) Repo(_ context.Context, r Repo) (RepoInfo, error) {
-	return RepoInfo{FullName: r.String(), DefaultBranch: "main"}, nil
+	if f.repoErr != nil {
+		return RepoInfo{}, f.repoErr
+	}
+	if r.String() != f.repo {
+		return RepoInfo{FullName: r.String(), DefaultBranch: "main"}, nil // the tap
+	}
+	return RepoInfo{FullName: r.String(), DefaultBranch: f.defBranch}, nil
 }
 func (f *fakeGH) ActionsEnabled(context.Context, Repo) (bool, error) { return true, nil }
 func (f *fakeGH) Workflow(_ context.Context, _ Repo, file string) (Workflow, error) {

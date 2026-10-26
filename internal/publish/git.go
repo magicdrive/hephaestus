@@ -9,7 +9,7 @@ import (
 )
 
 // Git is the git access publish needs. Every method is read-only except
-// Fetch (updates refs/remotes/origin/main), CreateTag and PushTag.
+// FetchBranch (updates refs/remotes/origin/<branch>), CreateTag and PushTag.
 type Git interface {
 	TopLevel(ctx context.Context) (string, error)
 	CommonDir(ctx context.Context) (string, error)
@@ -20,8 +20,11 @@ type Git interface {
 	// RemoteURL returns the fetch URL, or with push the URL git pushes to
 	// (pushurl / pushInsteadOf applied).
 	RemoteURL(ctx context.Context, remote string, push bool) (string, error)
-	// FetchMain updates refs/remotes/origin/main without fetching tags.
-	FetchMain(ctx context.Context) error
+	// FetchBranch updates refs/remotes/origin/<branch> without fetching tags.
+	FetchBranch(ctx context.Context, branch string) error
+	// RemoteHead returns the branch refs/remotes/origin/HEAD names (the
+	// default branch as git last recorded it), "" when it is not set.
+	RemoteHead(ctx context.Context) (string, error)
 	// Commit resolves ref to a commit SHA; "" when it does not exist.
 	Commit(ctx context.Context, ref string) (string, error)
 	// RemoteTag returns the commit a tag on origin points to (peeled), and
@@ -68,9 +71,50 @@ func (g GitCLI) RemoteURL(ctx context.Context, remote string, push bool) (string
 	return g.out(ctx, "remote", "get-url", remote)
 }
 
-func (g GitCLI) FetchMain(ctx context.Context) error {
-	_, err := g.out(ctx, "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main")
+func (g GitCLI) FetchBranch(ctx context.Context, branch string) error {
+	if !validBranchName(branch) {
+		return fmt.Errorf("not a branch name: %q", branch)
+	}
+	_, err := g.out(ctx, "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch)
 	return err
+}
+
+func (g GitCLI) RemoteHead(ctx context.Context) (string, error) {
+	ref, err := g.out(ctx, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+	if err != nil && exitCode(err) == 1 {
+		return "", nil // not set (git remote set-head origin --auto sets it)
+	}
+	if err != nil {
+		return "", err
+	}
+	branch, ok := strings.CutPrefix(ref, "refs/remotes/origin/")
+	if !ok || branch == "" {
+		return "", fmt.Errorf("refs/remotes/origin/HEAD points to %s, not a branch of origin", ref)
+	}
+	return branch, nil
+}
+
+// validBranchName reports whether name is a branch name publish can put in
+// a refspec: what git check-ref-format --branch accepts, without the forms
+// that would change a refspec's meaning (":", "*", a leading "+" or "-").
+func validBranchName(name string) bool {
+	if name == "" || name == "HEAD" || strings.HasPrefix(name, "-") || strings.HasPrefix(name, "+") ||
+		strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") || strings.HasSuffix(name, ".") ||
+		strings.HasSuffix(name, ".lock") || strings.Contains(name, "..") || strings.Contains(name, "//") ||
+		strings.Contains(name, "@{") {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(" ~^:?*[\\", r) {
+			return false
+		}
+	}
+	for _, part := range strings.Split(name, "/") {
+		if strings.HasPrefix(part, ".") {
+			return false
+		}
+	}
+	return true
 }
 
 func (g GitCLI) Commit(ctx context.Context, ref string) (string, error) {

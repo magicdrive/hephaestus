@@ -97,7 +97,7 @@ var ErrDeclined = errors.New("not confirmed: nothing was created or pushed")
 // tag push, then it finds and watches the release workflow run that the
 // push started and verifies the published release. The release workflow
 // is the only publisher; Publish's only writes are the tag (local and
-// pushed) and a fetch of origin/main.
+// pushed) and a fetch of origin/<the release branch>.
 func Publish(ctx context.Context, d *Deps, p *Project, pl *Plan, opts Options) *Outcome {
 	opts.defaults()
 	o := &Outcome{State: NotStarted}
@@ -139,10 +139,10 @@ func Publish(ctx context.Context, d *Deps, p *Project, pl *Plan, opts Options) *
 	}
 	o.State = TagCreatedLocally
 
-	// Re-check right before the irreversible step: origin/main and the
+	// Re-check right before the irreversible step: origin/<branch> and the
 	// remote tag may have changed while the prompt was open.
-	if err := d.Git.FetchMain(ctx); err != nil {
-		return fail(fmt.Errorf("re-fetch origin/main: %w", err), unpushedHint(d, tag)...)
+	if err := d.Git.FetchBranch(ctx, p.Branch); err != nil {
+		return fail(fmt.Errorf("re-fetch origin/%s: %w", p.Branch, err), unpushedHint(d, tag)...)
 	}
 	if remote, err := d.Git.Commit(ctx, "refs/remotes/origin/"+p.Branch); err != nil || remote != rep.Commit {
 		return fail(fmt.Errorf("origin/%s moved to %q since the preflight (%v)", p.Branch, remote, err), unpushedHint(d, tag)...)

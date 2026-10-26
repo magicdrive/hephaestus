@@ -3,6 +3,16 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
+## Unreleased
+
+- `hephaestus publish` releases from the release repository's default branch
+  on GitHub (`main`, `master` or any name) instead of only `main`. The
+  preflight's first check, `default branch`, decides it: `-branch <name>`
+  must name that branch, and a local `refs/remotes/origin/HEAD` naming
+  another one fails it; when it cannot be read nothing is checked further
+  and nothing is tagged. The ruleset check is named after the branch
+  (`main ruleset` for `main`). `plan` and `status` are unchanged.
+
 ## v1.2.0
 
 The GitHub Action runs the verified release binary instead of compiling

@@ -22,7 +22,11 @@ type Project struct {
 	Cfg  *config.Config
 	Repo Repo // where the release is published (release.github)
 
-	Branch         string // the only branch releases are cut from
+	// Branch is the only branch releases are cut from: the release
+	// repository's default branch (main, master or any other name). Preflight
+	// resolves it; set before, it is an explicit choice (-branch) that must
+	// name that default branch.
+	Branch         string
 	ReleaseFile    string // the release workflow, the only publisher
 	CIFile         string // the CI workflow that must be green on the commit
 	RequiredCheck  string // the status check the main ruleset requires
@@ -67,7 +71,7 @@ func NewProject(cfg *config.Config) (*Project, error) {
 	}
 	return &Project{
 		Cfg: cfg, Repo: Repo{Owner: g.Owner, Name: g.Repo},
-		Branch: "main", ReleaseFile: ReleaseWorkflowFile, CIFile: CIWorkflowFile, RequiredCheck: RequiredCheck,
+		ReleaseFile: ReleaseWorkflowFile, CIFile: CIWorkflowFile, RequiredCheck: RequiredCheck,
 		Environment: ReleaseEnvironment, TapTokenSecret: TapTokenSecret,
 	}, nil
 }

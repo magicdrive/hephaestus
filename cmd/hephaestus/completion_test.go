@@ -68,11 +68,11 @@ func TestComplete(t *testing.T) {
 		{"help flag", []string{"init", "--he"}, []string{"--help"}, directiveDefault},
 		{"publish commands", []string{"publish", ""}, []string{"check", "status", "watch", "plan", "help"}, directiveDefault},
 		{"publish partial command", []string{"publish", "w"}, []string{"watch"}, directiveDefault},
-		{"publish flags", []string{"publish", "-"}, []string{"--config", "--discover-timeout", "--from-make", "--poll", "--watch-timeout", "--yes", "--help"}, directiveDefault},
+		{"publish flags", []string{"publish", "-"}, []string{"--branch", "--config", "--discover-timeout", "--from-make", "--poll", "--watch-timeout", "--yes", "--help"}, directiveDefault},
 		{"publish command flags", []string{"publish", "check", "--f"}, []string{"--from-make"}, directiveDefault},
 		{"publish --config is a file", []string{"publish", "watch", "--config", ""}, nil, directiveFile},
 		{"publish version is not completed", []string{"publish", "check", "v"}, nil, directiveDefault},
-		{"publish no command after a flag", []string{"publish", "--yes", ""}, []string{"--config", "--discover-timeout", "--from-make", "--poll", "--watch-timeout", "--help"}, directiveDefault},
+		{"publish no command after a flag", []string{"publish", "--yes", ""}, []string{"--branch", "--config", "--discover-timeout", "--from-make", "--poll", "--watch-timeout", "--help"}, directiveDefault},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, d := complete(tc.words)

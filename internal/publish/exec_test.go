@@ -153,7 +153,7 @@ func TestGitCLI(t *testing.T) {
 	if _, ok, err := g.RemoteTag(ctx, "v1.0.0"); ok || err != nil {
 		t.Errorf("remote tag: %t %v", ok, err)
 	}
-	_ = g.FetchMain(ctx)
+	_ = g.FetchBranch(ctx, "main")
 	_ = g.CreateTag(ctx, "v1.0.0", testCommit, "Release v1.0.0")
 	_ = g.PushTag(ctx, "v1.0.0")
 	if !slices.ContainsFunc(rec.calls, func(c []string) bool { return slices.Contains(c, "push") }) {

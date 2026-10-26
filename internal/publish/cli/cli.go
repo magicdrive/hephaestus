@@ -72,6 +72,7 @@ type Config struct {
 // Flags are publish's flags.
 type Flags struct {
 	Config          string
+	Branch          string
 	Yes             bool
 	FromMake        bool
 	DiscoverTimeout time.Duration
@@ -85,6 +86,7 @@ func NewFlagSet(name string) (*flag.FlagSet, *Flags) {
 	f := &Flags{}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.StringVar(&f.Config, "config", "hephaestus.yaml", "configuration file")
+	fs.StringVar(&f.Branch, "branch", "", "the branch releases are cut from, when it must be checked by name (default: the release repository's default branch)")
 	fs.BoolVar(&f.Yes, "yes", false, "confirm without a prompt (explicit non-interactive mode)")
 	fs.BoolVar(&f.FromMake, "from-make", false, "read the version from the environment the Makefile sets")
 	fs.DurationVar(&f.DiscoverTimeout, "discover-timeout", 5*time.Minute, "how long to wait for the release run to appear")
@@ -207,6 +209,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, c Config)
 	if cmd == "plan" {
 		return printPlan(stdout, pl)
 	}
+	p.Branch = f.Branch // "": the preflight takes the repository's default branch
 
 	d := &publish.Deps{
 		Git: publish.GitCLI{Run: publish.ExecRunner},
@@ -341,10 +344,13 @@ hephaestus.yaml to its release repository (release.github). The release
 workflow, .github/workflows/release.yml, is the only publisher: publish pushes
 the tag that starts it, then follows it and verifies what it published.
 
-  1. preflight (read-only, plus a fetch of origin/main): on main, clean worktree,
-     HEAD = origin/main, origin is the release repository, the tag exists neither
-     locally nor on origin, CI (ci.yml push run) succeeded on exactly this commit,
-     the v* tag ruleset is active, the main ruleset requires ci-gate, environment
+  1. preflight (read-only, plus a fetch of origin/<branch>): the release
+     branch is the release repository's default branch on GitHub (main, master
+     or any name; -branch must name it, and so must origin/HEAD when set: else
+     nothing is tagged); on that branch, clean worktree, HEAD = origin/<branch>,
+     origin is the release repository, the tag exists neither locally nor on
+     origin, CI (ci.yml push run) succeeded on exactly this commit, the v* tag
+     ruleset is active, the branch's ruleset requires ci-gate, environment
      "release" deploys only from v* tags, no release or draft exists yet, and
      hephaestus preflight --strict passes; for a stable version with a formula
      also the tap: token secret present (name only), pull request mode, formula

@@ -60,7 +60,8 @@ type Check struct {
 // Report is the preflight outcome.
 type Report struct {
 	Checks []Check
-	// Commit is the commit the tag will point to (local main == origin/main).
+	// Commit is the commit the tag will point to (the local release branch
+	// == origin/<it>).
 	Commit string
 	// TapHeads records each tap's default branch head before the release,
 	// keyed by owner/name, to prove later that a skipped tap was not changed.
@@ -113,13 +114,18 @@ func (r *Report) Print(w io.Writer) {
 }
 
 // Preflight checks, without writing anything, that tag pl.Version can be
-// released now from the local main branch. The only local change is a
-// fetch of origin/main.
+// released now from the release repository's default branch, checked out
+// locally. The only local change is a fetch of origin/<that branch>. It
+// first resolves the branch (p.Branch); when it cannot, nothing that depends
+// on it is checked and the preflight fails.
 func Preflight(ctx context.Context, d *Deps, p *Project, pl *Plan) *Report {
 	r := &Report{TapHeads: map[string]string{}}
 	tag := pl.Version.Tag
 	r.add("version", true, "%s (%s)", tag, pl.Version.Kind())
 
+	if !resolveBranch(ctx, d, p, r) {
+		return r
+	}
 	preflightGit(ctx, d, p, tag, r)
 	preflightGitHub(ctx, d, p, pl, r)
 	if pl.Version.Prerelease {
@@ -153,6 +159,48 @@ func preflightGeneric(ctx context.Context, d *Deps, tag string, r *Report) {
 			r.add("  "+c.ID, false, "%s: %s", c.Status, c.Message)
 		}
 	}
+}
+
+// resolveBranch sets p.Branch to the branch releases are cut from: the
+// release repository's default branch on GitHub. A branch already set
+// (-branch) must be that branch, and so must the one a local
+// refs/remotes/origin/HEAD names, if it is set: when they disagree the
+// branch is ambiguous (a renamed default branch, a stale clone) and nothing
+// is tagged. It reports how the branch was decided.
+func resolveBranch(ctx context.Context, d *Deps, p *Project, r *Report) bool {
+	const name = "default branch"
+	info, err := d.GH.Repo(ctx, p.Repo)
+	if err != nil {
+		r.add(name, false, "cannot read %s's default branch, so nothing can be tagged: %v", p.Repo, err)
+		return false
+	}
+	def := info.DefaultBranch
+	if !validBranchName(def) {
+		r.add(name, false, "%s reports the default branch %q, not a branch name publish can use", p.Repo, def)
+		return false
+	}
+	from := []string{"GitHub"}
+	if p.Branch != "" {
+		if p.Branch != def {
+			r.add(name, false, "-branch %s, but the default branch of %s is %s; releases are cut from the default branch", p.Branch, p.Repo, def)
+			return false
+		}
+		from = append(from, "-branch")
+	}
+	head, err := d.Git.RemoteHead(ctx)
+	switch {
+	case err != nil:
+		r.add(name, false, "refs/remotes/origin/HEAD: %v", err)
+		return false
+	case head != "" && head != def:
+		r.add(name, false, "refs/remotes/origin/HEAD names %s, the default branch of %s is %s; check which is right (git remote set-head origin --auto updates it)", head, p.Repo, def)
+		return false
+	case head != "":
+		from = append(from, "origin/HEAD")
+	}
+	p.Branch = def
+	r.add(name, true, "%s (%s)", def, strings.Join(from, ", "))
+	return true
 }
 
 func preflightGit(ctx context.Context, d *Deps, p *Project, tag string, r *Report) {
@@ -201,8 +249,8 @@ func preflightGit(ctx context.Context, d *Deps, p *Project, tag string, r *Repor
 		r.add("worktree", true, "clean")
 	}
 
-	if err := d.Git.FetchMain(ctx); err != nil {
-		r.addErr("fetch origin/main", err)
+	if err := d.Git.FetchBranch(ctx, p.Branch); err != nil {
+		r.addErr("fetch origin/"+p.Branch, err)
 		return
 	}
 	head, err1 := d.Git.Commit(ctx, "HEAD")
@@ -271,7 +319,7 @@ func preflightGitHub(ctx context.Context, d *Deps, p *Project, pl *Plan, r *Repo
 		ok, detail := tagRulesetProtects(sets, pl.Version.Tag)
 		r.add("tag ruleset", ok, "%s", detail)
 		ok, detail = branchRequiresCheck(sets, p.Branch, p.RequiredCheck)
-		r.add("main ruleset", ok, "%s", detail)
+		r.add(p.Branch+" ruleset", ok, "%s", detail)
 	}
 
 	if env, err := d.GH.Environment(ctx, p.Repo, p.Environment); err != nil {
@@ -296,8 +344,8 @@ func preflightGitHub(ctx context.Context, d *Deps, p *Project, pl *Plan, r *Repo
 	r.add("release config", !pl.Draft, "release.github.draft: %t (a draft is never published)", pl.Draft)
 }
 
-// checkCI requires the CI workflow's push run on main for exactly commit to
-// have succeeded. A green run of another commit does not count.
+// checkCI requires the CI workflow's push run on the release branch for
+// exactly commit to have succeeded. A green run of another commit does not count.
 func checkCI(ctx context.Context, d *Deps, p *Project, commit string, r *Report) {
 	runs, err := d.GH.Runs(ctx, p.Repo, p.CIFile, "push", p.Branch, commit)
 	if err != nil {

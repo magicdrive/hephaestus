@@ -21,8 +21,8 @@ hephaestus publish [command] [flags] vX.Y.Z
 
 | Command | Make target | Writes | Purpose |
 | --- | --- | --- | --- |
-| *(none)* | `make publish vX.Y.Z` | the tag (local and pushed), a fetch of `origin/main` | preflight, confirmation, annotated tag, tag push, follow the release run, verify the release |
-| `check` | `make publish-check vX.Y.Z` | a fetch of `origin/main` | the preflight only |
+| *(none)* | `make publish vX.Y.Z` | the tag (local and pushed), a fetch of `origin/<default branch>` | preflight, confirmation, annotated tag, tag push, follow the release run, verify the release |
+| `check` | `make publish-check vX.Y.Z` | a fetch of `origin/<default branch>` | the preflight only |
 | `status` | `make publish-status vX.Y.Z` | nothing | what exists for a version: local and remote tag, release run, release, and (when published) the full verification |
 | `watch` | `make publish-watch vX.Y.Z` | nothing | find and follow the release run of an already pushed tag, then verify |
 | `plan` | — | nothing | what the release workflow does for a tag, as `key=value` lines for `$GITHUB_OUTPUT` (below) |
@@ -162,7 +162,7 @@ verified). None is configurable.
 
 | Convention | Checked by |
 | --- | --- |
-| Releases are cut from branch **`main`**, which is the repository's default branch | preflight `branch`, `repository` |
+| Releases are cut from the release repository's **default branch** on GitHub (`main`, `master` or any name). `-branch <name>` (`hephaestus publish -branch master vX.Y.Z`) makes the preflight require that name. A local `refs/remotes/origin/HEAD` naming another branch (a renamed default branch, a stale clone) fails the preflight: `git remote set-head origin --auto` updates it. When the default branch cannot be read (no network, no access), nothing that depends on it is checked and nothing is tagged | preflight `default branch`, `branch`, `repository` |
 | The remote **`origin`** (fetch and push URL) is the `release.github` repository on github.com | preflight `origin`, `origin push url` |
 | Run from the repository root, with `git`, `gh` (authenticated: `gh auth status`) and GNU Make | preflight `git repository`, `gh auth`, `generic preflight` |
 
@@ -185,7 +185,7 @@ verified). None is configurable.
 
 | Convention | Checked by |
 | --- | --- |
-| **`.github/workflows/ci.yml`** runs on `push` to `main`, and its push run for exactly the commit being tagged succeeded (a run started through `workflow_call` does not count) | preflight `ci on commit` |
+| **`.github/workflows/ci.yml`** runs on `push` to the default branch, and its push run for exactly the commit being tagged succeeded (a run started through `workflow_call` does not count) | preflight `ci on commit` |
 | `ci.yml` has an aggregating job **`ci-gate`** that `needs` every other job and fails unless all succeeded (`if: always()`); it is the check the main ruleset requires | preflight `main ruleset` |
 | **`.github/workflows/release.yml`** is active, runs on `push` of tags `v*`, and is the only workflow that publishes | preflight `release workflow`; the run is found by file, `push` event, tag and commit |
 | Its publishing job runs in environment **`release`** | preflight `environment` |
@@ -229,7 +229,7 @@ the tap:
 | Setting | Required value | Checked by |
 | --- | --- | --- |
 | GitHub Actions | enabled; the repository is not archived | preflight `actions`, `repository` |
-| Ruleset on `main` | **active** branch ruleset covering `main` (`refs/heads/main`, `~DEFAULT_BRANCH` or `~ALL`) with a required status check **`ci-gate`** | preflight `main ruleset` |
+| Ruleset on the default branch | **active** branch ruleset covering it (`refs/heads/<branch>`, `~DEFAULT_BRANCH` or `~ALL`) with a required status check **`ci-gate`** | preflight `<branch> ruleset` (e.g. `main ruleset`) |
 | Ruleset on tags | **active** tag ruleset whose conditions cover the tag (e.g. `refs/tags/v*`) with the rules **deletion** and **update**, and no active rule that blocks **creation** of the tag. Bypass actors are reported as a warning | preflight `tag ruleset` |
 | Environment `release` | deployment branches and tags: **selected** policies, **tags only** (no branch policy, not "protected branches"), one matching the version (e.g. `v*`); required reviewers are optional | preflight `environment` |
 | Secret in `release` (with `brews`) | **`HOMEBREW_TAP_GITHUB_TOKEN`**: write access (contents, pull requests) to the tap only. Only its name is checked; whether it can write is checked by the workflow's read-only rehearsal before the release is published | preflight `tap token secret` |
@@ -241,10 +241,10 @@ the tap:
   and an explicit confirmation (default **No**; `YES=1` on the make command
   line or `-yes` for a non-interactive run). It never moves or deletes a tag,
   locally or on `origin`, and never publishes, edits or deletes a release.
-- Right before the push, `origin/main` and the remote tag are checked again
+- Right before the push, `origin/<default branch>` and the remote tag are checked again
   (they may have changed while the prompt was open). A failure before the
   push leaves at most a local tag, which publish does not delete for you.
-- Its only writes are that tag and a fetch of `origin/main` (no tags).
+- Its only writes are that tag and a fetch of `origin/<default branch>` (no tags).
   Every GitHub access is a read through `gh`; secrets are read by name only.
 - The release run is identified by workflow file, `push` event, the tag, the
   tagged commit and a creation time after the push — never "the latest
