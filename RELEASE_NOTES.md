@@ -1,6 +1,6 @@
-# Hephaestus v1.3.0-rc.1
+# Hephaestus v1.3.0
 
-Release candidate of v1.3.0. `hephaestus publish` no longer assumes that
+`hephaestus publish` no longer assumes that
 releases are cut from `main`: it tells the repository's **default branch**
 from the **release branch**, and checks everything that guards a release on
 the release branch.
@@ -46,7 +46,7 @@ When a branch cannot be read (no network, no access), or a local
 `refs/remotes/origin/HEAD` names another branch than the default branch,
 nothing further is checked and nothing is tagged.
 
-See [docs/publish.md](https://github.com/magicdrive/hephaestus/blob/v1.3.0-rc.1/docs/publish.md#release-branch).
+See [docs/publish.md](https://github.com/magicdrive/hephaestus/blob/v1.3.0/docs/publish.md#release-branch).
 
 ## Fixes
 
@@ -54,6 +54,16 @@ See [docs/publish.md](https://github.com/magicdrive/hephaestus/blob/v1.3.0-rc.1/
   was checked. It now counts only for the repository's default branch, in
   `hephaestus publish` and in `hephaestus preflight` (`github.ruleset.branch`
   and the required checks of `github.ci`).
+
+## Release candidate
+
+v1.3.0-rc.1 was released with this `hephaestus publish` itself (`make
+publish`): the preflight resolved `main` as both the default branch and the
+release branch, re-read its head on GitHub before the tag push, and the
+release was verified (assets, checksums, provenance attestations, the tap
+left untouched). Its binaries ran on Linux, macOS and Windows, amd64 and
+arm64 (`verify-release.yml`), and passed `publish check` on a repository
+whose default branch is `master`.
 
 ## Compatibility
 
@@ -72,4 +82,4 @@ See [docs/publish.md](https://github.com/magicdrive/hephaestus/blob/v1.3.0-rc.1/
 - `hephaestus check` shows the tap pull request branch as a template;
   `hephaestus preflight --tag` renders it.
 
-**Full Changelog**: https://github.com/magicdrive/hephaestus/compare/v1.2.0...v1.3.0-rc.1
+**Full Changelog**: https://github.com/magicdrive/hephaestus/compare/v1.2.0...v1.3.0

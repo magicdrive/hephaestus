@@ -3,6 +3,18 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
+## v1.3.0
+
+`hephaestus publish` tells the repository's default branch from the release
+branch (`-branch`, `preflight.branch`, else the default branch) and checks
+everything that guards a release on the release branch. The full notes are
+in [RELEASE_NOTES.md](RELEASE_NOTES.md); the changes are listed under
+v1.3.0-rc.1 below.
+
+- Since v1.3.0-rc.1: `action/VERSION` names v1.3.0. v1.3.0-rc.1 was released
+  and verified with this `make publish`, and its binaries ran on all six
+  platforms (`verify-release.yml`).
+
 ## v1.3.0-rc.1
 
 First release candidate of 1.3; full notes in
