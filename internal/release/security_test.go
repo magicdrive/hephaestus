@@ -530,12 +530,6 @@ func TestExistingTagMustPointToBuiltCommit(t *testing.T) {
 	}
 }
 
-// --- N12: concurrent drafts' notes and uploads in progress ---
-
-// TestLostCreateDoesNotClaimAnotherRunsDraft: the create's response is
-// lost and the re-read finds a draft another run created. It is used (as
-// the lowest id draft for the tag) but never deleted, and its assets are
-// only compared, not replaced.
 // TestUnverifiableTagStopsBeforeAnyWrite: when the commit is known but the
 // tag cannot be read (a token without access, an outage that outlasts the
 // retries), nothing is created, uploaded or published. GitHub ignores
@@ -604,6 +598,12 @@ func TestUnverifiableTagStopsBeforeAnyWrite(t *testing.T) {
 	})
 }
 
+// --- N12: concurrent drafts' notes and uploads in progress ---
+
+// TestLostCreateDoesNotClaimAnotherRunsDraft: the create's response is
+// lost and the re-read finds a draft another run created. It is used (as
+// the lowest id draft for the tag) but never deleted, and its assets are
+// only compared, not replaced.
 func TestLostCreateDoesNotClaimAnotherRunsDraft(t *testing.T) {
 	f := newFakeGitHub(t)
 	fx := newFixture(t)
