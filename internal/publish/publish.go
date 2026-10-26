@@ -139,13 +139,17 @@ func Publish(ctx context.Context, d *Deps, p *Project, pl *Plan, opts Options) *
 	}
 	o.State = TagCreatedLocally
 
-	// Re-check right before the irreversible step: origin/<branch> and the
-	// remote tag may have changed while the prompt was open.
+	// Re-check right before the irreversible step: the release branch (on
+	// origin and on GitHub) and the remote tag may have changed while the
+	// prompt was open.
 	if err := d.Git.FetchBranch(ctx, p.Branch); err != nil {
 		return fail(fmt.Errorf("re-fetch origin/%s: %w", p.Branch, err), unpushedHint(d, tag)...)
 	}
 	if remote, err := d.Git.Commit(ctx, "refs/remotes/origin/"+p.Branch); err != nil || remote != rep.Commit {
 		return fail(fmt.Errorf("origin/%s moved to %q since the preflight (%v)", p.Branch, remote, err), unpushedHint(d, tag)...)
+	}
+	if sha, err := d.GH.BranchHead(ctx, p.Repo, p.Branch); err != nil || sha != rep.Commit {
+		return fail(fmt.Errorf("%s on GitHub moved to %q since the preflight (%v)", p.Branch, sha, err), unpushedHint(d, tag)...)
 	}
 	if c, exists, err := d.Git.RemoteTag(ctx, tag); err != nil || exists {
 		return fail(fmt.Errorf("remote tag %s appeared (-> %q) or cannot be checked (%v)", tag, c, err), unpushedHint(d, tag)...)

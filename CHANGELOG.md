@@ -5,13 +5,27 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
 ## Unreleased
 
-- `hephaestus publish` releases from the release repository's default branch
-  on GitHub (`main`, `master` or any name) instead of only `main`. The
-  preflight's first check, `default branch`, decides it: `-branch <name>`
-  must name that branch, and a local `refs/remotes/origin/HEAD` naming
-  another one fails it; when it cannot be read nothing is checked further
-  and nothing is tagged. The ruleset check is named after the branch
-  (`main ruleset` for `main`). `plan` and `status` are unchanged.
+- `hephaestus publish` separates the release repository's **default branch**
+  on GitHub from the **release branch** releases are cut from. The release
+  branch is `-branch <name>`, else `preflight.branch` of `hephaestus.yaml`
+  (which `hephaestus preflight` already read), else the default branch
+  (`main`, `master`, `develop` or any name) instead of only `main`: a
+  repository whose default branch is `develop` can release from
+  `release/stable`. The preflight reports both (`default branch`, `release
+  branch`) and checks the release branch everywhere: it must exist on GitHub
+  and be a branch name (not a tag, a SHA, a full ref or a refspec); the clone
+  must be on it with `HEAD` = `origin/<branch>` = its head on GitHub; CI must
+  have succeeded on it for the commit; a ruleset on it must require
+  `ci-gate`; and its head on GitHub is checked again right before the tag
+  push. A local `refs/remotes/origin/HEAD` naming another branch than the
+  default branch fails the preflight. When a branch cannot be read, nothing
+  further is checked and nothing is tagged. The ruleset check is named after
+  the branch (`main ruleset` for `main`). `plan` and `status` are unchanged.
+- A ruleset that covers `~DEFAULT_BRANCH` now counts only for the
+  repository's default branch, in `hephaestus publish` and in `hephaestus
+  preflight` (`github.ruleset.branch`, the required checks of `github.ci`):
+  it no longer counts as protecting a configured release branch with another
+  name.
 
 ## v1.2.0
 

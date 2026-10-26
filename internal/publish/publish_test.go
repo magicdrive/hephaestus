@@ -143,15 +143,19 @@ func TestRulesetAndEnvironmentChecks(t *testing.T) {
 	if ok, _ := tagRulesetProtects(excluded, "v1.0.0"); ok {
 		t.Error("excluded tag passed")
 	}
-	if ok, d := branchRequiresCheck(gh.rulesets, "main", "ci-gate"); !ok {
+	if ok, d := branchRequiresCheck(gh.rulesets, "main", "main", "ci-gate"); !ok {
 		t.Error(d)
 	}
-	if ok, _ := branchRequiresCheck(gh.rulesets, "main", "other"); ok {
+	if ok, _ := branchRequiresCheck(gh.rulesets, "main", "main", "other"); ok {
 		t.Error("missing check passed")
 	}
 	def := []Ruleset{ruleset("d", "branch", "active", []string{"~DEFAULT_BRANCH"}, "required_status_checks")}
-	if ok, _ := branchRequiresCheck(def, "main", "ci-gate"); !ok {
+	if ok, _ := branchRequiresCheck(def, "main", "main", "ci-gate"); !ok {
 		t.Error("~DEFAULT_BRANCH not understood")
+	}
+	// ~DEFAULT_BRANCH is the default branch, not the release branch.
+	if ok, d := branchRequiresCheck(def, "release/stable", "develop", "ci-gate"); ok {
+		t.Errorf("the default branch's ruleset protected release/stable: %s", d)
 	}
 
 	for _, tc := range []struct {

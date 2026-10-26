@@ -117,6 +117,31 @@ func validBranchName(name string) bool {
 	return true
 }
 
+// releaseBranchName reports whether name can be the release branch: a
+// branch name publish can put in a refspec (validBranchName) that cannot
+// be taken for something else: not a full ref ("refs/heads/main"), a commit
+// SHA or a release tag (v1.2.3).
+func releaseBranchName(name string) bool {
+	if !validBranchName(name) || strings.HasPrefix(name, "refs/") || isCommitSHA(name) {
+		return false
+	}
+	_, err := ParseVersion(name)
+	return err != nil
+}
+
+// isCommitSHA reports whether s is a full SHA-1 or SHA-256 commit ID.
+func isCommitSHA(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func (g GitCLI) Commit(ctx context.Context, ref string) (string, error) {
 	c, err := g.out(ctx, "rev-parse", "--verify", "--quiet", "--end-of-options", ref+"^{commit}")
 	if err != nil && exitCode(err) == 1 {

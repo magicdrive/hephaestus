@@ -238,12 +238,20 @@ type fakeGH struct {
 	attested    []string
 	jobs        []Job
 	laggingJobs [][]Job
+	// heads are the release repository's branches (name -> head); headErr
+	// is returned by BranchHead for it. After movesAfter reads (when > 0)
+	// every branch is at otherSHA: a push to the release branch while
+	// publish runs.
+	heads      map[string]string
+	headErr    error
+	headReads  int
+	movesAfter int
 }
 
 func newFakeGH(t *testing.T) *fakeGH {
 	return &fakeGH{
 		t:    t,
-		repo: "magicdrive/hephaestus", defBranch: "main",
+		repo: "magicdrive/hephaestus", defBranch: "main", heads: map[string]string{"main": testCommit},
 		ciRuns: []Run{{ID: 10, Path: ".github/workflows/ci.yml", Event: "push", HeadBranch: "main", HeadSHA: testCommit, Status: "completed", Conclusion: "success", HTMLURL: "https://ci/10", CreatedAt: time.Unix(100, 0)}},
 		rulesets: []Ruleset{
 			ruleset("Protect main", "branch", "active", []string{"refs/heads/main"}, "deletion", "non_fast_forward", "required_status_checks"),
@@ -445,7 +453,23 @@ func (f *fakeGH) File(_ context.Context, _ Repo, path, ref string) ([]byte, erro
 	}
 	return nil, ErrNotFound
 }
-func (f *fakeGH) BranchHead(_ context.Context, _ Repo, branch string) (string, error) {
+func (f *fakeGH) BranchHead(_ context.Context, r Repo, branch string) (string, error) {
+	if r.String() == f.repo {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.headErr != nil {
+			return "", f.headErr
+		}
+		f.headReads++
+		sha, ok := f.heads[branch]
+		if !ok {
+			return "", ErrNotFound
+		}
+		if f.movesAfter > 0 && f.headReads > f.movesAfter {
+			return otherSHA, nil
+		}
+		return sha, nil
+	}
 	if branch == "main" {
 		return f.tapHead, nil
 	}

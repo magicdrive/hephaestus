@@ -149,6 +149,16 @@ func TestScenarios(t *testing.T) {
 			f.gh.errs["ListEnvironmentSecretNames"] = apiErr(403, "Resource not accessible by integration")
 		}, "github.secrets", Unknown, "403"},
 		{"no branch ruleset", "v1.2.0", func(f *fixture) { f.gh.rulesets = f.gh.rulesets[1:] }, "github.ruleset.branch", Warn, "no active ruleset protects main"},
+		{"~DEFAULT_BRANCH does not protect another release branch", "v1.2.0", func(f *fixture) { f.in.Branch = "release/stable" }, "github.ruleset.branch", Warn, "no active ruleset protects release/stable"},
+		{"release branch ruleset", "v1.2.0", func(f *fixture) {
+			f.in.Branch = "release/stable"
+			f.gh.rulesets[0].Conditions.RefName.Include = []string{"refs/heads/release/*"}
+		}, "github.ruleset.branch", Pass, "requires"},
+		{"release branch ruleset's required check missing", "v1.2.0", func(f *fixture) {
+			f.in.Branch = "release/stable"
+			f.gh.rulesets[0].Conditions.RefName.Include = []string{"refs/heads/release/*"}
+			f.gh.runs = f.gh.runs[1:]
+		}, "github.ci", Fail, "ci-gate: not reported"},
 		{"no tag ruleset", "v1.2.0", func(f *fixture) { f.gh.rulesets = f.gh.rulesets[:1] }, "github.ruleset.tag", Warn, "no active ruleset"},
 		{"tag ruleset disabled", "v1.2.0", func(f *fixture) { f.gh.rulesets[1].Enforcement = "disabled" }, "github.ruleset.tag", Warn, "no active ruleset"},
 		{"tag ruleset blocks creation", "v1.2.0", func(f *fixture) {
