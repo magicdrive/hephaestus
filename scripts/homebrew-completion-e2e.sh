@@ -40,9 +40,18 @@ for f in hephaestus heph-comp; do
   fi
 done
 
+# Homebrew 7.0.11 and later load a formula of a tap that is not official only
+# once it is trusted (brew trust): brew audit refuses the formula of an
+# untrusted tap. Only the throw-away tap is trusted, while it exists (when
+# this Homebrew has brew trust); brew untrust also forgets the formulas
+# brew install trusts.
+trusts=false
+brew trust --help >/dev/null 2>&1 && trusts=true
+
 cleanup() {
   set +e
   brew uninstall --force "$tap/heph-comp" "$tap/hephaestus" >/dev/null 2>&1
+  if [[ "$trusts" == true ]]; then brew untrust --tap "$tap" >/dev/null 2>&1; fi
   brew untap --force "$tap" >/dev/null 2>&1
   rm -rf "$work" "$repo/testdata/e2e/completions/dist"
 }
@@ -79,6 +88,7 @@ step "Build hephaestus"
 heph="$work/hephaestus"
 
 brew tap-new --no-git "$tap" >/dev/null
+if [[ "$trusts" == true ]]; then brew trust --tap "$tap"; fi
 formulae="$(brew --repository "$tap")/Formula"
 
 # ---------------------------------------------------------------- fixture
