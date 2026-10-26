@@ -505,3 +505,58 @@ esac
 		}
 	}
 }
+
+// TestGoEnvSnapshot_RunsGoOutsideTheModule runs scripts/go-env-snapshot.sh
+// with a stub go from the repository root, as CI does: every go command must
+// run outside any module. Inside this module, go.mod's toolchain line makes
+// a caller's older Go (GOTOOLCHAIN=auto, no setup-go) download that
+// toolchain, so the snapshot would depend on the network and report the
+// downloaded Go instead of the caller's. A failing go still fails the
+// script.
+func TestGoEnvSnapshot_RunsGoOutsideTheModule(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash script")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not installed")
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls")
+	stub := `#!/bin/sh
+echo "$PWD: $*" >> "$STUB_LOG"
+d="$PWD"
+while :; do
+  [ -f "$d/go.mod" ] && { echo "go: downloading go9.9.9 (stub: run in the module at $d)" >&2; exit 1; }
+  [ "$d" = / ] && break
+  d="$(dirname "$d")"
+done
+[ "$STUB_FAIL" = "$1" ] && { echo "go: $1 failed" >&2; exit 1; }
+case "$1" in
+version) echo "go version go1.24.13 linux/amd64" ;;
+env) printf 'go1.24.13\nauto\n/usr/lib/go\n' ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		fail string
+		ok   bool
+	}{
+		{"", true},
+		{"version", false},
+		{"env", false},
+	} {
+		os.Remove(log)
+		cmd := exec.Command("bash", "scripts/go-env-snapshot.sh")
+		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "STUB_LOG="+log, "STUB_FAIL="+tc.fail)
+		out, err := cmd.CombinedOutput()
+		calls, _ := os.ReadFile(log)
+		if (err == nil) != tc.ok {
+			t.Errorf("STUB_FAIL=%q: err %v\ncalls:\n%s\noutput:\n%s", tc.fail, err, calls, out)
+		}
+		if tc.ok && (!strings.Contains(string(out), "go version=go version go1.24.13 linux/amd64") || !strings.Contains(string(out), "go env=go1.24.13 auto /usr/lib/go")) {
+			t.Errorf("snapshot lacks the caller's Go:\n%s", out)
+		}
+	}
+}
