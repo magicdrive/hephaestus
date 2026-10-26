@@ -3,7 +3,10 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
-## Unreleased
+## v1.3.0-rc.1
+
+First release candidate of 1.3; full notes in
+[RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 - `hephaestus publish` separates the release repository's **default branch**
   on GitHub from the **release branch** releases are cut from. The release
@@ -26,6 +29,8 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   preflight` (`github.ruleset.branch`, the required checks of `github.ci`):
   it no longer counts as protecting a configured release branch with another
   name.
+- CI: the Homebrew end-to-end tests trust the throw-away tap they test
+  (`brew trust`, Homebrew 7.0.11), and only that tap.
 
 ## v1.2.0
 
