@@ -175,7 +175,10 @@ func Publish(ctx context.Context, d *Deps, p *Project, pl *Plan, opts Options) *
 		return fail(fmt.Errorf("push tag: %w", perr), unpushedHint(d, tag)...)
 	case c != rep.Commit:
 		o.State = TagPushed
-		return fail(fmt.Errorf("origin has %s at %s, not %s", tag, c, rep.Commit), "do not move the tag; inspect with "+d.Command("status")+" "+tag)
+		// Another clone or machine pushed the tag first (the lock covers
+		// one clone only): origin's tag is the release, this one is stale.
+		return fail(fmt.Errorf("origin has %s at %s, not %s", tag, c, rep.Commit), "do not move the tag; inspect with "+d.Command("status")+" "+tag,
+			"the local "+tag+" ("+short(rep.Commit)+") was not pushed and differs from origin's: delete it with `git tag -d "+tag+"`")
 	case perr != nil:
 		d.logf("    git reported %v, but origin has %s at %s: continuing", perr, tag, short(rep.Commit))
 	}

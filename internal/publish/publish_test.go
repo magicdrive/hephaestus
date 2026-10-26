@@ -695,3 +695,53 @@ func TestFormulaHasLines(t *testing.T) {
 		}
 	}
 }
+
+// TestPublishConcurrentClones: the lock only covers one clone. When another
+// clone (or machine) pushes the same tag after this publish's last check,
+// the tag on origin decides: a non-forced push cannot replace it, and this
+// publish follows it only when it names the commit this publish checked.
+func TestPublishConcurrentClones(t *testing.T) {
+	const tag = "v0.1.0-rc.1"
+	t.Run("same commit: the other push wins, the release is followed", func(t *testing.T) {
+		h := newHarness(t)
+		p := testProject(t)
+		pl := testPlan(t, p, tag)
+		start := h.gh.startRelease(pl, h.d.Now)
+		h.git.onPush = func(string) { t.Error("this publish's push must not land") }
+		h.git.beforePush = func() {
+			h.git.mu.Lock()
+			h.git.remoteTags[tag] = testCommit
+			h.git.mu.Unlock()
+			start(tag) // the other clone's push starts the run
+		}
+		h.gh.runPolls = 2
+		o := Publish(context.Background(), h.d, p, pl, fastOpts)
+		if o.State != Completed || len(h.git.pushed) != 0 || !strings.Contains(h.out.String(), "but origin has "+tag) {
+			t.Fatalf("outcome %+v pushed %v\n%s", o, h.git.pushed, h.out)
+		}
+	})
+	t.Run("another commit: stop, leave origin's tag alone", func(t *testing.T) {
+		h := newHarness(t)
+		p := testProject(t)
+		pl := testPlan(t, p, tag)
+		h.git.onPush = func(string) { t.Error("this publish's push must not land") }
+		h.git.beforePush = func() {
+			h.git.mu.Lock()
+			h.git.remoteTags[tag] = otherSHA
+			h.git.mu.Unlock()
+		}
+		o := Publish(context.Background(), h.d, p, pl, fastOpts)
+		if o.State != Failed || o.FailedAt != TagPushed || o.ExitCode() != 1 || o.MonitorLost || o.Run != nil {
+			t.Fatalf("outcome %+v\n%s", o, h.out)
+		}
+		if h.git.remoteTags[tag] != otherSHA || len(h.git.pushed) != 0 {
+			t.Fatalf("origin's tag was replaced: %v pushed %v", h.git.remoteTags, h.git.pushed)
+		}
+		next := strings.Join(o.Next, "\n")
+		for _, want := range []string{"do not move the tag", "git tag -d " + tag} {
+			if !strings.Contains(next, want) {
+				t.Errorf("next steps lack %q:\n%s", want, next)
+			}
+		}
+	})
+}
