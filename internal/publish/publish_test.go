@@ -577,6 +577,43 @@ func TestWatchAndStatus(t *testing.T) {
 	}
 }
 
+// TestPublishRecheckBeforePush: every check between the local tag and the
+// push stops the publish when it fails or cannot be made, and nothing is
+// pushed: the release branch re-fetched, its head on GitHub, and the tag on
+// origin.
+func TestPublishRecheckBeforePush(t *testing.T) {
+	const tag = "v0.1.0-rc.1"
+	for _, tc := range []struct {
+		name   string
+		change func(h *harness)
+		want   string
+	}{
+		{"re-fetch fails", func(h *harness) { h.git.fetchErr = errors.New("network unreachable") }, "re-fetch origin/main"},
+		{"head on GitHub unreadable", func(h *harness) { h.gh.headErr = errors.New("gh: HTTP 502") }, "main on GitHub moved"},
+		{"head on GitHub unauthorized", func(h *harness) { h.gh.headErr = errors.New("gh: HTTP 401: Bad credentials") }, "Bad credentials"},
+		{"remote tag appeared", func(h *harness) { h.git.remoteTags[tag] = otherSHA }, "remote tag " + tag + " appeared"},
+		{"remote tag unreadable", func(h *harness) { h.git.remoteTagErr = errors.New("ls-remote: timeout") }, "cannot be checked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.git.afterCreate = func() { tc.change(h) }
+			o, _ := publishRun(t, h, tag, fastOpts)
+			if o.State != Failed || o.FailedAt != TagCreatedLocally || o.ExitCode() != 1 || o.MonitorLost {
+				t.Fatalf("outcome %+v\n%s", o, h.out)
+			}
+			if h.git.pushTried || len(h.git.pushed) != 0 {
+				t.Fatalf("pushed although a check before the push failed: %v", h.git.pushed)
+			}
+			if !strings.Contains(o.Err.Error(), tc.want) {
+				t.Errorf("err = %v, want %q", o.Err, tc.want)
+			}
+			if h.git.localTags[tag] == "" || !strings.Contains(strings.Join(o.Next, "\n"), "git tag -d "+tag) {
+				t.Errorf("the local tag must be left for the user to inspect: %v", o.Next)
+			}
+		})
+	}
+}
+
 func TestPublishLock(t *testing.T) {
 	h := newHarness(t)
 	unlock, err := lock(context.Background(), h.d)

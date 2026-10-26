@@ -7,9 +7,13 @@ set -euo pipefail
 echo "PATH=$PATH"
 if go="$(command -v go)"; then
   echo "which go=$go"
-  echo "go version=$(go version)"
+  # Assigned first: a failure inside $(...) in echo's arguments would be
+  # ignored and print an empty value (e.g. a failed toolchain download).
+  version="$(go version)"
+  echo "go version=$version"
   # Outside any module, so that a go.mod does not select a toolchain.
-  (cd / && echo "go env=$(go env GOVERSION GOTOOLCHAIN GOROOT | tr -d '\r' | tr '\n' ' ')")
+  env="$(cd / && go env GOVERSION GOTOOLCHAIN GOROOT | tr -d '\r' | tr '\n' ' ')"
+  echo "go env=$env"
 else
   echo "which go=<none>"
 fi

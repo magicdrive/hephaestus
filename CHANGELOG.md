@@ -3,6 +3,23 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
+## Unreleased
+
+- The release stage stops before it creates, uploads or publishes anything
+  when the commit being released is known (`--commit`, `$GITHUB_SHA`) but
+  the tag cannot be read (an API error other than 404: missing permission,
+  an outage that outlasts the retries). It only warned and went on, and since
+  GitHub ignores `target_commitish` for an existing tag, the build could have
+  been published under a tag of another commit.
+- `scripts/fuzz.sh` fails when `go list` or `go test -list` fails, instead of
+  fuzzing nothing and passing; `scripts/go-env-snapshot.sh` fails when `go
+  version` or `go env` fails (e.g. a failed toolchain download) instead of
+  printing an empty value.
+- Tests: every check `hephaestus publish` makes between creating the tag and
+  pushing it (the re-fetch, the release branch's head on GitHub, the tag on
+  origin) stops the publish when it fails or cannot be made, and `make
+  publish*` exits non-zero whenever the publish tool does.
+
 ## v1.3.0
 
 `hephaestus publish` tells the repository's default branch from the release

@@ -124,7 +124,7 @@ func TestMakefile_Publish(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "calls")
 	stub := filepath.Join(dir, "stub")
-	script := "#!/bin/sh\nprintf '%s|%s|%s|%s\\n' \"$*\" \"$HEPHAESTUS_PUBLISH_ARGS\" \"$HEPHAESTUS_PUBLISH_VERSION\" \"$HEPHAESTUS_PUBLISH_TAG\" >> " + log + "\n"
+	script := "#!/bin/sh\nprintf '%s|%s|%s|%s\\n' \"$*\" \"$HEPHAESTUS_PUBLISH_ARGS\" \"$HEPHAESTUS_PUBLISH_VERSION\" \"$HEPHAESTUS_PUBLISH_TAG\" >> " + log + "\nexit \"${STUB_EXIT:-0}\"\n"
 	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestMakefile_Publish(t *testing.T) {
 		// `make test`, and no VERSION/YES unless the case sets them.
 		for _, kv := range os.Environ() {
 			k, _, _ := strings.Cut(kv, "=")
-			if !slices.Contains([]string{"MAKEFLAGS", "MFLAGS", "MAKELEVEL", "VERSION", "YES", "tag"}, k) && !strings.HasPrefix(k, "HEPHAESTUS_PUBLISH_") {
+			if !slices.Contains([]string{"MAKEFLAGS", "MFLAGS", "MAKELEVEL", "VERSION", "YES", "tag", "STUB_EXIT"}, k) && !strings.HasPrefix(k, "HEPHAESTUS_PUBLISH_") {
 				cmd.Env = append(cmd.Env, kv)
 			}
 		}
@@ -194,6 +194,17 @@ func TestMakefile_Publish(t *testing.T) {
 		out, calls, err := mk(nil, args...)
 		if err == nil || len(calls) != 0 {
 			t.Errorf("make %v: err %v, calls %q\n%s", args, err, calls, out)
+		}
+	}
+
+	// The tool's exit status is make's: a failed preflight (1) or a release
+	// whose outcome is unknown (3) never reads as success.
+	for _, target := range []string{"publish", "publish-check", "publish-status", "publish-watch"} {
+		for _, code := range []string{"1", "2", "3"} {
+			out, calls, err := mk([]string{"STUB_EXIT=" + code}, target, "v1.0.0")
+			if err == nil || len(calls) != 1 {
+				t.Errorf("make %s with the tool exiting %s: err %v, calls %q\n%s", target, code, err, calls, out)
+			}
 		}
 	}
 

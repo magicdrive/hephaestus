@@ -530,6 +530,74 @@ func TestExistingTagMustPointToBuiltCommit(t *testing.T) {
 	}
 }
 
+// TestUnverifiableTagStopsBeforeAnyWrite: when the commit is known but the
+// tag cannot be read (a token without access, an outage that outlasts the
+// retries), nothing is created, uploaded or published. GitHub ignores
+// target_commitish for an existing tag, so going on would publish the
+// artifacts under a tag that may point to another commit.
+func TestUnverifiableTagStopsBeforeAnyWrite(t *testing.T) {
+	const annotated = "1111111111111111111111111111111111111111"
+	for _, tc := range []struct {
+		name      string
+		path      string // the request that fails
+		status    int
+		published bool
+	}{
+		{"ref forbidden", "/repos/acme/tool/git/ref/tags/" + tag, 403, false},
+		{"ref unavailable", "/repos/acme/tool/git/ref/tags/" + tag, 502, false},
+		{"annotated tag object forbidden", "/repos/acme/tool/git/tags/" + annotated, 403, false},
+		{"published release, ref forbidden", "/repos/acme/tool/git/ref/tags/" + tag, 403, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeGitHub(t)
+			f.tags, f.tagObjects = map[string]string{tag: annotated}, map[string]string{annotated: fullSHA}
+			if tc.published {
+				f.addRelease(tag, false, false, nil)
+			}
+			f.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+				if r.Method == "GET" && r.URL.Path == tc.path {
+					reply(w, tc.status, map[string]any{"message": "Resource not accessible by integration"})
+					return true
+				}
+				return false
+			}
+			fx := newFixture(t)
+			in := fx.input(f.client(t))
+			in.Vars.Commit = fullSHA
+			in.Log = &logBuf{t: t}
+			_, err := Run(context.Background(), in)
+			if err == nil || !strings.Contains(err.Error(), "cannot verify that tag "+tag+" points to "+fullSHA) {
+				t.Fatalf("err = %v", err)
+			}
+			if w := f.writes(); len(w) != 0 {
+				t.Fatalf("wrote although the tag could not be verified: %v", w)
+			}
+		})
+	}
+
+	t.Run("commit unknown: warning only", func(t *testing.T) {
+		f := newFakeGitHub(t)
+		f.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+			if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/acme/tool/git/ref/tags/") {
+				reply(w, 403, map[string]any{"message": "Resource not accessible by integration"})
+				return true
+			}
+			return false
+		}
+		fx := newFixture(t)
+		lb := &logBuf{t: t}
+		in := fx.input(f.client(t))
+		in.Vars.Commit = ""
+		in.Log = lb
+		if _, err := Run(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(lb.String(), "could not check tag") {
+			t.Fatalf("no warning:\n%s", lb)
+		}
+	})
+}
+
 // --- N12: concurrent drafts' notes and uploads in progress ---
 
 // TestLostCreateDoesNotClaimAnotherRunsDraft: the create's response is

@@ -57,7 +57,8 @@
 // ignores target_commitish for an existing tag, so when the tag exists the
 // commit it points to (annotated tags are peeled) must be the commit that
 // was built: a mismatch is an error before anything is created or
-// uploaded. When the built commit is unknown this cannot be verified and a
+// uploaded, and so is a tag that cannot be read (an API failure other than
+// 404). When the built commit is unknown this cannot be verified and a
 // warning is logged.
 //
 // Incomplete assets: an asset in a state other than "uploaded" (e.g.
@@ -864,6 +865,10 @@ func (r *runner) checkTag(ctx context.Context, unpublished bool) error {
 			}
 			return nil
 		case errors.Is(err, github.ErrNotFound):
+		case r.commit != "":
+			// GitHub ignores target_commitish for an existing tag: going on
+			// could publish this build under a tag of another commit.
+			return fmt.Errorf("release: cannot verify that tag %s points to %s, the commit that was built (nothing was created or uploaded): %w", r.tag, r.commit, err)
 		default:
 			r.logf("warning: could not check tag %s: %v", r.tag, err)
 		}

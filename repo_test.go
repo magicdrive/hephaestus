@@ -7,9 +7,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -455,6 +457,51 @@ func TestAction_DoesNotChangeTheCallersEnvironment(t *testing.T) {
 			if strings.Contains(code, bad) {
 				t.Errorf("%s uses %s", f, bad)
 			}
+		}
+	}
+}
+
+// TestFuzzScript_StopsWhenListingFails runs scripts/fuzz.sh with a stub go:
+// a package list or a fuzz target list that cannot be read fails the script
+// (and the CI fuzz job) instead of fuzzing nothing.
+func TestFuzzScript_StopsWhenListingFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash script")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not installed")
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls")
+	stub := `#!/bin/sh
+echo "$*" >> "$STUB_LOG"
+case "$1 $2" in
+"list ./...") [ "$STUB_FAIL" = list ] && { echo "go: broken module" >&2; exit 1; }; echo example.com/p ;;
+"test -list") [ "$STUB_FAIL" = test-list ] && { echo "p_test.go: syntax error" >&2; exit 1; }
+  [ "$STUB_FAIL" = none ] || echo FuzzParse; echo "ok  example.com/p 0.1s" ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		fail   string
+		ok     bool
+		fuzzed bool
+	}{
+		{"", true, true},
+		{"none", true, false},
+		{"list", false, false},
+		{"test-list", false, false},
+	} {
+		os.Remove(log)
+		cmd := exec.Command("bash", "scripts/fuzz.sh", "1s")
+		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "STUB_LOG="+log, "STUB_FAIL="+tc.fail)
+		out, err := cmd.CombinedOutput()
+		calls, _ := os.ReadFile(log)
+		fuzzed := strings.Contains(string(calls), "-fuzz ^FuzzParse$")
+		if (err == nil) != tc.ok || fuzzed != tc.fuzzed {
+			t.Errorf("STUB_FAIL=%q: err %v, fuzzed %t\ncalls:\n%s\noutput:\n%s", tc.fail, err, fuzzed, calls, out)
 		}
 	}
 }
