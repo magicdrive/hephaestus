@@ -34,6 +34,7 @@ Flags come before the version:
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `-config` | `hephaestus.yaml` | configuration file; run from the repository root |
+| `-branch` | `preflight.branch`, else the default branch | the [release branch](#release-branch), the only branch the release is cut from |
 | `-yes` | off | confirm without the prompt (explicit non-interactive mode) |
 | `-from-make` | off | read the version from the environment a Makefile sets (below) instead of the command line |
 | `-discover-timeout` | `5m` | how long to wait for the release run to appear |
