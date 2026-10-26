@@ -13,8 +13,11 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   been published under a tag of another commit.
 - `scripts/fuzz.sh` fails when `go list` or `go test -list` fails, instead of
   fuzzing nothing and passing; `scripts/go-env-snapshot.sh` fails when `go
-  version` or `go env` fails (e.g. a failed toolchain download) instead of
-  printing an empty value.
+  version` or `go env` fails instead of printing an empty value, and runs
+  both outside any module: from the repository root, `go.mod`'s toolchain
+  line made a runner's older Go download that toolchain, so CI's
+  action-isolation, action-install and action-release jobs depended on
+  the Go download servers.
 - Tests: every check `hephaestus publish` makes between creating the tag and
   pushing it (the re-fetch, the release branch's head on GitHub, the tag on
   origin) stops the publish when it fails or cannot be made, and `make
