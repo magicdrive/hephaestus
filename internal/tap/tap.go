@@ -544,8 +544,14 @@ func (p *publisher) pullRequest(ctx context.Context) error {
 			p.logf("would create branch %s@%s from %s@%s", headFull, head, baseFull, base)
 			p.logf("would commit %s to %s@%s", p.p.Path, headFull, head)
 			planned = true
-		} else if err := p.createBranch(ctx, headOwner, headRepo, head, baseOwner, baseRepo, base); err != nil {
+		} else if appeared, err := p.createBranch(ctx, headOwner, headRepo, head, baseOwner, baseRepo, base); err != nil {
 			return err
+		} else if appeared {
+			// Someone else created it after the check above: verify it
+			// as any existing branch before committing to it.
+			if err := p.verifyHeadBranch(ctx, baseOwner, baseRepo, base, headOwner, head, cross); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -596,24 +602,31 @@ func (p *publisher) pullRequest(ctx context.Context) error {
 
 // createBranch creates head from the base branch's HEAD. For a fork, the
 // upstream commit is reachable from the fork because GitHub forks share
-// objects. An existing branch (422, e.g. a concurrent run) is accepted.
-func (p *publisher) createBranch(ctx context.Context, owner, repo, head, baseOwner, baseRepo, base string) error {
+// objects. When the create fails with 422 (e.g. a concurrent run) or with
+// an unknown outcome (5xx, timeout: the POST is never retried), the branch
+// is read again: one at the commit this run sent is accepted, and one at
+// another commit is reported as appeared, for the caller to verify.
+func (p *publisher) createBranch(ctx context.Context, owner, repo, head, baseOwner, baseRepo, base string) (appeared bool, err error) {
 	ref, err := p.c.GetRef(ctx, baseOwner, baseRepo, "heads/"+base)
 	if err != nil {
-		return hint(fmt.Errorf("reading base branch %s/%s@%s: %w", baseOwner, baseRepo, base, err), baseOwner+"/"+baseRepo)
+		return false, hint(fmt.Errorf("reading base branch %s/%s@%s: %w", baseOwner, baseRepo, base, err), baseOwner+"/"+baseRepo)
 	}
 	full := owner + "/" + repo
 	if _, err := p.c.CreateRef(ctx, owner, repo, "refs/heads/"+head, ref.Object.SHA); err != nil {
-		if github.StatusCode(err) == http.StatusUnprocessableEntity {
-			if _, gerr := p.c.GetRef(ctx, owner, repo, "heads/"+head); gerr == nil {
-				p.logf("branch %s@%s appeared concurrently; using it", full, head)
-				return nil
+		if _, transient := p.c.RetryDelay(err, 0); github.StatusCode(err) == http.StatusUnprocessableEntity || transient {
+			if got, gerr := p.c.GetRef(ctx, owner, repo, "heads/"+head); gerr == nil {
+				if got.Object.SHA == ref.Object.SHA {
+					p.logf("branch %s@%s exists at %s after a failed create (%v); using it", full, head, ref.Object.SHA, err)
+					return false, nil
+				}
+				p.logf("branch %s@%s appeared concurrently at %s; verifying it", full, head, got.Object.SHA)
+				return true, nil
 			}
 		}
-		return hint(fmt.Errorf("creating branch %s@%s: %w", full, head, err), full)
+		return false, hint(fmt.Errorf("creating branch %s@%s: %w", full, head, err), full)
 	}
 	p.logf("created branch %s@%s from %s/%s@%s", full, head, baseOwner, baseRepo, base)
-	return nil
+	return false, nil
 }
 
 func (p *publisher) findPull(ctx context.Context, baseOwner, baseRepo, headOwner, head, base string) (*github.PullRequest, error) {

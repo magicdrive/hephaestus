@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -635,5 +636,103 @@ func TestFormulaDirectoryBlocksPublishing(t *testing.T) {
 		if w := f.writes(); len(w) != 0 {
 			t.Fatalf("direct=%v: writes %v", direct, w)
 		}
+	}
+}
+
+// TestLostResponses: a write that GitHub applied but whose response was
+// lost (502) is never repeated as a second commit, branch or pull request.
+// The client retries the PUT itself (the blob SHA makes the retry fail
+// instead of committing twice) and never retries a POST: the tap stage
+// re-reads the branch or the pull requests instead.
+func TestLostResponses(t *testing.T) {
+	lost := func(f *fakeGitHub, method, suffix string, apply func()) {
+		first := true
+		f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+			if r.Method == method && strings.HasSuffix(r.URL.Path, suffix) && first {
+				first = false
+				apply()
+				reply(w, 502, map[string]any{"message": "Bad Gateway"})
+				return true
+			}
+			return false
+		}
+	}
+	t.Run("commit", func(t *testing.T) {
+		f := newFake(t, token)
+		f.addRepo(tapRepo, "main", map[string]string{formulaPath: oldFormula})
+		fx := newFixture(t)
+		fx.direct()
+		before := f.repos[tapRepo].branches["main"]
+		lost(f, "PUT", "/contents/"+formulaPath, func() { f.setFile(tapRepo, "main", formulaPath, newFormula) })
+		r := one(t)(Run(context.Background(), fx.input(f.client(t, token))))
+		if r.Status != StatusUpdated {
+			t.Fatalf("result %+v\n%v", r, f.requests())
+		}
+		f.mu.Lock()
+		head := f.repos[tapRepo].branches["main"]
+		parent := f.parents[head]
+		f.mu.Unlock()
+		if parent != before {
+			t.Fatalf("more than one commit after a lost response:\n%v", f.requests())
+		}
+	})
+	t.Run("branch", func(t *testing.T) {
+		f := newFake(t, token)
+		f.addRepo(tapRepo, "main", map[string]string{formulaPath: oldFormula})
+		fx := newFixture(t)
+		lost(f, "POST", "/git/refs", func() {
+			f.mu.Lock()
+			f.repos[tapRepo].branches[prBranch] = f.repos[tapRepo].branches["main"]
+			f.mu.Unlock()
+		})
+		r := one(t)(Run(context.Background(), fx.input(f.client(t, token))))
+		if r.Status != StatusUpdated || r.PullRequestURL == "" || f.count("POST /repos/"+tapRepo+"/git/refs") != 1 {
+			t.Fatalf("result %+v\n%v", r, f.requests())
+		}
+		if got, _ := f.file(tapRepo, prBranch, formulaPath); got != newFormula || len(f.pullList()) != 1 {
+			t.Fatalf("branch content %q, pulls %v", got, f.pullList())
+		}
+	})
+	t.Run("branch not created", func(t *testing.T) {
+		f := newFake(t, token)
+		f.addRepo(tapRepo, "main", map[string]string{formulaPath: oldFormula})
+		fx := newFixture(t)
+		lost(f, "POST", "/git/refs", func() {})
+		res, err := Run(context.Background(), fx.input(f.client(t, token)))
+		if err == nil || len(res) != 1 || res[0].Status != StatusFailed || !strings.Contains(err.Error(), "502") ||
+			f.count("POST /repos/"+tapRepo+"/git/refs") != 1 || f.count("PUT ") != 0 || len(f.pullList()) != 0 {
+			t.Fatalf("results %+v, err %v\n%v", res, err, f.requests())
+		}
+	})
+}
+
+// TestBranchAppearingWithOtherChangesIsRejected: a head branch created by
+// someone else between the check that it is missing and the create (422,
+// or a lost response) is verified like any existing branch before the
+// formula is committed to it and proposed.
+func TestBranchAppearingWithOtherChangesIsRejected(t *testing.T) {
+	for _, status := range []int{422, 502} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			f := newFake(t, token)
+			f.addRepo(tapRepo, "main", map[string]string{formulaPath: oldFormula})
+			fx := newFixture(t)
+			first := true
+			f.hook = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+				if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/git/refs") && first {
+					first = false
+					f.mu.Lock()
+					f.repos[tapRepo].branches[prBranch] = f.repos[tapRepo].branches["main"]
+					f.setFileLocked(tapRepo, prBranch, ".github/workflows/x.yml", "on: push")
+					f.mu.Unlock()
+					reply(w, status, map[string]any{"message": "Reference already exists"})
+					return true
+				}
+				return false
+			}
+			_, err := Run(context.Background(), fx.input(f.client(t, token)))
+			if err == nil || !strings.Contains(err.Error(), ".github/workflows/x.yml") || f.count("PUT ") != 0 || len(f.pullList()) != 0 {
+				t.Fatalf("err %v\n%v", err, f.requests())
+			}
+		})
 	}
 }

@@ -5,6 +5,14 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
 ## Unreleased
 
+- The tap stage verifies a pull request head branch that someone else
+  created between its check that the branch is missing and its create (a
+  422 "Reference already exists"), as it verifies any existing branch: it
+  was used as it was, so the pull request could propose that branch's other
+  changes under the formula update's title. A create whose response was
+  lost (5xx, timeout) is followed by a read of the branch, so a branch that
+  was created is used (after the same verification when it is not at the
+  commit sent) instead of failing the tap step.
 - The release stage stops before it creates, uploads or publishes anything
   when the commit being released is known (`--commit`, `$GITHUB_SHA`) but
   the tag cannot be read (an API error other than 404: missing permission,
