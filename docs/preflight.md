@@ -99,7 +99,7 @@ IDs are stable; they appear in the JSON report and in `--skip`.
 | `github.workflow` | error | The release workflow exists and is active (when configured) | GitHub |
 | `github.environment` | error | The environment exists and deploys **only from tag policies**, one of which matches the tag; a branch policy (even `v*`) fails | GitHub |
 | `github.secrets` | error | Required secret names exist: in the configured environment, else in any environment, else in the repository. The tap token is required only when a formula is published for this tag | GitHub |
-| `github.ruleset.branch` | warning | An active ruleset protects the release branch and requires a status check | GitHub |
+| `github.ruleset.branch` | warning | An active ruleset protects the release branch and requires a status check (`~DEFAULT_BRANCH` covers only the repository's default branch, not a configured release branch with another name) | GitHub |
 | `github.ruleset.tag` | error | An active tag ruleset forbids deleting and updating the tag (WARN when missing); a rule blocking **creation** fails | GitHub |
 | `tap.repository` | error | Each tap a formula is published to exists and is not archived | GitHub |
 | `tap.layout` | error | The formula goes where Homebrew reads formulae (`Formula/`, `HomebrewFormula/`, else the root) | GitHub |

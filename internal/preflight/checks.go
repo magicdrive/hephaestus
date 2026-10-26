@@ -494,7 +494,7 @@ func checkGitHubCI(s *state) outcome {
 	var required []requiredCheck
 	if sets, err := s.getRulesets(); err == nil {
 		if b, _, err := s.defaultBranch(); err == nil {
-			required = requiredChecks(sets, b)
+			required = requiredChecks(sets, b, s.githubDefaultBranch())
 		}
 	} else {
 		e["required_checks_unknown"] = err.Error()
@@ -726,7 +726,7 @@ func checkRulesetBranch(s *state) outcome {
 	if err != nil {
 		return apiOutcome("rulesets", err)
 	}
-	cover := activeCovering(sets, "branch", "refs/heads/"+b, b)
+	cover := activeCovering(sets, "branch", "refs/heads/"+b, s.githubDefaultBranch())
 	if len(cover) == 0 {
 		return warn("no active ruleset protects "+b, "add a ruleset: pull request required, CI required, no force pushes or deletion (docs/preflight.md#recommended-settings)", ev{"branch": b})
 	}

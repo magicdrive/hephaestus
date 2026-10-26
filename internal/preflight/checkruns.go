@@ -185,10 +185,11 @@ func requiredOutcome(req requiredCheck, groups []checkGroup, statuses map[string
 }
 
 // requiredChecks lists the status checks the active branch rulesets require
-// for branch, deduplicated and sorted.
-func requiredChecks(sets []github.Ruleset, branch string) []requiredCheck {
+// for branch, deduplicated and sorted. defaultBranch is the repository's
+// default branch (~DEFAULT_BRANCH), which the release branch need not be.
+func requiredChecks(sets []github.Ruleset, branch, defaultBranch string) []requiredCheck {
 	var out []requiredCheck
-	for _, rs := range activeCovering(sets, "branch", "refs/heads/"+branch, branch) {
+	for _, rs := range activeCovering(sets, "branch", "refs/heads/"+branch, defaultBranch) {
 		for _, rule := range rs.Rules {
 			for _, c := range rule.Parameters.RequiredStatusChecks {
 				rc := requiredCheck{context: c.Context, app: c.IntegrationID}

@@ -22,10 +22,18 @@ type Project struct {
 	Cfg  *config.Config
 	Repo Repo // where the release is published (release.github)
 
-	Branch         string // the only branch releases are cut from
+	// Branch is the release branch, the only branch releases are cut from:
+	// BranchFlag (-branch), else preflight.branch of hephaestus.yaml, else
+	// the release repository's default branch. Preflight resolves it, and
+	// DefaultBranch, the default branch on GitHub, which it need not be.
+	Branch        string
+	DefaultBranch string
+	// BranchFlag is the release branch named on the command line (-branch);
+	// it takes precedence over preflight.branch.
+	BranchFlag     string
 	ReleaseFile    string // the release workflow, the only publisher
 	CIFile         string // the CI workflow that must be green on the commit
-	RequiredCheck  string // the status check the main ruleset requires
+	RequiredCheck  string // the status check the release branch ruleset requires
 	Environment    string // the environment of the publishing job
 	TapTokenSecret string // the tap token's secret name in Environment
 }
@@ -67,7 +75,7 @@ func NewProject(cfg *config.Config) (*Project, error) {
 	}
 	return &Project{
 		Cfg: cfg, Repo: Repo{Owner: g.Owner, Name: g.Repo},
-		Branch: "main", ReleaseFile: ReleaseWorkflowFile, CIFile: CIWorkflowFile, RequiredCheck: RequiredCheck,
+		ReleaseFile: ReleaseWorkflowFile, CIFile: CIWorkflowFile, RequiredCheck: RequiredCheck,
 		Environment: ReleaseEnvironment, TapTokenSecret: TapTokenSecret,
 	}, nil
 }

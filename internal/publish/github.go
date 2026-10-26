@@ -378,12 +378,18 @@ func (g GHCLI) File(ctx context.Context, r Repo, path, ref string) ([]byte, erro
 
 func (g GHCLI) BranchHead(ctx context.Context, r Repo, branch string) (string, error) {
 	var ref struct {
+		Ref    string `json:"ref"`
 		Object struct {
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
-	err := g.api(ctx, repoPath(r)+"/git/ref/heads/"+url.PathEscape(branch), &ref)
-	return ref.Object.SHA, err
+	if err := g.api(ctx, repoPath(r)+"/git/ref/heads/"+url.PathEscape(branch), &ref); err != nil {
+		return "", err
+	}
+	if ref.Ref != "refs/heads/"+branch {
+		return "", fmt.Errorf("%s: asked for refs/heads/%s, GitHub answered %q", r, branch, ref.Ref)
+	}
+	return ref.Object.SHA, nil
 }
 
 func (g GHCLI) PullRequests(ctx context.Context, r Repo, headOwner, branch string) ([]PullRequest, error) {

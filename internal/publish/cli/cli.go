@@ -72,6 +72,7 @@ type Config struct {
 // Flags are publish's flags.
 type Flags struct {
 	Config          string
+	Branch          string
 	Yes             bool
 	FromMake        bool
 	DiscoverTimeout time.Duration
@@ -85,6 +86,7 @@ func NewFlagSet(name string) (*flag.FlagSet, *Flags) {
 	f := &Flags{}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.StringVar(&f.Config, "config", "hephaestus.yaml", "configuration file")
+	fs.StringVar(&f.Branch, "branch", "", "the release branch, the only branch releases are cut from (default: preflight.branch, else the release repository's default branch)")
 	fs.BoolVar(&f.Yes, "yes", false, "confirm without a prompt (explicit non-interactive mode)")
 	fs.BoolVar(&f.FromMake, "from-make", false, "read the version from the environment the Makefile sets")
 	fs.DurationVar(&f.DiscoverTimeout, "discover-timeout", 5*time.Minute, "how long to wait for the release run to appear")
@@ -207,6 +209,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, c Config)
 	if cmd == "plan" {
 		return printPlan(stdout, pl)
 	}
+	p.BranchFlag = f.Branch // "": preflight.branch, else the default branch
 
 	d := &publish.Deps{
 		Git: publish.GitCLI{Run: publish.ExecRunner},
@@ -304,7 +307,9 @@ func genericPreflight(p *publish.Project, configPath string, redact func(string)
 		if err != nil {
 			return nil, err
 		}
-		in := preflight.Input{Tag: tag, Config: p.Cfg, ConfigPath: configPath, TokenPresent: token != "",
+		// The release branch the publish preflight resolved (it runs
+		// first), so that both preflights check the same branch.
+		in := preflight.Input{Tag: tag, Config: p.Cfg, ConfigPath: configPath, TokenPresent: token != "", Branch: p.Branch,
 			Git: preflight.GitCLI{Dir: p.Cfg.Root}, GitHub: c}
 		return preflight.Run(ctx, in, true, "publish")
 	}
@@ -341,10 +346,15 @@ hephaestus.yaml to its release repository (release.github). The release
 workflow, .github/workflows/release.yml, is the only publisher: publish pushes
 the tag that starts it, then follows it and verifies what it published.
 
-  1. preflight (read-only, plus a fetch of origin/main): on main, clean worktree,
-     HEAD = origin/main, origin is the release repository, the tag exists neither
-     locally nor on origin, CI (ci.yml push run) succeeded on exactly this commit,
-     the v* tag ruleset is active, the main ruleset requires ci-gate, environment
+  1. preflight (read-only, plus a fetch of origin/<branch>): the release
+     branch is -branch, else preflight.branch, else the release repository's
+     default branch on GitHub (main, master or any name); it must exist on
+     GitHub, and origin/HEAD, when set, must name the default branch: else
+     nothing is tagged. On that branch, clean worktree, HEAD = origin/<branch>
+     = <branch> on GitHub, origin is the release repository, the tag exists
+     neither locally nor on origin, CI (ci.yml push run on the release branch)
+     succeeded on exactly this commit, the v* tag ruleset is active, a ruleset
+     on the release branch requires ci-gate, environment
      "release" deploys only from v* tags, no release or draft exists yet, and
      hephaestus preflight --strict passes; for a stable version with a formula
      also the tap: token secret present (name only), pull request mode, formula

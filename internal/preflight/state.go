@@ -158,6 +158,19 @@ func (s *state) getRepoInfo() (*github.Repository, error) {
 	})
 }
 
+// githubDefaultBranch is the repository's default branch on GitHub, the
+// branch a ruleset's ~DEFAULT_BRANCH stands for; "" when it is not known.
+// It is not the release branch when one is configured.
+func (s *state) githubDefaultBranch() string {
+	if s.in.GitHub == nil || s.owner == "" {
+		return ""
+	}
+	if r, err := s.getRepoInfo(); err == nil {
+		return r.DefaultBranch
+	}
+	return ""
+}
+
 // defaultBranch is the branch releases are tagged on: the configured one,
 // else GitHub's default branch, else refs/remotes/<remote>/HEAD.
 func (s *state) defaultBranch() (string, string, error) {

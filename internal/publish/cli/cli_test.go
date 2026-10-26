@@ -55,6 +55,7 @@ func TestArguments(t *testing.T) {
 		{"implied publish reads the configuration", nil, []string{"-config", missing, "v1.0.0"}, 1, "", "missing.yaml"},
 		{"explicit publish", nil, []string{"publish", "-config", missing, "v1.0.0"}, 1, "", "missing.yaml"},
 		{"plan", nil, []string{"plan", "-config", repoConfig, "v1.0.0-rc.1"}, 0, "tag=v1.0.0-rc.1\nversion=1.0.0-rc.1\nprerelease=true\ntap=skip\n", ""},
+		{"plan does not use -branch", nil, []string{"plan", "-config", repoConfig, "-branch", "release/stable", "v1.0.0-rc.1"}, 0, "tag=v1.0.0-rc.1\nversion=1.0.0-rc.1\nprerelease=true\ntap=skip\n", ""},
 		{"from make", map[string]string{EnvArgs: "v1.0.0"}, []string{"plan", "-config", repoConfig, "-from-make"}, 0, "tap=publish", ""},
 		{"from make, VERSION", map[string]string{EnvVersion: "v1.0.0"}, []string{"plan", "-config", repoConfig, "-from-make"}, 0, "tag=v1.0.0", ""},
 		{"from make, tag", map[string]string{EnvTag: "v1.0.0"}, []string{"plan", "-config", repoConfig, "-from-make"}, 0, "tag=v1.0.0", ""},

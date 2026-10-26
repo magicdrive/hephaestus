@@ -60,8 +60,12 @@ type Check struct {
 // Report is the preflight outcome.
 type Report struct {
 	Checks []Check
-	// Commit is the commit the tag will point to (local main == origin/main).
+	// Commit is the commit the tag will point to (the local release branch
+	// == origin/<it>).
 	Commit string
+	// BranchHead is the release branch's head on GitHub when the preflight
+	// read it; the tag is pushed only while it is still Commit.
+	BranchHead string
 	// TapHeads records each tap's default branch head before the release,
 	// keyed by owner/name, to prove later that a skipped tap was not changed.
 	TapHeads map[string]string
@@ -113,13 +117,18 @@ func (r *Report) Print(w io.Writer) {
 }
 
 // Preflight checks, without writing anything, that tag pl.Version can be
-// released now from the local main branch. The only local change is a
-// fetch of origin/main.
+// released now from the release branch, checked out locally. The only local
+// change is a fetch of origin/<release branch>. It first resolves the
+// branch (p.Branch); when it cannot, nothing that depends on it is checked
+// and the preflight fails.
 func Preflight(ctx context.Context, d *Deps, p *Project, pl *Plan) *Report {
 	r := &Report{TapHeads: map[string]string{}}
 	tag := pl.Version.Tag
 	r.add("version", true, "%s (%s)", tag, pl.Version.Kind())
 
+	if !resolveBranch(ctx, d, p, r) {
+		return r
+	}
 	preflightGit(ctx, d, p, tag, r)
 	preflightGitHub(ctx, d, p, pl, r)
 	if pl.Version.Prerelease {
@@ -153,6 +162,76 @@ func preflightGeneric(ctx context.Context, d *Deps, tag string, r *Report) {
 			r.add("  "+c.ID, false, "%s: %s", c.Status, c.Message)
 		}
 	}
+}
+
+// resolveBranch sets p.DefaultBranch to the release repository's default
+// branch on GitHub and p.Branch to the release branch: -branch, else
+// preflight.branch, else the default branch. A local
+// refs/remotes/origin/HEAD, when set, must name the default branch: when it
+// does not, the clone is stale or the default branch was renamed and
+// nothing is tagged. The release branch must be a branch name (not a tag,
+// a commit or a refspec) that exists on GitHub; r.BranchHead records its
+// head there. It reports how both were decided.
+func resolveBranch(ctx context.Context, d *Deps, p *Project, r *Report) bool {
+	info, err := d.GH.Repo(ctx, p.Repo)
+	if err != nil {
+		r.add("default branch", false, "cannot read %s's default branch, so nothing can be tagged: %v", p.Repo, err)
+		return false
+	}
+	def := info.DefaultBranch
+	if !validBranchName(def) {
+		r.add("default branch", false, "%s reports the default branch %q, not a branch name publish can use", p.Repo, def)
+		return false
+	}
+	from := []string{"GitHub"}
+	head, err := d.Git.RemoteHead(ctx)
+	switch {
+	case err != nil:
+		r.add("default branch", false, "refs/remotes/origin/HEAD: %v", err)
+		return false
+	case head != "" && head != def:
+		r.add("default branch", false, "refs/remotes/origin/HEAD names %s, the default branch of %s is %s; check which is right (git remote set-head origin --auto updates it)", head, p.Repo, def)
+		return false
+	case head != "":
+		from = append(from, "origin/HEAD")
+	}
+	p.DefaultBranch = def
+	r.add("default branch", true, "%s (%s)", def, strings.Join(from, ", "))
+
+	const name = "release branch"
+	branch, source := def, "the default branch"
+	configured := p.Cfg.Preflight.Branch
+	switch {
+	case p.BranchFlag != "":
+		branch, source = p.BranchFlag, "-branch"
+		if configured != "" && configured != p.BranchFlag {
+			source += ", over preflight.branch " + configured
+		}
+	case configured != "":
+		branch, source = configured, "preflight.branch"
+	}
+	if !releaseBranchName(branch) {
+		r.add(name, false, "%q (%s) is not a branch name publish can release from", branch, source)
+		return false
+	}
+	sha, err := d.GH.BranchHead(ctx, p.Repo, branch)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		r.add(name, false, "%s (%s): %s has no branch %s", branch, source, p.Repo, branch)
+		return false
+	case err != nil:
+		r.add(name, false, "%s (%s): cannot read its head on %s, so nothing can be tagged: %v", branch, source, p.Repo, err)
+		return false
+	case !isCommitSHA(sha):
+		r.add(name, false, "%s (%s): %s reports the head %q", branch, source, p.Repo, sha)
+		return false
+	}
+	p.Branch, r.BranchHead = branch, sha
+	if branch == def && source != "the default branch" {
+		source += ", the default branch"
+	}
+	r.add(name, true, "%s (%s) at %s on GitHub", branch, source, short(sha))
+	return true
 }
 
 func preflightGit(ctx context.Context, d *Deps, p *Project, tag string, r *Report) {
@@ -201,8 +280,8 @@ func preflightGit(ctx context.Context, d *Deps, p *Project, tag string, r *Repor
 		r.add("worktree", true, "clean")
 	}
 
-	if err := d.Git.FetchMain(ctx); err != nil {
-		r.addErr("fetch origin/main", err)
+	if err := d.Git.FetchBranch(ctx, p.Branch); err != nil {
+		r.addErr("fetch origin/"+p.Branch, err)
 		return
 	}
 	head, err1 := d.Git.Commit(ctx, "HEAD")
@@ -214,6 +293,8 @@ func preflightGit(ctx context.Context, d *Deps, p *Project, tag string, r *Repor
 		r.add("in sync with origin", false, "HEAD %q, origin/%s %q", head, p.Branch, remote)
 	case head != remote:
 		r.add("in sync with origin", false, "HEAD %s differs from origin/%s %s (unpushed or missing commits)", short(head), p.Branch, short(remote))
+	case remote != r.BranchHead:
+		r.add("in sync with origin", false, "origin/%s is %s, but %s on GitHub was %s when the preflight started (it moved, or the fetch is stale)", p.Branch, short(remote), p.Branch, short(r.BranchHead))
 	default:
 		r.Commit = head
 		r.add("in sync with origin", true, "HEAD = origin/%s = %s", p.Branch, head)
@@ -244,7 +325,7 @@ func preflightGitHub(ctx context.Context, d *Deps, p *Project, pl *Plan, r *Repo
 
 	if info, err := d.GH.Repo(ctx, p.Repo); err != nil {
 		r.addErr("repository", err)
-	} else if info.Archived || info.DefaultBranch != p.Branch {
+	} else if info.Archived || info.DefaultBranch != p.DefaultBranch {
 		r.add("repository", false, "%s: archived %t, default branch %s", info.FullName, info.Archived, info.DefaultBranch)
 	} else {
 		r.add("repository", true, "%s, default branch %s", info.FullName, info.DefaultBranch)
@@ -270,8 +351,8 @@ func preflightGitHub(ctx context.Context, d *Deps, p *Project, pl *Plan, r *Repo
 	} else {
 		ok, detail := tagRulesetProtects(sets, pl.Version.Tag)
 		r.add("tag ruleset", ok, "%s", detail)
-		ok, detail = branchRequiresCheck(sets, p.Branch, p.RequiredCheck)
-		r.add("main ruleset", ok, "%s", detail)
+		ok, detail = branchRequiresCheck(sets, p.Branch, p.DefaultBranch, p.RequiredCheck)
+		r.add(p.Branch+" ruleset", ok, "%s", detail)
 	}
 
 	if env, err := d.GH.Environment(ctx, p.Repo, p.Environment); err != nil {
@@ -296,8 +377,8 @@ func preflightGitHub(ctx context.Context, d *Deps, p *Project, pl *Plan, r *Repo
 	r.add("release config", !pl.Draft, "release.github.draft: %t (a draft is never published)", pl.Draft)
 }
 
-// checkCI requires the CI workflow's push run on main for exactly commit to
-// have succeeded. A green run of another commit does not count.
+// checkCI requires the CI workflow's push run on the release branch for
+// exactly commit to have succeeded. A green run of another commit does not count.
 func checkCI(ctx context.Context, d *Deps, p *Project, commit string, r *Report) {
 	runs, err := d.GH.Runs(ctx, p.Repo, p.CIFile, "push", p.Branch, commit)
 	if err != nil {
@@ -458,11 +539,13 @@ func tagRulesetProtects(sets []Ruleset, tag string) (bool, string) {
 }
 
 // branchRequiresCheck requires an active branch ruleset on branch that
-// requires check.
-func branchRequiresCheck(sets []Ruleset, branch, check string) (bool, string) {
+// requires check. defaultBranch is the repository's default branch, which
+// ~DEFAULT_BRANCH stands for: a ruleset on the default branch does not
+// protect a release branch with another name.
+func branchRequiresCheck(sets []Ruleset, branch, defaultBranch, check string) (bool, string) {
 	ref := "refs/heads/" + branch
 	for _, rs := range sets {
-		if rs.Target != "branch" || rs.Enforcement != "active" || !refIncluded(rs, ref, branch) {
+		if rs.Target != "branch" || rs.Enforcement != "active" || !refIncluded(rs, ref, defaultBranch) {
 			continue
 		}
 		for _, rule := range rs.Rules {
