@@ -12,7 +12,9 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   GitHub ignores `target_commitish` for an existing tag, the build could have
   been published under a tag of another commit.
 - `scripts/fuzz.sh` fails when `go list` or `go test -list` fails, instead of
-  fuzzing nothing and passing.
+  fuzzing nothing and passing; `scripts/go-env-snapshot.sh` fails when `go
+  version` or `go env` fails (e.g. a failed toolchain download) instead of
+  printing an empty value.
 - Tests: every check `hephaestus publish` makes between creating the tag and
   pushing it (the re-fetch, the release branch's head on GitHub, the tag on
   origin) stops the publish when it fails or cannot be made, and `make
