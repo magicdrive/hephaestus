@@ -25,11 +25,21 @@ export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_DEVELOPER=1 HOMEBREW_NO_ASK=1 \
   HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 \
   HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1
 
+# Homebrew 7.0.11 and later load a formula of a tap that is not official only
+# once it is trusted (brew trust): brew audit refuses the formula of an
+# untrusted tap. Only the throw-away tap of the audited formulas is trusted,
+# while it exists (when this Homebrew has brew trust; the style tap is only
+# linted, which needs no trust); brew untrust also forgets the formulas brew
+# install trusts.
+trusts=false
+brew trust --help >/dev/null 2>&1 && trusts=true
+
 cleanup() {
   set +e
   brew uninstall --force "$tap/$formula" >/dev/null 2>&1
   brew uninstall --force "$tap/heph-script" >/dev/null 2>&1
   rm -rf "$repo/testdata/e2e/noarch/dist"
+  if [[ "$trusts" == true ]]; then brew untrust --tap "$tap" >/dev/null 2>&1; fi
   brew untap --force "$tap" >/dev/null 2>&1
   brew untap --force "${tap}style" >/dev/null 2>&1
   rm -rf "$work" "$fixture/dist"
@@ -71,6 +81,7 @@ diff -u "$work/first.txt" "dist/heph-fixture_${version}_checksums.txt"
 
 step "Create throw-away tap $tap"
 brew tap-new --no-git "$tap" >/dev/null
+if [[ "$trusts" == true ]]; then brew trust --tap "$tap"; fi
 tapdir="$(brew --repository "$tap")"
 cp "dist/homebrew/$formula.rb" "$tapdir/Formula/$formula.rb"
 cat "$tapdir/Formula/$formula.rb"
