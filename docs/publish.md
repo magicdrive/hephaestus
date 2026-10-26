@@ -304,7 +304,11 @@ the tap:
   and SHA-256 is this release's) and **never merged** by publish: review and
   merge it on the tap.
 - Two publish processes in one clone are prevented by a lock file in the git
-  directory (`hephaestus-publish.lock`).
+  directory (`hephaestus-publish.lock`). Across clones and machines the tag
+  on GitHub decides: the push is never forced and the tag ruleset forbids
+  updating it, so when another clone pushed the tag first, publish follows
+  that release if the tag names the commit it checked, and otherwise stops
+  without touching origin's tag (delete the stale local tag).
 
 ## Recovery
 

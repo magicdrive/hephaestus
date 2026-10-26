@@ -19,6 +19,10 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   pushing it (the re-fetch, the release branch's head on GitHub, the tag on
   origin) stops the publish when it fails or cannot be made, and `make
   publish*` exits non-zero whenever the publish tool does.
+- `hephaestus publish` says to delete the local tag when another clone or
+  machine pushed the same tag at another commit first; tests pin that such a
+  race never replaces origin's tag, and that a tag pushed elsewhere at the
+  checked commit is followed as this release.
 
 ## v1.3.0
 
