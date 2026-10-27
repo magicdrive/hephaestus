@@ -41,6 +41,12 @@ jobs:
         run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
       - name: shellcheck
         run: shellcheck -x scripts/*.sh action/*.sh testdata/e2e/boundary/probe.sh testdata/e2e/completions/heph-comp cmd/hephaestus/completions/hephaestus.bash cmd/hephaestus/testdata/completion/complete.bash
+      # The release workflow's tag provenance check (release.yml, job
+      # provenance), against local repositories: shellcheck and its tests.
+      - name: Release tag provenance check
+        run: |
+          shellcheck .github/release/verify-tag-provenance.sh .github/release/verify-tag-provenance_test.sh
+          .github/release/verify-tag-provenance_test.sh
 
   renovate-check:
     # renovate.json with renovate-config-validator --strict of the Renovate
