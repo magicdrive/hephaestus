@@ -21,7 +21,9 @@ jobs:
   # maintenance branch, add its exact name after main.
   provenance:
     needs: [ci]
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moves to 26.04 in November 2026 (actions/runner-images#14748);
+    # the release path changes its image only through a reviewed pull request.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -51,7 +53,9 @@ jobs:
     # can write to the repository or request an OIDC token (which could sign
     # provenance for other files). Only the verified dist/ moves on.
     needs: [ci, provenance]
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moves to 26.04 in November 2026 (actions/runner-images#14748);
+    # the release path changes its image only through a reviewed pull request.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -89,7 +93,9 @@ jobs:
     # command runs here: only Hephaestus itself is compiled, from the
     # tagged source, to publish.
     needs: [provenance, ci, build]
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moves to 26.04 in November 2026 (actions/runner-images#14748);
+    # the release path changes its image only through a reviewed pull request.
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       contents: write     # create the release and upload assets

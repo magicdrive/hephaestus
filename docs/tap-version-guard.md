@@ -42,10 +42,12 @@ name them.
 ## 3. The tap's CI (proposal for the tap repository)
 
 [`cmd/tap-version-guard`](../cmd/tap-version-guard/main.go) fails when a
-change lowers the version of any formula (`*.rb` present on both sides):
+change lowers the version of any formula (`*.rb` present on both sides),
+and with `-strict` (what the example workflow runs, for a required check)
+whenever it cannot show that the change is a plain upgrade:
 
 ```sh
-go run github.com/magicdrive/hephaestus/cmd/tap-version-guard@<commit> [-base HEAD^1 [-each] | -against <tip>] [-head HEAD] [-allow-downgrade]
+go run github.com/magicdrive/hephaestus/cmd/tap-version-guard@<commit> [-base HEAD^1 [-each] | -against <tip>] [-head HEAD] [-strict] [-allow-downgrade]
 ```
 
 | Mode | Compares | For |
@@ -54,7 +56,82 @@ go run github.com/magicdrive/hephaestus/cmd/tap-version-guard@<commit> [-base HE
 | `-base <sha> -each` | every commit on the first-parent chain of `base..head` against its first parent | a merge queue entry (`merge_group.base_sha`), a push (`before..after`): a downgrade inside a group or a fast-forward of several merges fails even when the net change goes up |
 | `-against <tip>` | the formulae `head` changed since its merge base with `tip`, at `tip` and at `head` | an unmerged pull request head against the base branch's current tip, with no merge commit: re-checking open pull requests after the base moved, and right before merging |
 
-Exit status: `0` no downgrade, `1` a downgrade, `2` usage or git error.
+`-strict` and `-allow-downgrade` apply to every mode. Exit status: `0`
+nothing refused (warnings allowed), `1` a refused change (an `::error`
+annotation per finding), `2` usage or git error (the guard could not check:
+unknown or missing revision, shallow history, a missing object, no git). A
+required check fails on both `1` and `2`.
+
+### What fails
+
+| Change (per formula) | default | `-strict` | `-strict -allow-downgrade` (label `formula-rollback`) |
+| --- | --- | --- | --- |
+| Upgrade (one formula or several) | GREEN | GREEN | GREEN |
+| New formula with a semantic version | GREEN | GREEN | GREEN |
+| Same version, only other lines changed (`desc`, `test`, `caveats`, `install`) | GREEN | GREEN | GREEN |
+| Downgrade (`2.0.0` → `1.5.0`, `1.10.0` → `1.9.0`) | RED | RED | warning |
+| Prerelease downgrade (`1.3.0` → `1.3.0-rc.1`, `rc.10` → `rc.9`) | RED | RED | warning |
+| Same version, other artifacts (`url`, `sha256`, `mirror`, `head`, `root_url`, `resource`, `patch` and its `__END__` data, platforms swapped) | GREEN | RED | warning |
+| A url of the formula naming another version than the formula's (one platform left on the old release) | GREEN | RED | warning |
+| New side's version not a semantic version; versions that cannot be compared (including an old side without one) | warning / GREEN | RED | warning |
+| Formula removed | GREEN (skipped) | RED | warning |
+| Layout changed (root `*.rb` ↔ `Formula/`): the formulae of the old layout are removed | GREEN | RED | warning |
+| No version on the new side (no `version` in the class body, no semantic version in its url), added formulae included | GREEN | RED | **RED** |
+| Formula that is not a regular file (symlink, submodule) | compared by its link text | RED | **RED** |
+| Path with control characters, `.` or `..` components | — | RED | **RED** |
+| `Formula` or `HomebrewFormula` that is not a directory (a symlink) | — | RED | **RED** |
+| `*.rb` that Homebrew does not load as a formula (`cmd/`, `Casks/`, `lib/`, root `*.rb` when `Formula/` exists) | compared as a formula | skipped (listed) | skipped |
+| The guard cannot check (exit 2) | RED | RED | RED |
+
+**What the label lowers, and why not everything.** `-allow-downgrade` (the
+`formula-rollback` label) turns the findings about *which version and
+artifacts the tap serves* into warnings: a rollback, a re-release under the
+same version, a removal, versions the guard cannot order. Each is a decision
+someone can take and the label records it. It never lowers a finding that
+means the guard *cannot read the formula* (no version, not a regular file, an
+unsafe path, a formula directory that is not a directory): a rollback never
+needs a formula without a version or a symlink, and accepting one would let
+the label switch the guard off for anything. Label a pull request only after
+reviewing it, and remove the label afterwards.
+
+**Why the same version with other artifacts fails.** A re-release under the
+same version (a rebuilt archive, a moved asset) cannot be told from a
+swapped artifact from the formula alone; users who installed the version
+already have other bytes. Release a new version instead, or label the pull
+request after verifying the new artifacts.
+
+**Which files count.** `-strict` checks the formulae Homebrew loads from the
+tap, as Homebrew finds them: every `*.rb` under `Formula/` (sharded
+subdirectories included) when the tap has that directory, else under
+`HomebrewFormula/`, else the `*.rb` files at the root of the tap (as in
+magicdrive/homebrew-tap). Both sides' layouts count, so moving formulae
+between layouts reports the old ones as removed. Contents are read from git
+objects (`ls-tree`, `cat-file`), never from the work tree, so no path reaches
+outside the repository; annotations escape paths and versions, so a crafted
+file name cannot start a workflow command of its own. Without `-strict` the
+guard keeps comparing every changed `*.rb` as before.
+
+### The race of two release pull requests (TOCTOU)
+
+The base has `1.0.0`; pull requests A (`2.0.0`) and B (`1.5.0`) are opened on
+it. Covered by `TestTOCTOU` and `TestConcurrentPullRequests` on local
+repositories:
+
+| Check | Result |
+| --- | --- |
+| A and B, each against the old base (head, `-against`, the `pull_request` merge commit) | GREEN, GREEN |
+| After A is merged: B `-against` the new tip | RED (`2.0.0` → `1.5.0`) |
+| After A is merged: B merged into the new base, its conflict resolved for B, default mode (`HEAD^1..HEAD`) | RED |
+| A and B landed by one push, `-base <before> -each` | RED (the net `1.0.0` → `1.5.0` alone would be GREEN) |
+| Re-running B's old `pull_request` run (the merge commit of the old base) | GREEN: stale. Only a fresh merge sees the new base |
+
+The stale green is what the merge has to refuse. `pr-gate` refuses it: it
+requires the head to be 0 commits behind the base (`base.up_to_date`), so a
+check that ran on an older base is never used
+(`TestEvaluate_BehindBaseNeverPasses`). A merge in GitHub's UI is refused
+only by the ruleset's **Require branches to be up to date before merging**
+(strict): the tap of a personal account (magicdrive) cannot use a merge
+queue.
 
 ### Why the pull request check alone is not enough
 
@@ -92,8 +169,32 @@ around either (bypass, direct push), not a replacement.
 
 Copy [examples/workflows/tap-version-guard.yml](../examples/workflows/tap-version-guard.yml)
 into the tap's `.github/workflows/`, replace `<full-commit-sha>` with the
-Hephaestus commit you reviewed (one with `-against` and `-each`), and set
-the ruleset of the tap's default branch. The ruleset is the tap owner's
+Hephaestus commit you reviewed (one with `-strict`), and set the ruleset of
+the tap's default branch. The workflow compiles the guard with an exact Go
+(`go-version`, no cache) and `GOTOOLCHAIN=local`: when a newer pinned commit
+needs a newer Go, the build fails instead of fetching another toolchain;
+raise `go-version` together with the commit.
+
+What the example workflow does, and how each part fails:
+
+- **version-guard** (`pull_request`, `merge_group`): `-strict`, with
+  `-allow-downgrade` only when the `formula-rollback` label is read. The
+  label of a pull request comes from the event; that of a merge queue entry
+  from the API, and a failed read (or a queue ref it cannot parse) counts as
+  no label. The token is given only to the step that reads labels, not to
+  the guard. `labeled`/`unlabeled`/`edited` run it again.
+- **after-merge** (`push` to the default branch, `workflow_dispatch`): checks
+  each first-parent commit of the push with the label of its own pull
+  request (a failed read: no label), then re-checks every open pull request
+  `-against` the new tip. A pull request that fails against its own merge
+  base is not reported (its own required check blocks it). Findings go to
+  the issue; anything it could not check (exit 2, a pull request it cannot
+  fetch or list) fails the job and opens no issue.
+- **after-merge-issue**: the only job with `issues: write`; it runs no
+  action, no git and no guard, only `gh issue` with the report.
+- Every script runs `bash -euo pipefail`, every event value reaches it
+  through `env`, actions are pinned to commit SHAs, the checkout keeps no
+  credentials, and the workflow's default permissions are `{}`. The ruleset is the tap owner's
 decision; nothing in Hephaestus changes it.
 
 **In the GitHub UI** (tap repository, Settings, Rules, Rulesets, the ruleset
@@ -177,14 +278,23 @@ A rollback is never inferred; it is always explicit:
   publishes the older version (the downgrade is reported as a warning).
 - **On the tap:** label the pull request `formula-rollback` (with the example
   workflow), which runs the guard with `-allow-downgrade`. A manual rollback
-  is an ordinary pull request with that label.
+  is an ordinary pull request with that label. Under `-strict` the label
+  also lets through a re-release under the same version and a removal, never
+  a formula the guard cannot read (see "What fails"). A merge whose pull
+  request had the label does not open the after-merge issue.
 
 Remove the flag or label afterwards: it disables the guard for that change.
 
 ## Limits
 
 - A formula renamed in the same change is compared as removed and added.
-- Formulae whose versions are not semantic versions are reported, not
-  blocked.
+- Without `-strict`, formulae whose versions are not semantic versions are
+  reported, not blocked, and a same-version artifact change, a removal or a
+  formula without a version passes.
+- The guard reads formulae as text in the layout of generated and
+  brew-style formulae (indentation, `do` blocks); it does not evaluate Ruby.
+  A version bump that keeps the old artifacts, or an artifact of the right
+  version name with other bytes, is not detected (the release's checksums
+  and attestations are).
 - Hephaestus reads at most 100 open pull requests against the base branch;
   beyond that it warns that the rest were not checked.
