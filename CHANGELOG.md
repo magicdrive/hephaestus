@@ -5,6 +5,48 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
 ## Unreleased
 
+- **`cmd/tap-version-guard -strict`**, for the tap's required check: besides
+  a downgrade it fails a changed or added formula without a version or with
+  one that is not a semantic version, versions that cannot be compared, the
+  same version with other artifacts (`url`, `sha256`, `mirror`, `resource`,
+  `patch`, platforms swapped: a re-release cannot be told from a swapped
+  artifact), a url of another version than the formula's, a removed
+  formula, a formula that is not a regular file (symlink, submodule), an
+  unsafe path and a `Formula` entry that is not a directory. It checks only
+  the formulae Homebrew loads (`Formula/**`, else `HomebrewFormula/**`, else
+  root `*.rb`) and reads them from git objects only. `-allow-downgrade` (the
+  `formula-rollback` label) lowers the version and artifact findings to
+  warnings, never those about a formula the guard cannot read. Without
+  `-strict` the guard behaves as before, except that a missing git object is
+  now an error (exit 2) instead of an absent file, and annotations escape
+  paths and versions (a crafted file name cannot start a workflow command).
+  The example tap workflow runs `-strict`; reads the rollback label so that
+  a failed read means no label; runs every script with `bash -euo
+  pipefail`; pins Go (`GOTOOLCHAIN=local`, no cache); grants no default
+  permissions; honours the label of each merged pull request after the
+  merge; opens the after-merge issue only for findings (a check that could
+  not run fails the job instead, and a pull request that fails on its own is
+  not reported), from a separate job that alone may write issues and runs no
+  code. docs/tap-version-guard.md tabulates the outcome of every case and
+  the race of two release pull requests (`TestTOCTOU`); `pr-gate` gains a
+  test that a head behind its base never passes nor merges.
+- **Tap: same version, other checksums**: the tap stage fails, before
+  writing anything and in a dry run too, when the tap's base branch, the
+  pull request branch or an open pull request from the tap already has the
+  version being published with another sha256 for the same archive url:
+  the release's archives were replaced (a release created again for the
+  tag) or tampered with. The release workflows' read-only rehearsal stops
+  such a release before it is published. Other changes at the same version
+  (desc, caveats, a new platform) are proposed as before; allow_downgrade
+  does not apply. `tap.ChecksumChanges` is the rule, for the tap's CI to
+  reuse.
+- **Tap: forks no longer block publishing**: an open pull request from
+  someone else's fork that proposes a newer version (or this version with
+  other checksums) is reported as a warning instead of skipping the tap
+  stage; anyone can open one on a public tap, so it could stop every later
+  release from updating the formula while the release workflow stayed
+  green. Pull requests from a branch of the tap (or of the configured head
+  repository) still skip as before.
 - **Merge gate**: new `cmd/pr-gate` decides whether a pull request may be
   merged and, only with `-merge`, merges it pinned to the reviewed head
   (`PUT pulls/{n}/merge` with `sha`, sent once) and verifies the merge
