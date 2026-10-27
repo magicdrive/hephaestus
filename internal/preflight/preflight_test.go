@@ -72,6 +72,11 @@ func TestScenarios(t *testing.T) {
 		{"remote tag exists", "v1.1.0", nil, "tag.remote", Fail, "already exists on origin"},
 		{"not newer", "v1.0.9", nil, "tag.order", Warn, "not newer than the released v1.1.0"},
 		{"prerelease of a newer version", "v1.2.0-rc.2", nil, "tag.order", Pass, "newer than v1.1.0"},
+		{"same version", "v1.1.0-rc.1", nil, "tag.order", Warn, "not newer than the released v1.1.0"},
+		{"newer by numbers, not text", "v1.10.0", func(f *fixture) {
+			f.git.refs["refs/tags/v1.9.9"] = otherSHA
+			f.git.refs["refs/tags/v1.11.0-rc.1"] = otherSHA // prereleases are not releases
+		}, "tag.order", Pass, "newer than v1.9.9"},
 		// Config.
 		{"invalid config", "v1.2.0", func(f *fixture) { f.in.Config, f.in.ConfigErr = nil, errors.New("line 3: unknown key") }, "config.load", Fail, "unknown key"},
 		{"config checks skipped", "v1.2.0", func(f *fixture) { f.in.Config, f.in.ConfigErr = nil, errors.New("bad") }, "config.assets", Skip, "requires config.load"},

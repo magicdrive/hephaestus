@@ -181,6 +181,69 @@ func TestRulesetAndEnvironmentChecks(t *testing.T) {
 	}
 }
 
+// TestRulesetAndEnvironmentChecks_CasesOfT carries the cases of
+// magicdrive/t's own release rules (scripts/test-release-rules.sh), which
+// t drops in favor of these checks: each one must decide them the same way.
+func TestRulesetAndEnvironmentChecks_CasesOfT(t *testing.T) {
+	tagRules := []string{"deletion", "update"}
+	tagSet := ruleset("Protect release tags", "tag", "active", []string{"refs/tags/v*"}, tagRules...)
+	masterSet := ruleset("Protect master", "branch", "active", []string{"refs/heads/master"}, "deletion", "non_fast_forward", "required_status_checks")
+	good := []Ruleset{tagSet, masterSet}
+	excluded := ruleset("t", "tag", "active", []string{"refs/tags/v*"}, tagRules...)
+	excluded.Conditions.RefName.Exclude = []string{"refs/tags/v1.*"}
+	for _, c := range []struct {
+		name string
+		sets []Ruleset
+		tag  string
+		ok   bool
+	}{
+		{"tag ruleset active", good, "v1.2.0-rc.1", true},
+		{"no rulesets", nil, "v1.2.0", false},
+		{"tag ruleset disabled", []Ruleset{ruleset("t", "tag", "disabled", []string{"refs/tags/v*"}, tagRules...)}, "v1.2.0", false},
+		{"tag ruleset in evaluate mode", []Ruleset{ruleset("t", "tag", "evaluate", []string{"refs/tags/v*"}, tagRules...)}, "v1.2.0", false},
+		{"tag ruleset without update", []Ruleset{ruleset("t", "tag", "active", []string{"refs/tags/v*"}, "deletion")}, "v1.2.0", false},
+		{"tag ruleset blocking creation", []Ruleset{ruleset("t", "tag", "active", []string{"~ALL"}, "creation", "deletion", "update")}, "v1.2.0", false},
+		{"tag excluded", []Ruleset{excluded}, "v1.2.0", false},
+	} {
+		if ok, d := tagRulesetProtects(c.sets, c.tag); ok != c.ok {
+			t.Errorf("tag ruleset, %s: %t %s", c.name, ok, d)
+		}
+	}
+	for _, c := range []struct {
+		name        string
+		sets        []Ruleset
+		branch, chk string
+		ok          bool
+	}{
+		{"master ruleset requires ci-gate", good, "master", "ci-gate", true},
+		{"master ruleset requires another check", good, "master", "other", false},
+		{"no rulesets", nil, "master", "ci-gate", false},
+		{"~DEFAULT_BRANCH", []Ruleset{ruleset("m", "branch", "active", []string{"~DEFAULT_BRANCH"}, "required_status_checks")}, "master", "ci-gate", true},
+	} {
+		if ok, d := branchRequiresCheck(c.sets, c.branch, "master", c.chk); ok != c.ok {
+			t.Errorf("branch ruleset, %s: %t %s", c.name, ok, d)
+		}
+	}
+	for _, c := range []struct {
+		name     string
+		custom   bool
+		policies []EnvPolicy
+		tag      string
+		ok       bool
+	}{
+		{"tag v* only", true, []EnvPolicy{{Name: "v*", Type: "tag"}}, "v1.2.0-rc.1", true},
+		{"branch v*", true, []EnvPolicy{{Name: "v*", Type: "branch"}}, "v1.2.0-rc.1", false},
+		{"tag v* plus branch master", true, []EnvPolicy{{Name: "v*", Type: "tag"}, {Name: "master", Type: "branch"}}, "v1.2.0", false},
+		{"tag policy not matching", true, []EnvPolicy{{Name: "release-*", Type: "tag"}}, "v1.2.0", false},
+		{"no custom policy", false, nil, "v1.2.0", false},
+	} {
+		env := Environment{Name: "release", CustomPolicies: c.custom, Policies: c.policies}
+		if ok, d := environmentAllowsOnlyTag(env, c.tag); ok != c.ok {
+			t.Errorf("environment, %s: %t %s", c.name, ok, d)
+		}
+	}
+}
+
 // publishRun runs Publish with the release workflow simulated.
 func publishRun(t *testing.T, h *harness, tag string, opts Options) (*Outcome, *Plan) {
 	t.Helper()
