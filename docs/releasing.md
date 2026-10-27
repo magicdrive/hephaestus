@@ -141,8 +141,9 @@ make publish-watch v1.2.3    # find and follow the run again, then verify
 
 Running `make publish` again for a version whose tag exists is refused by
 the preflight; use `publish-status` and `publish-watch` instead. Two
-`make publish` processes in one clone are prevented by a lock file in the git
-directory (`hephaestus-publish.lock`); `make -j` runs the tool once.
+`make publish` processes in one clone are prevented by a file lock on
+`hephaestus-publish.lock` in the git directory, which the system releases
+when the process exits or is killed; `make -j` runs the tool once.
 
 To run the published binaries on every platform they ship for (Linux,
 macOS and Windows, amd64 and arm64), start the read-only **Verify release**
@@ -225,8 +226,12 @@ Any repository can inspect a release with `hephaestus status --tag vX.Y.Z`;
   `deletion`/`update`; a ruleset with a `creation` rule would block the push.
 - **`environment` fails**: `release` must deploy only from `v*` tags.
 - **`confirmation needs a terminal`**: run in a terminal, or pass `YES=1`.
-- **`another publish is running`**: remove `.git/hephaestus-publish.lock`
-  if no publish is running.
+- **`another publish is running`**: the message names the process (pid,
+  host, start time) that holds the lock. A process that holds it is alive:
+  wait for it or stop it. Do not remove the file; a killed publish releases
+  the lock by itself.
+- **`cannot lock .../hephaestus-publish.lock`**: the file system of the
+  clone does not support file locks; publish from a clone on a local disk.
 - **Run stays queued**: an environment approval (required reviewers) or
   runner availability; approve it on the run page, `make publish-watch` keeps
   following it.
