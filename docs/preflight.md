@@ -93,6 +93,11 @@ IDs are stable; they appear in the JSON report and in `--skip`.
 | `config.release` | error | GitHub release settings for this tag (prerelease, `draft: true` warns) | — |
 | `config.release-notes` | error | `release.github.notes_file` (and `preflight.changelog`, if set) exists, is not empty and names the tag or its version as a whole version: `v1.2.0` is not satisfied by `v1.2.0-rc.1` or `v1.2.01`, so notes left from an earlier version or a candidate are caught | — |
 | `config.formula` | error | Each formula's tap publication resolves for this tag (skipped for prereleases with `skip_upload: auto`) | — |
+| `workflow.release` | warning | The release workflow runs only on `push` of tags, with read-only top-level `permissions`; exactly one job publishes (the action's `command: release`, `run` with a publishing stage, or `hephaestus run`/`release` in a script, not dry-run), in an environment (`preflight.environment` when set), and it needs (directly or not) a job that runs the CI workflow (`uses: ./.github/workflows/...`); the step publishing the release has no `if:` and no `continue-on-error`; see [Release workflow](#release-workflow) | work tree |
+| `workflow.pins` | warning | Every `uses:` of the release workflow and of the CI workflow it runs is a full commit SHA (`docker://` images a `sha256` digest); every Hephaestus action reference has its release as a comment (`# vX.Y.Z`), and when the release workflow runs the action, CI runs the same commit | work tree |
+| `workflow.tap` | warning | The tap token secret (`preflight.tap_token_secret`) is in no workflow or job `env` and no `secrets: inherit`; every step that names it comes after the plan step and has exactly `if: steps.plan.outputs.tap == 'publish'`; only the steps `Rehearse the formula and tap pull request (read-only)` and `Generate the formula and open a tap pull request` get its value; both exist when a formula is published to a tap, and the rehearsal is a dry run; the `id: plan` step runs the plan (`command: plan`, or `hephaestus publish plan` into `$GITHUB_OUTPUT`) unconditionally and without secrets | work tree |
+| `workflow.attestation` | warning | The publishing job attests with `actions/attest-build-provenance` before it publishes, unconditionally, and its `subject-path` patterns match every planned archive and the checksum file of this tag | work tree |
+| `workflow.ci-gate` | warning | The CI workflow the release runs has a job `ci-gate` with `if: always()` that needs every other job and reads their results (`needs`) | work tree |
 | `github.repository` | error | The repository exists and is not archived | GitHub |
 | `github.release` | error | No release or draft exists for the tag (drafts need a token with push access to be seen; without one this warns) | GitHub |
 | `github.ci` | error | The latest run of every check on HEAD succeeded, nothing is pending, and every check required by the branch ruleset (from the app it names, if any) ran and succeeded; see [Check runs](#check-runs) | GitHub |
@@ -107,7 +112,8 @@ IDs are stable; they appear in the JSON report and in `--skip`.
 | `tap.pull-request` | error | No open pull request from that branch (a closed one warns) | GitHub |
 
 A check whose prerequisite did not pass is `SKIP` with the reason, so one
-root cause is reported once.
+root cause is reported once. "work tree" means the files of the checkout
+(`git rev-parse --show-toplevel`), read without the network.
 
 ### Check runs
 
@@ -133,6 +139,28 @@ independently of the order the API returns them in:
 
 The evidence lists every group with its latest run ID and how many older
 runs it superseded.
+
+## Release workflow
+
+The `workflow.*` checks read `.github/workflows/<preflight.workflow>` (default
+`release.yml`) and the CI workflow it calls from the work tree, so they need
+no network and work for any language. They check the
+[workflow conventions](publish.md#workflows) that `hephaestus publish` relies
+on, which it otherwise verifies only after the release is published.
+
+- They are **warnings**: a violation makes the preflight `WARN` (exit `0`),
+  and fails `--strict` and therefore `hephaestus publish`, before the tag is
+  pushed. Skip one with `preflight.skip` (or `--skip`) when a convention does
+  not apply to your release.
+- They **fail closed**: what they cannot read unambiguously is a violation,
+  never a pass: YAML that does not parse, anchors and aliases, an expression
+  where a stage, a command or an attested path is expected, `secrets[...]`
+  or `toJSON(secrets)`, an `if:` that is not exactly the expected condition,
+  an attestation by `subject-digest` or `subject-checksums`.
+- Without `preflight.workflow` and without `.github/workflows/release.yml`,
+  they are skipped. A configured workflow that does not exist is a violation.
+- Each problem names the file, the job and the step, and the remediation
+  says what the convention is.
 
 ## JSON report
 

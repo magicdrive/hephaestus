@@ -201,9 +201,11 @@ is fetched or tagged. `plan` and `status` do not use the branch.
 
 These are fixed names and repository settings, the same for every project.
 publish checks each one it can read and fails the preflight when one is not
-met (release-workflow conventions are checked when the release is
-verified). None is configurable, except which branch is the
-[release branch](#release-branch).
+met. The release-workflow conventions are read from the work tree by the
+`workflow.*` checks of `hephaestus preflight` (warnings, which the strict
+preflight publish runs turns into failures) before the tag is pushed, and
+verified again on the published release. None is configurable, except which
+branch is the [release branch](#release-branch).
 
 ### Git and the local clone
 
@@ -233,13 +235,14 @@ verified). None is configurable, except which branch is the
 | Convention | Checked by |
 | --- | --- |
 | **`.github/workflows/ci.yml`** runs on `push` to the release branch, and its push run on the release branch for exactly the commit being tagged succeeded (a run on another branch, such as the default branch, or one started through `workflow_call` does not count) | preflight `ci on commit` |
-| `ci.yml` has an aggregating job **`ci-gate`** that `needs` every other job and fails unless all succeeded (`if: always()`); it is the check the release branch's ruleset requires | preflight `<release branch> ruleset` |
-| **`.github/workflows/release.yml`** is active, runs on `push` of tags `v*`, and is the only workflow that publishes | preflight `release workflow`; the run is found by file, `push` event, tag and commit |
-| Its publishing job runs in environment **`release`** | preflight `environment` |
-| It attests **every** asset (each archive and the checksum file) with `actions/attest-build-provenance`, in that workflow, on a GitHub-hosted runner | verification `attestations` (`gh attestation verify --signer-workflow <owner>/<repo>/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z --source-digest <commit> --deny-self-hosted-runners`) |
+| `ci.yml` has an aggregating job **`ci-gate`** that `needs` every other job and fails unless all succeeded (`if: always()`); it is the check the release branch's ruleset requires | preflight `<release branch> ruleset`, `workflow.ci-gate` |
+| **`.github/workflows/release.yml`** is active, runs on `push` of tags `v*`, and is the only workflow that publishes; one job publishes, after the job that runs `ci.yml` | preflight `release workflow`, `workflow.release`; the run is found by file, `push` event, tag and commit |
+| Its publishing job runs in environment **`release`** | preflight `environment`, `workflow.release` |
+| It attests **every** asset (each archive and the checksum file) with `actions/attest-build-provenance`, in that workflow, on a GitHub-hosted runner | preflight `workflow.attestation`; verification `attestations` (`gh attestation verify --signer-workflow <owner>/<repo>/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z --source-digest <commit> --deny-self-hosted-runners`) |
 | It uploads no other release assets | verification `assets` |
-| A step with `id: plan` runs the action with `command: plan` (or `hephaestus publish plan "$GITHUB_REF_NAME"`, writing its output to `$GITHUB_OUTPUT`) | the tap steps depend on it |
-| The two steps that use the tap token are named exactly **`Rehearse the formula and tap pull request (read-only)`** and **`Generate the formula and open a tap pull request`**, both with `if: steps.plan.outputs.tap == 'publish'`, and no other step gets the token | verification `tap steps`: both skipped when the tap is skipped (the token was not even passed), both succeeded when it is published. Without `brews` the steps may be left out |
+| Every action is pinned to a full commit SHA, each Hephaestus pin with its release as a comment (`# vX.Y.Z`), and CI runs the Hephaestus commit the release runs | preflight `workflow.pins` |
+| A step with `id: plan` runs the action with `command: plan` (or `hephaestus publish plan "$GITHUB_REF_NAME"`, writing its output to `$GITHUB_OUTPUT`) | preflight `workflow.tap`; the tap steps depend on it |
+| The two steps that use the tap token are named exactly **`Rehearse the formula and tap pull request (read-only)`** and **`Generate the formula and open a tap pull request`**, both with `if: steps.plan.outputs.tap == 'publish'`, and no other step gets the token | preflight `workflow.tap`; verification `tap steps`: both skipped when the tap is skipped (the token was not even passed), both succeeded when it is published. Without `brews` the steps may be left out |
 
 The release job's plan and tap steps, with the action (no Go needed). The
 action's `plan` command also refuses a prerelease whose plan would update

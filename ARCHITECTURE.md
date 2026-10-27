@@ -48,6 +48,7 @@ config ──► pipeline.Check ──► build ──► archive ──► chec
 | `internal/compat/goreleaser` | Classify GoReleaser `brews` keys | Silently drop a key |
 | `internal/ghaction` | Step outputs and summary | Let a value inject another output |
 | `internal/preflight` | Read-only release safety checks with stable IDs, PASS/FAIL/WARN/SKIP/UNKNOWN, text and JSON reports | Write to git or GitHub; run repository code; read a secret value |
+| `internal/workflowcheck` | Release workflow conventions read from `.github/workflows` (publishing job, pins, tap token, attestation, ci-gate); fails closed on what it cannot read | Run a workflow or any repository code; accept an unreadable workflow |
 | `internal/status` | Read-only state of a tag's release (tag, release, assets vs. manifest, tap pull requests) and the next safe action | Write anything; guess a state it could not read |
 | `internal/publish` | Release a version by its tag (`hephaestus publish`; `make publish` for Hephaestus itself through `internal/cmd/publish`): preflight, annotated tag push, follow and verify the release run, with the conventions of docs/publish.md | Publish, upload or write to GitHub; move, delete or force-push a tag; hold project-specific names |
 | `cmd/hephaestus` | Flags, stage loop, report | Contain stage logic |

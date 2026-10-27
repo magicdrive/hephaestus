@@ -1,0 +1,106 @@
+# kjak is released with Hephaestus (https://github.com/magicdrive/hephaestus).
+# .github/workflows/release.yml runs build, archive and checksum in a job
+# without secrets, then release, formula and tap in the `release`
+# environment, on a v* tag after the whole CI passed. `make snapshot` builds
+# and verifies the same archives locally; nothing is published.
+#
+# The archives keep what GoReleaser produced up to v0.0.3 (the names, the
+# five platforms, zip on Windows, kjak + LICENSE + README.md at the root,
+# kjak_checksums.txt), and the binary is built with the same flags, so
+# `kjak --version` prints `kjak version vX.Y.Z` as before.
+version: 1
+
+project:
+  name: kjak
+  # "command-line": Homebrew's style (brew audit) asks for it in the formula's desc
+  description: Send one notification to Slack, Discord and e-mail from the command-line
+  homepage: https://github.com/magicdrive/kjak
+  license: MIT
+
+builds:
+  - id: kjak
+    # the five supported platforms (README "Install"); no windows/arm64
+    matrix:
+      os: [darwin, linux, windows]
+      arch: [amd64, arm64]
+      exclude:
+        - os: windows
+          arch: arm64
+    # as GoReleaser built v0.0.1-v0.0.3 (main: ./main.go, -trimpath,
+    # -s -w, main.version=v<version>, CGO_ENABLED=0): the binaries of a tag
+    # are byte-identical to the ones GoReleaser built for it.
+    command:
+      - go
+      - build
+      - -trimpath
+      - -ldflags
+      - "-s -w -X main.version=v{{ .Version }}"
+      - -o
+      - "dist/bin/{{ .OS }}_{{ .Arch }}/kjak{{ .Ext }}"
+      - ./main.go
+    env:
+      GOOS: "{{ .OS }}"
+      GOARCH: "{{ .Arch }}"
+      CGO_ENABLED: "0"
+      # `auto` lets go use the toolchain go.mod pins (go1.27.3, as the
+      # releases so far), whatever go is on PATH or GOTOOLCHAIN the job
+      # sets. (The v1.1.0 action set up its own Go 1.26 with
+      # GOTOOLCHAIN=local; from v1.2.0 it leaves the job's Go alone, and
+      # the workflows set up Go from go.mod themselves.)
+      GOTOOLCHAIN: auto
+    output: "dist/bin/{{ .OS }}_{{ .Arch }}/kjak{{ .Ext }}"
+
+archives:
+  - id: kjak
+    name: "{{ .Project }}_{{ .Version }}_{{ .OS }}_{{ .Arch }}"
+    format: tar.gz
+    format_overrides:
+      - os: windows
+        format: zip
+    files:
+      - src: "dist/bin/{{ .OS }}_{{ .Arch }}/kjak{{ .Ext }}"
+        dst: "kjak{{ .Ext }}"
+        mode: "0755"
+      - src: LICENSE
+        mode: "0644"
+      - src: README.md
+        mode: "0644"
+
+checksum:
+  name: "{{ .Project }}_checksums.txt"
+
+release:
+  github:
+    owner: magicdrive
+    name: kjak
+    draft: false
+    prerelease: auto  # a tag like v0.2.0-rc.1 is published as a pre-release
+    # GoReleaser wrote a commit list; GitHub's generated notes replace it.
+    generate_notes: true
+
+brews:
+  - name: kjak
+    ids: [kjak]
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    # magicdrive/homebrew-tap keeps its formulae at the repository root
+    # (no `directory`); a pre-release never updates the tap.
+    skip_upload: auto
+    # the author GoReleaser wrote the formula as
+    commit_author:
+      name: magicdrive bot
+      email: hiroshi.ikegami+githubbot@magicdrive.jp
+    install: |
+      bin.install "kjak"
+    test: |
+      assert_match "kjak version v#{version}", shell_output("#{bin}/kjak --version")
+    repository:
+      owner: magicdrive
+      name: homebrew-tap
+      pull_request:
+        enabled: true
+
+# Read-only release safety checks before a tag is pushed:
+#   make preflight tag=vX.Y.Z
+preflight:
+  workflow: release.yml
+  environment: release

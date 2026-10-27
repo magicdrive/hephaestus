@@ -17,6 +17,7 @@ import (
 	"github.com/magicdrive/hephaestus/internal/tap"
 	"github.com/magicdrive/hephaestus/internal/tmpl"
 	"github.com/magicdrive/hephaestus/internal/version"
+	"github.com/magicdrive/hephaestus/internal/workflowcheck"
 )
 
 // registry is every check, in execution order. IDs are stable: they are
@@ -36,6 +37,11 @@ var registry = []def{
 	{id: "config.release", group: "config", title: "GitHub release settings", severity: SeverityError, needs: []string{"config.load", "tag.format"}, run: checkConfigRelease},
 	{id: "config.release-notes", group: "config", title: "Release notes and changelog name the tag", severity: SeverityError, needs: []string{"config.load", "tag.format"}, run: checkConfigReleaseNotes},
 	{id: "config.formula", group: "config", title: "Homebrew formula publication resolves", severity: SeverityError, needs: []string{"config.load", "tag.format"}, run: checkConfigFormula},
+	{id: workflowcheck.IDRelease, group: "workflow", title: workflowcheck.Titles[workflowcheck.IDRelease], severity: SeverityWarning, needs: []string{"git.repository", "config.load"}, run: checkWorkflow(workflowcheck.IDRelease)},
+	{id: workflowcheck.IDPins, group: "workflow", title: workflowcheck.Titles[workflowcheck.IDPins], severity: SeverityWarning, needs: []string{"git.repository", "config.load"}, run: checkWorkflow(workflowcheck.IDPins)},
+	{id: workflowcheck.IDTap, group: "workflow", title: workflowcheck.Titles[workflowcheck.IDTap], severity: SeverityWarning, needs: []string{"git.repository", "config.load"}, run: checkWorkflow(workflowcheck.IDTap)},
+	{id: workflowcheck.IDAttestation, group: "workflow", title: workflowcheck.Titles[workflowcheck.IDAttestation], severity: SeverityWarning, needs: []string{"git.repository", "config.load", "tag.format"}, run: checkWorkflow(workflowcheck.IDAttestation)},
+	{id: workflowcheck.IDCIGate, group: "workflow", title: workflowcheck.Titles[workflowcheck.IDCIGate], severity: SeverityWarning, needs: []string{"git.repository", "config.load"}, run: checkWorkflow(workflowcheck.IDCIGate)},
 	{id: "github.repository", group: "github", title: "Release repository is reachable", severity: SeverityError, network: true, run: checkGitHubRepository},
 	{id: "github.release", group: "github", title: "No release or draft exists for the tag", severity: SeverityError, needs: []string{"github.repository", "config.release"}, network: true, run: checkGitHubRelease},
 	{id: "github.ci", group: "github", title: "CI succeeded on the exact commit", severity: SeverityError, needs: []string{"github.repository", "git.repository"}, network: true, run: checkGitHubCI},
@@ -405,6 +411,56 @@ func checkConfigFormula(s *state) outcome {
 		return fail(strings.Join(problems, "; "), "fix brews[] publication settings", e)
 	}
 	return pass(strings.Join(lines, "; "), e)
+}
+
+// --- workflow ---
+
+// checkWorkflow reports one check of the release workflow's conventions
+// (internal/workflowcheck), read from the work tree. They are warnings:
+// --strict, and so hephaestus publish, fails on them before the tag is
+// pushed instead of when the published release is verified.
+func checkWorkflow(id string) func(*state) outcome {
+	return func(s *state) outcome {
+		r := s.workflowResults()[id]
+		e := ev{}
+		for k, v := range r.Evidence {
+			e[k] = v
+		}
+		switch r.Status {
+		case workflowcheck.Pass:
+			return pass(r.Message, e)
+		case workflowcheck.Skip:
+			return skip(r.Message)
+		}
+		e["problems"] = r.Problems
+		return fail(r.Message, r.Fix, e)
+	}
+}
+
+// workflowResults runs the workflow checks once, on the work tree's
+// .github/workflows, for the tag's release assets.
+func (s *state) workflowResults() map[string]workflowcheck.Result {
+	return s.workflows.getOnce(func() map[string]workflowcheck.Result {
+		top, err := s.in.Git.TopLevel(s.ctx)
+		out := map[string]workflowcheck.Result{}
+		if err != nil {
+			for _, id := range workflowcheck.IDs() {
+				out[id] = workflowcheck.Result{ID: id, Status: workflowcheck.Fail, Message: "cannot find the work tree: " + err.Error(), Problems: []string{err.Error()}}
+			}
+			return out
+		}
+		o := workflowcheck.Options{Dir: top, Workflow: s.settings.workflow, Environment: s.settings.environment, TapTokenSecret: s.settings.tapTokenSecret}
+		if s.tagOK {
+			o = workflowcheck.FromConfig(o, s.in.Config, s.vars())
+		} else {
+			o = workflowcheck.FromConfig(o, s.in.Config, tmpl.Vars{})
+			o.Assets, o.Unknown, o.AssetsErr = nil, nil, fmt.Errorf("the tag %q is not a release version", s.in.Tag)
+		}
+		for _, r := range workflowcheck.Run(o) {
+			out[r.ID] = r
+		}
+		return out
+	})
 }
 
 // --- github ---

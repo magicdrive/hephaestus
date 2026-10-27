@@ -259,6 +259,94 @@ preflight:
   environment: release
 `
 
+// testReleaseWorkflow and testCIWorkflow follow every convention of the
+// workflow checks for testConfig.
+const testReleaseWorkflow = `name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+  release:
+    needs: [ci]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Plan the release
+        id: plan
+        uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: plan
+      - name: Rehearse the formula and tap pull request (read-only)
+        if: steps.plan.outputs.tap == 'publish'
+        uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: run
+          stages: formula,tap
+          dry-run: "true"
+          tap-token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/tool_*.tar.gz
+            dist/tool_checksums.txt
+      - uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: release
+      - name: Generate the formula and open a tap pull request
+        if: steps.plan.outputs.tap == 'publish'
+        uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: run
+          stages: formula,tap
+          tap-token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+`
+
+const testCIWorkflow = `name: CI
+on:
+  push:
+    branches: [main]
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: make test
+  ci-gate:
+    if: always()
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: for r in $RESULTS; do [ "$r" = success ] || exit 1; done
+`
+
+// writeWorkflows makes dir a work tree with the release and CI workflows.
+func writeWorkflows(t *testing.T, dir, release, ci string) {
+	t.Helper()
+	wf := filepath.Join(dir, ".github", "workflows")
+	if err := os.MkdirAll(wf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, src := range map[string]string{"release.yml": release, "ci.yml": ci} {
+		if err := os.WriteFile(filepath.Join(wf, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func loadConfig(t *testing.T, src string) *config.Config {
 	t.Helper()
 	cfg, err := config.Load(strings.NewReader(src), t.TempDir())
@@ -276,6 +364,8 @@ type fixture struct {
 
 func newFixture(t *testing.T, tag string) *fixture {
 	f := &fixture{git: newFakeGit(), gh: newFakeGH()}
+	f.git.top = t.TempDir()
+	writeWorkflows(t, f.git.top, testReleaseWorkflow, testCIWorkflow)
 	f.in = Input{Tag: tag, Config: loadConfig(t, testConfig), ConfigPath: "hephaestus.yaml", TokenPresent: true, Git: f.git, GitHub: f.gh}
 	writeNotes(t, f, "# tool "+tag+"\n\nChanges.\n")
 	return f
