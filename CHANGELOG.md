@@ -34,6 +34,22 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   publishing; `preflight.skip` turns one off. `hephaestus check
   --workflows` runs the same checks without a tag (for pull request CI) and
   exits 1 on a violation.
+- `cmd/tap-version-guard` has two more modes. `-against <tip>` checks an
+  unmerged pull request head against the base branch's current tip (the
+  formulae it changed since the merge base), so open pull requests can be
+  re-checked after the base moved: a green `pull_request` check of an older
+  base stays green, and re-running it checks the same old merge again.
+  `-each` checks every first-parent step of `base..head`, so a merge queue
+  entry or a push that lands several merges fails on a downgrade inside it
+  even when the net change goes up. The example tap workflow runs on
+  `edited` (base changed), checks merge queue entries with `-each` from
+  `base_sha` (and the entry's `formula-rollback` label), and adds an
+  `after-merge` job (push to the default branch, `workflow_dispatch`) that
+  opens an issue with restore steps when a downgrade landed and names the
+  open pull requests the new base turned into downgrades.
+  docs/tap-version-guard.md compares the options (required check, strict,
+  merge queue, post-merge detection, update branch, GitHub App) and gives
+  the ruleset settings in the UI and through the API.
 - The tap stage (pull request mode) reads the other open pull requests
   against the tap's base branch before proposing a formula. When one
   proposes a newer version (by SemVer precedence), nothing is written and
