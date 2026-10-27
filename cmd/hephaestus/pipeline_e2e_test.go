@@ -75,6 +75,9 @@ type e2eGitHub struct {
 	failPublish bool
 	// failPulls answers every pull request creation with 403.
 	failPulls bool
+	// fault, when set, fails the requests it matches
+	// (failure_injection_test.go).
+	fault *e2eFault
 
 	// acme/homebrew-tap: each commit is a full snapshot of the files.
 	branches map[string]string
@@ -239,6 +242,15 @@ func (f *e2eGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(string(body), tok) || strings.Contains(r.URL.RawQuery, tok) {
 			f.t.Errorf("%s %s: request carries a token", r.Method, r.URL.Path)
 		}
+	}
+	if fl := f.fault; fl != nil && fl.hit(repo, r) {
+		if !fl.after {
+			fl.fail(w)
+			return
+		}
+		// The request takes effect, but its response is lost.
+		defer fl.fail(w)
+		w = httptest.NewRecorder()
 	}
 	auth := r.Header.Get("Authorization")
 	switch repo {

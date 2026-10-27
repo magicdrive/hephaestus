@@ -1,45 +1,84 @@
 # Homebrew tap CI (goes in the tap repository, not in the project): fails a
-# change that lowers a formula's version, e.g. the older of two release pull
-# requests merged last. See docs/tap-version-guard.md.
+# change that lowers a formula's version (the older of two release pull
+# requests merged last), swaps the artifacts of a version, removes a
+# formula or leaves one without a version. See docs/tap-version-guard.md.
 #
 # - version-guard (pull_request, merge_group): make it a required status
-#   check, with "require branches to be up to date before merging" or a
-#   merge queue: a pull_request check is only as fresh as the base it ran
-#   against, and re-running it checks the same old merge again.
+#   check, with "require branches to be up to date before merging" (strict)
+#   or a merge queue: a pull_request check is only as fresh as the base it
+#   ran against, and re-running it checks the same old merge again.
 # - after-merge (push to the default branch, workflow_dispatch): detects a
-#   downgrade that landed anyway (no strict rule, an admin bypass, a direct
-#   push) and open pull requests that the new base turned into downgrades,
-#   and opens or updates an issue. It cannot block: it alerts.
+#   downgrade that landed anyway (an admin bypass, a direct push) and open
+#   pull requests that the new base turned into downgrades. It cannot
+#   block: it alerts, through after-merge-issue, the only job that may
+#   write (issues), and which runs no code of the tap or of Hephaestus.
 #
-# A pull request labelled "formula-rollback" may lower the version on
-# purpose.
+# A pull request labelled "formula-rollback" may lower a version, re-release
+# a version with other artifacts or remove a formula on purpose; it never
+# lets through a formula the guard cannot read (no version, a symlink).
+#
+# Every value of the event reaches the scripts through env, never inside
+# them; every script runs with bash -euo pipefail; a label that cannot be
+# read counts as absent.
 name: Formula version guard
 
 on:
   pull_request:
-    # edited: the base branch was changed.
+    # edited: the base branch was changed; (un)labeled: formula-rollback.
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
   merge_group:
   push:
-    branches: [main]
+    branches: [main] # the tap's default branch
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
-  # The Hephaestus commit you have reviewed (first release with
-  # cmd/tap-version-guard -against/-each, or later).
+  # The Hephaestus commit you have reviewed (one with -strict, or later).
   GUARD: github.com/magicdrive/hephaestus/cmd/tap-version-guard@<full-commit-sha>
+  # The Go that compiles the guard: at least the go line of the pinned
+  # commit's go.mod. local: a newer requirement fails the build instead of
+  # downloading another toolchain.
+  GOTOOLCHAIN: local
 
 jobs:
   version-guard:
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: read # the rollback label of a merge queue entry
     steps:
+      - name: Rollback label
+        id: rollback
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_ROLLBACK: ${{ contains(github.event.pull_request.labels.*.name, 'formula-rollback') }}
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          allow=false
+          case "$EVENT" in
+          pull_request)
+            if [ "$PR_ROLLBACK" = true ]; then allow=true; fi
+            ;;
+          merge_group)
+            # gh-readonly-queue/<base>/pr-<number>-<sha>: the entry's pull request.
+            pr="$(sed -n 's|^gh-readonly-queue/.*/pr-\([0-9][0-9]*\)-[0-9a-f]*$|\1|p' <<<"$QUEUE_REF")"
+            if [ -z "$pr" ]; then
+              echo "::warning::cannot tell the pull request of the queue entry: checked without the rollback label"
+            elif labels="$(gh api --paginate "repos/$REPO/issues/$pr/labels" --jq '.[].name')"; then
+              if grep -qxF formula-rollback <<<"$labels"; then allow=true; fi
+            else
+              echo "::warning::cannot read the labels of #$pr: checked without the rollback label"
+            fi
+            ;;
+          esac
+          echo "allow=$allow" >> "$GITHUB_OUTPUT"
       # pull_request checks out the merge of the pull request into the
       # current base (HEAD^1 is the base); merge_group checks out the
       # queue entry, stacked on the entries ahead of it.
@@ -49,42 +88,42 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
+          go-version: "1.27.3"
+          cache: false
       - name: Refuse formula downgrades
+        shell: bash
         env:
           EVENT: ${{ github.event_name }}
-          PR_ROLLBACK: ${{ contains(github.event.pull_request.labels.*.name, 'formula-rollback') }}
+          ALLOW: ${{ steps.rollback.outputs.allow }}
           QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
-          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
         run: |
-          flags=()
+          set -euo pipefail
+          GOBIN="$RUNNER_TEMP/bin" go install "$GUARD"
+          guard="$RUNNER_TEMP/bin/tap-version-guard"
+          flags=(-strict)
+          if [ "$ALLOW" = true ]; then flags+=(-allow-downgrade); fi
           if [ "$EVENT" = merge_group ]; then
-            # gh-readonly-queue/<base>/pr-<number>-<sha>: the entry's pull request.
-            pr="$(sed -n 's|.*/pr-\([0-9][0-9]*\)-[0-9a-f]*$|\1|p' <<<"$QUEUE_REF")"
-            if [ -n "$pr" ] && gh api "repos/$REPO/issues/$pr/labels" --jq '.[].name' | grep -qx formula-rollback; then
-              flags+=(-allow-downgrade)
-            fi
             # Every step from the base branch to this entry, against its
-            # first parent: an older release queued behind a newer one fails
-            # even when the group's net change goes up.
-            go run "$GUARD" -base "$QUEUE_BASE" -each "${flags[@]}"
+            # first parent: an older release queued behind a newer one
+            # fails even when the group's net change goes up.
+            "$guard" -base "$QUEUE_BASE" -each "${flags[@]}"
           else
-            if [ "$PR_ROLLBACK" = true ]; then flags+=(-allow-downgrade); fi
-            go run "$GUARD" "${flags[@]}"
+            "$guard" "${flags[@]}"
           fi
 
   after-merge:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     concurrency:
       group: formula-version-guard-after-merge
       cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: read
-      issues: write
+    outputs:
+      found: ${{ steps.check.outputs.found }}
+      report: ${{ steps.check.outputs.report }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -92,9 +131,11 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
+          go-version: "1.27.3"
+          cache: false
       - name: Check what landed and the open pull requests
         id: check
+        shell: bash
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
@@ -102,102 +143,178 @@ jobs:
           BRANCH: ${{ github.ref_name }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          GIT_TERMINAL_PROMPT: "0"
         run: |
+          set -euo pipefail
           GOBIN="$RUNNER_TEMP/bin" go install "$GUARD"
           guard="$RUNNER_TEMP/bin/tap-version-guard"
           report="$RUNNER_TEMP/report.md"
           : > "$report"
-          bad=0
-          # 1. The push itself, step by step (a merge queue group or several
-          #    merges at once). A new branch or a forced push has no usable
-          #    "before": check the last commit only.
+          found=0  # a finding: opens or updates the issue
+          errors=0 # something could not be checked: fails the job, no issue
+
+          # The guard's ::error lines as text for a code block of the issue.
+          findings() { printf '%s\n' "$1" | sed -n 's/^::error[^:]*:://p' | tr -d '`'; }
+
+          # rollback_merge SHA sets label=true when SHA merged a pull
+          # request labelled formula-rollback; a failed read counts as no
+          # label.
+          rollback_merge() {
+            local pulls
+            label=false
+            if ! pulls="$(gh api "repos/$REPO/commits/$1/pulls")"; then
+              echo "::warning::cannot read the pull request of $1: checked without the rollback label"
+              return 0
+            fi
+            if [ "$(jq -r --arg c "$1" '[.[] | select(.merge_commit_sha == $c and .merged_at != null) | .labels[].name] | any(. == "formula-rollback")' <<<"$pulls")" = true ]; then
+              label=true
+            fi
+          }
+
+          # 1. The push itself, commit by commit along the first parents (a
+          #    merge queue group or several merges at once), each with the
+          #    rollback label of its own pull request. A new branch or a
+          #    forced push has no usable "before": the last commit only.
           if [ "$EVENT" = push ]; then
-            if [ "$BEFORE" != 0000000000000000000000000000000000000000 ] && git merge-base --is-ancestor "$BEFORE" "$AFTER" 2>/dev/null; then
-              range=(-base "$BEFORE" -head "$AFTER" -each)
+            if [[ "$BEFORE" =~ ^[0-9a-f]{40}$ ]] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] &&
+              git merge-base --is-ancestor "$BEFORE" "$AFTER" 2>/dev/null; then
+              commits="$(git rev-list --first-parent --reverse "$BEFORE..$AFTER")"
             else
               echo "::warning::no fast-forward from $BEFORE: checking $AFTER against its first parent only"
-              range=(-base "$AFTER^1" -head "$AFTER")
+              commits="$AFTER"
             fi
-            if ! out="$("$guard" "${range[@]}")"; then
-              bad=1
+            for c in $commits; do
+              flags=(-strict)
+              rollback_merge "$c"
+              if [ "$label" = true ]; then flags+=(-allow-downgrade); fi
+              rc=0
+              out="$("$guard" -base "$c^1" -head "$c" "${flags[@]}")" || rc=$?
               printf '%s\n' "$out"
-              {
-                echo "### A formula went down on \`$BRANCH\` ($AFTER)"
-                echo
-                echo '```'
-                grep '::error' <<<"$out" | sed 's/^::error file=[^:]*:://'
-                echo '```'
-                echo
-                echo "Restore the newer formula with a pull request (never force-push \`$BRANCH\`):"
-                echo
-                echo '```sh'
-                echo "git switch -c restore-formula origin/$BRANCH"
-                echo "git checkout $BEFORE -- <the formula path above>"
-                echo "git commit -m 'Restore <formula> to <newer version>'"
-                echo '```'
-                echo
-                echo "or revert the merge that lowered it (\`git revert -m 1 <merge commit>\`)."
-                echo "If the downgrade was an intentional rollback (label \`formula-rollback\`), close this issue."
-                echo
-              } >> "$report"
-            fi
+              if [ "$rc" = 1 ]; then
+                found=1
+                {
+                  echo "### $c on \`$BRANCH\` changed a formula the guard refuses"
+                  echo
+                  echo '```'
+                  findings "$out"
+                  echo '```'
+                  echo
+                  echo "Restore the formula with a pull request (never force-push \`$BRANCH\`):"
+                  echo
+                  echo '```sh'
+                  echo "git switch -c restore-formula origin/$BRANCH"
+                  echo "git checkout $c^1 -- <the formula path above>"
+                  echo "git commit -m 'Restore <formula> to <version>'"
+                  echo '```'
+                  echo
+                  echo "or revert the merge (\`git revert -m 1 $c\`)."
+                  echo
+                } >> "$report"
+              elif [ "$rc" != 0 ]; then
+                errors=1
+                echo "::error::cannot check $c (exit $rc)"
+              fi
+            done
           fi
+
           # 2. Open pull requests against the branch, re-checked against its
           #    current tip: their green pull_request checks may predate it.
+          #    One that fails against its own merge base is blocked by its
+          #    own required check already and is not reported.
           tip="$(git rev-parse HEAD)"
-          gh pr list --repo "$REPO" --base "$BRANCH" --state open --limit 200 \
+          prs="$RUNNER_TEMP/prs.txt"
+          if ! gh pr list --repo "$REPO" --base "$BRANCH" --state open --limit 200 \
             --json number,headRefOid,labels \
-            --jq '.[] | "\(.number) \(.headRefOid) \([.labels[].name] | index("formula-rollback") != null)"' |
+            --jq '.[] | "\(.number) \(.headRefOid) \([.labels[].name] | any(. == "formula-rollback"))"' > "$prs"; then
+            errors=1
+            echo "::error::cannot list the open pull requests"
+            : > "$prs"
+          fi
+          n="$(wc -l < "$prs")"
+          if [ $((n)) -ge 200 ]; then
+            echo "::warning::200 or more open pull requests: the rest are not checked"
+          fi
           while read -r number sha rollback; do
-            git fetch --quiet --no-tags origin "+refs/pull/$number/head:refs/remotes/pr/$number" || {
-              echo "::warning::cannot fetch pull request #$number"; continue; }
-            if [ "$(git rev-parse "refs/remotes/pr/$number")" != "$sha" ]; then
-              echo "::warning::pull request #$number moved while it was fetched; it is checked by its own run"
+            if ! git fetch --quiet --no-tags origin "+refs/pull/$number/head:refs/remotes/pr/$number" < /dev/null; then
+              errors=1
+              echo "::error::cannot fetch pull request #$number"
               continue
             fi
-            flags=()
+            if [ "$(git rev-parse "refs/remotes/pr/$number")" != "$sha" ]; then
+              echo "::notice::pull request #$number moved while it was fetched; its own run checks the new head"
+              continue
+            fi
+            flags=(-strict)
             if [ "$rollback" = true ]; then flags+=(-allow-downgrade); fi
+            if ! mb="$(git merge-base "$tip" "$sha")"; then
+              errors=1
+              echo "::error::pull request #$number has no merge base with $BRANCH"
+              continue
+            fi
+            own=0
+            "$guard" -base "$mb" -head "$sha" "${flags[@]}" > /dev/null || own=$?
             rc=0
             out="$("$guard" -against "$tip" -head "$sha" "${flags[@]}")" || rc=$?
-            if [ "$rc" = 2 ]; then
-              echo "::error::cannot check pull request #$number"
-              echo error >> "$RUNNER_TEMP/stale"
-            elif [ "$rc" != 0 ]; then
+            if [ "$rc" -ge 2 ] || [ "$own" -ge 2 ]; then
+              errors=1
+              echo "::error::cannot check pull request #$number (exit $rc, $own)"
+            elif [ "$rc" = 1 ] && [ "$own" = 0 ]; then
               printf '%s\n' "$out"
+              found=1
               {
-                echo "### #$number would lower a formula if merged now"
+                echo "### #$number would be refused if merged now"
                 echo
                 echo '```'
-                grep '::error' <<<"$out" | sed 's/^::error file=[^:]*:://'
+                findings "$out"
                 echo '```'
                 echo
                 echo "Close it (a newer release is on \`$BRANCH\`). Its green check ran against an older base; re-running that check does not help."
                 echo
               } >> "$report"
-              echo stale >> "$RUNNER_TEMP/stale"
+            elif [ "$rc" = 1 ]; then
+              echo "::notice::pull request #$number fails its own check too; its required check blocks it"
             fi
-          done
-          if [ -s "$RUNNER_TEMP/stale" ]; then bad=1; fi
-          if [ "$bad" = 1 ]; then
-            cat "$report" >> "$GITHUB_STEP_SUMMARY"
-            echo "report=$report" >> "$GITHUB_OUTPUT"
-          fi
-          echo "bad=$bad" >> "$GITHUB_OUTPUT"
+          done < "$prs"
+
+          if [ "$found" = 1 ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+          {
+            echo "found=$found"
+            echo "errors=$errors"
+            echo "report=$(base64 < "$report" | tr -d '\n')"
+          } >> "$GITHUB_OUTPUT"
+      - name: Fail when something could not be checked
+        if: steps.check.outputs.errors != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::error::the guard could not check everything (see the step above); no issue is opened for that"
+          exit 1
+
+  after-merge-issue:
+    needs: after-merge
+    if: always() && needs.after-merge.outputs.found == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
       - name: Open or update the issue
-        if: steps.check.outputs.bad == '1'
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          REPORT: ${{ steps.check.outputs.report }}
+          REPORT: ${{ needs.after-merge.outputs.report }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          set -euo pipefail
           title="Formula version guard: downgrade on the default branch or in open pull requests"
-          body="$(cat "$REPORT"; echo; echo "Run: $RUN_URL")"
-          number="$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" --json number,title |
-            jq -r --arg t "$title" '[.[] | select(.title == $t) | .number][0] // empty')"
+          body="$(base64 -d <<<"$REPORT"; echo; echo "Run: $RUN_URL")"
+          issues="$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" --json number,title)"
+          number="$(jq -r --arg t "$title" '[.[] | select(.title == $t) | .number][0] // empty' <<<"$issues")"
           if [ -n "$number" ]; then
             gh issue comment "$number" --repo "$REPO" --body "$body"
           else
             gh issue create --repo "$REPO" --title "$title" --body "$body"
           fi
+          echo "::error::a formula change was refused after the fact: see the issue"
           exit 1

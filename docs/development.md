@@ -153,7 +153,6 @@ These float on purpose:
 | --- | --- | --- |
 | `go-version: stable` | `ci.yml` `race` (one leg) | Tests the newest Go release before `go.mod` moves to it |
 | `go-version: "1.26"` / `"1.27"` (latest patch) | `ci.yml` `action-isolation`, `action-isolation-detects-v1-1-0` | The caller's Go as callers install it; the jobs compare it before and after the action |
-| `go-version: stable` | `examples/workflows/tap-version-guard.yml` | A tap's CI compiles the guard with a current Go; the guard itself is pinned to a commit |
 | Runner images `ubuntu-latest`, `macos-latest`, `windows-latest` | Every workflow | GitHub's maintained images; the matrix also names fixed images (`ubuntu-24.04-arm`, `macos-15-intel`, `windows-11-arm`). Release builds do not depend on the image: Go comes from `go.mod` and builds are `-trimpath` |
 | `apt-get install zsh fish`, `brew install fish`, Homebrew itself | `completion`, `homebrew-e2e` | Real shells and the current Homebrew are what the tests check |
 
