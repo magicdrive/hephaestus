@@ -11,7 +11,7 @@ The other actions are pinned to the commits this repository uses.
 | [goreleaser-formula-only.yml](goreleaser-formula-only.yml) | GoReleaser releases; Hephaestus imports its archives and publishes the formula. Pairs with [../goreleaser-formula-only](../goreleaser-formula-only/README.md). |
 | [matrix-then-publish.yml](matrix-then-publish.yml) | Native builds on a runner matrix, then one publishing job with the `existing` provider. Pairs with [../existing-artifacts](../existing-artifacts/README.md). |
 | [pull-request.yml](pull-request.yml) | Configuration check and snapshot build on pull requests, with no token. |
-| [tap-version-guard.yml](tap-version-guard.yml) | For the **tap** repository: a required check that fails a formula pull request or merge queue entry lowering the formula's version, and an after-merge job that opens an issue when a downgrade landed or an open pull request became one ([docs/tap-version-guard.md](../../docs/tap-version-guard.md)). |
+| [tap-version-guard.yml](tap-version-guard.yml) | For the **tap** repository: a required check (`-strict`) that fails a formula pull request or merge queue entry lowering the formula's version, re-releasing a version with other artifacts, removing a formula or leaving one without a version, and an after-merge job that opens an issue when such a change landed or an open pull request became one ([docs/tap-version-guard.md](../../docs/tap-version-guard.md)). |
 
 Every release workflow uses a `release` environment for the tap token and
 `concurrency: release-${{ github.ref }}`. Token design and the rules for

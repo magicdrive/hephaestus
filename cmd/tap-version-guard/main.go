@@ -29,13 +29,27 @@
 // it catches a downgrade inside a merge queue group or a fast-forward of
 // several merges, whose net change may go up.
 //
+// -strict (for a required check) also fails, in every mode, a changed
+// formula whose new side has no version or a version that is not a
+// semantic version, versions that cannot be compared, the same version
+// with different artifacts (url, sha256, mirror, ...: a re-release under
+// the same version cannot be told from a swapped artifact), a url of
+// another version than the formula's, a removed formula, and a formula
+// that is not a regular file. It checks only the formulae Homebrew loads
+// (Formula/**, else HomebrewFormula/**, else *.rb at the root of the tap);
+// see strict.go.
+//
 // An intentional rollback passes with -allow-downgrade (reported as a
-// warning); see docs/tap-version-guard.md.
+// warning); see docs/tap-version-guard.md. Under -strict it lowers the
+// findings about which version and artifacts the tap serves (downgrade,
+// incomparable versions, same-version artifact change, url version
+// mismatch, removal), never those that mean the guard cannot read the
+// formula (no version, not a regular file, an unsafe path, a formula
+// directory that is not a directory).
 package main
 
 import (
 	"bytes"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -58,9 +72,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	head := fs.String("head", "HEAD", "the revision with the change")
 	against := fs.String("against", "", "compare head with this tip of the base branch: only the formulae head changed since its merge base with it (an unmerged pull request head)")
 	each := fs.Bool("each", false, "check every commit on the first-parent chain of base..head against its first parent (a push to the base branch)")
-	allow := fs.Bool("allow-downgrade", false, "report downgrades as warnings (an intentional rollback)")
+	allow := fs.Bool("allow-downgrade", false, "report downgrades as warnings (an intentional rollback); with -strict also the other version and artifact findings")
+	strict := fs.Bool("strict", false, "also fail a formula with no or a non-semantic version, incomparable versions, the same version with other artifacts, a url of another version, a removed formula, a formula that is not a regular file (only the formulae Homebrew loads)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: tap-version-guard [-C dir] [-base rev [-each] | -against rev] [-head rev] [-allow-downgrade]")
+		fmt.Fprintln(stderr, "usage: tap-version-guard [-C dir] [-base rev [-each] | -against rev] [-head rev] [-strict] [-allow-downgrade]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -77,20 +92,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	g := gitRepo(*dir)
+	opt := options{allow: *allow, strict: *strict}
 	var failed bool
 	var err error
 	switch {
 	case *against != "":
 		var files []string
 		if files, err = g.changedSinceMergeBase(*against, *head); err == nil {
-			failed, err = g.check(*against, *head, files, *allow, stdout)
+			failed, err = g.check(*against, *head, files, opt, stdout)
 		}
 	case *each:
-		failed, err = g.checkEach(*base, *head, *allow, stdout)
+		failed, err = g.checkEach(*base, *head, opt, stdout)
 	default:
 		var files []string
 		if files, err = g.changedFormulae(*base, *head); err == nil {
-			failed, err = g.check(*base, *head, files, *allow, stdout)
+			failed, err = g.check(*base, *head, files, opt, stdout)
 		}
 	}
 	if err != nil {
@@ -107,7 +123,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 // against its first parent: a push that lands several merges (a merge
 // queue group, a fast-forward) is a downgrade if any step is one, even
 // when the net change is not.
-func (g gitRepo) checkEach(base, head string, allow bool, stdout io.Writer) (bool, error) {
+func (g gitRepo) checkEach(base, head string, opt options, stdout io.Writer) (bool, error) {
 	if _, err := g.changedFormulae(base, head); err != nil { // both are commits
 		return false, err
 	}
@@ -121,7 +137,7 @@ func (g gitRepo) checkEach(base, head string, allow bool, stdout io.Writer) (boo
 		if err != nil {
 			return false, fmt.Errorf("commit %s: %w", c, err)
 		}
-		f, err := g.check(c+"^1", c, files, allow, stdout)
+		f, err := g.check(c+"^1", c, files, opt, stdout)
 		if err != nil {
 			return false, err
 		}
@@ -130,9 +146,19 @@ func (g gitRepo) checkEach(base, head string, allow bool, stdout io.Writer) (boo
 	return failed, nil
 }
 
+// options are the flags every mode applies.
+type options struct {
+	allow  bool // -allow-downgrade
+	strict bool // -strict
+}
+
 // check compares the version of each file at from and at head; it reports
-// whether one goes down.
-func (g gitRepo) check(from, head string, files []string, allow bool, stdout io.Writer) (bool, error) {
+// whether one goes down (or, with -strict, any finding fails).
+func (g gitRepo) check(from, head string, files []string, opt options, stdout io.Writer) (bool, error) {
+	if opt.strict {
+		return g.checkStrict(from, head, files, opt.allow, stdout)
+	}
+	allow := opt.allow
 	failed := false
 	for _, f := range files {
 		oldC, okOld, err := g.show(from, f)
@@ -148,23 +174,44 @@ func (g gitRepo) check(from, head string, files []string, allow bool, stdout io.
 		}
 		oldV, newV := tap.FormulaVersion(oldC), tap.FormulaVersion(newC)
 		if oldV == "" || newV == "" || oldV == newV {
-			fmt.Fprintf(stdout, "ok %s: %s -> %s\n", f, orNone(oldV), orNone(newV))
+			fmt.Fprintf(stdout, "ok %s: %s -> %s\n", escapeData(f), escapeData(orNone(oldV)), escapeData(orNone(newV)))
 			continue
 		}
 		c, ok := tap.CompareVersions(oldV, newV)
 		switch {
 		case !ok:
-			fmt.Fprintf(stdout, "::warning file=%s::%s: cannot compare version %q with %q (not semantic versions); check the order by hand\n", f, f, oldV, newV)
+			annotate(stdout, "warning", f, fmt.Sprintf("%s: cannot compare version %q with %q (not semantic versions); check the order by hand", f, oldV, newV))
 		case c > 0 && allow:
-			fmt.Fprintf(stdout, "::warning file=%s::%s: version goes down from %s to %s (allowed: -allow-downgrade)\n", f, f, oldV, newV)
+			annotate(stdout, "warning", f, fmt.Sprintf("%s: version goes down from %s to %s (allowed: -allow-downgrade)", f, oldV, newV))
 		case c > 0:
-			fmt.Fprintf(stdout, "::error file=%s::%s: version goes down from %s to %s. A newer release was merged first; close this pull request. For an intentional rollback see the tap's rollback procedure.\n", f, f, oldV, newV)
+			annotate(stdout, "error", f, fmt.Sprintf("%s: version goes down from %s to %s. %s", f, oldV, newV, downgradeAdvice))
 			failed = true
 		default:
-			fmt.Fprintf(stdout, "ok %s: %s -> %s\n", f, oldV, newV)
+			fmt.Fprintf(stdout, "ok %s: %s -> %s\n", escapeData(f), escapeData(oldV), escapeData(newV))
 		}
 	}
 	return failed, nil
+}
+
+const downgradeAdvice = "A newer release was merged first; close this pull request. For an intentional rollback see the tap's rollback procedure."
+
+// annotate prints a GitHub Actions workflow command (error or warning) for
+// file. Paths and versions come from the change under test: they are
+// escaped, so a crafted name cannot end the command and start another one
+// (a newline followed by "::add-mask::" or "::stop-commands::").
+func annotate(w io.Writer, level, file, msg string) {
+	fmt.Fprintf(w, "::%s file=%s::%s\n", level, escapeProperty(file), escapeData(msg))
+}
+
+// escapeData escapes a workflow command's message as the Actions runner
+// unescapes it.
+func escapeData(s string) string {
+	return strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A").Replace(s)
+}
+
+// escapeProperty escapes a workflow command's property value.
+func escapeProperty(s string) string {
+	return strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A", ":", "%3A", ",", "%2C").Replace(s)
 }
 
 func orNone(v string) string {
@@ -221,15 +268,21 @@ func (g gitRepo) changedSinceMergeBase(tip, head string) ([]string, error) {
 	return g.changedFormulae(strings.TrimSpace(string(mb)), head)
 }
 
-// show returns path at rev; ok is false when rev has no such file.
+// show returns path at rev; ok is false when rev has no such file (or a
+// submodule there). A file whose object is missing is an error, not an
+// absent file.
 func (g gitRepo) show(rev, path string) ([]byte, bool, error) {
-	if _, err := g.git("cat-file", "-e", rev+":"+path); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return nil, false, nil
-		}
+	e, err := g.entry(rev, path)
+	if err != nil || !e.exists {
 		return nil, false, err
 	}
+	switch {
+	case e.regular:
+		return e.content, true, nil
+	case e.mode == "160000": // a submodule: not a file of the tap
+		return nil, false, nil
+	}
+	// A symlink reads as its target path; a directory is an error.
 	b, err := g.git("cat-file", "blob", rev+":"+path)
 	return b, err == nil, err
 }
