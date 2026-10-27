@@ -13,6 +13,7 @@ GO := CGO_ENABLED=0 go
 
 GOLANGCI_LINT_VERSION = v2.15.0
 GOVULNCHECK_VERSION = v1.9.0
+GOREG_VERSION = v1.3.11
 FUZZTIME = 10s
 
 .PHONY: all
@@ -98,10 +99,24 @@ snapshot: build
 clean:
 	@rm -rf $(BUILD_DIR)
 
-# Install development tools
+# Install development tools (pinned; Renovate updates GOREG_VERSION)
 .PHONY: dev-tools
 dev-tools:
-	go install "github.com/magicdrive/goreg@latest"
+	go install "github.com/magicdrive/goreg@$(GOREG_VERSION)"
+
+# Validate renovate.json (needs Node.js, of .github/renovate-check/.node-version,
+# and npm). Renovate and its whole dependency tree are pinned by
+# .github/renovate-check/package-lock.json and installed with `npm ci`, which
+# Renovate updates (npm manager, lockFileMaintenance).
+.PHONY: renovate-check
+renovate-check:
+	@$(CURDIR)/.github/renovate-check/run.sh
+
+# The failure-injection tests of renovate-check's install (a fake registry:
+# lockfile pinning, 404 and integrity failures)
+.PHONY: renovate-check-test
+renovate-check-test:
+	@python3 $(CURDIR)/.github/renovate-check/test_run.py
 
 # Order imports (std, third party, github.com/magicdrive, local)
 .PHONY: goreg
@@ -195,6 +210,8 @@ help:
 	@echo "  make clean          - Remove build artifacts"
 	@echo "  make dev-tools      - Install development tools"
 	@echo "  make goreg          - Order imports with goreg"
+	@echo "  make renovate-check - Validate renovate.json (pinned Renovate, npm ci)"
+	@echo "  make renovate-check-test - Test renovate-check's pinned install (fake registry)"
 	@echo "  make publish vX.Y.Z        - Release: preflight, confirm, tag, push, follow, verify"
 	@echo "  make publish-check vX.Y.Z  - Release preflight only"
 	@echo "  make publish-status vX.Y.Z - Show the release state of a version"

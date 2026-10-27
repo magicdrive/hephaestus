@@ -36,6 +36,7 @@ then review the diff. Fuzz targets: `make fuzz`.
 | `internal/homebrew` | Formula generation and install-path verification |
 | `internal/tap` | Tap publisher (pull request and direct modes) |
 | `internal/github` | GitHub REST client |
+| `internal/prgate`, `cmd/pr-gate` | Merge gate: fail-closed pull request conditions, head-pinned merge, parent verification ([docs/pr-gate.md](docs/pr-gate.md)) |
 | `internal/compat/goreleaser` | GoReleaser `brews` adapter |
 | `internal/pathutil`, `internal/glob` | Path validation, glob matching and walking |
 | `internal/ghaction` | `$GITHUB_OUTPUT` and step summary |
