@@ -87,6 +87,10 @@ What Hephaestus does not trust, and how it defends itself:
   allowed.
 - When the tag does not exist yet, it is created at the build commit
   (`--commit` or `GITHUB_SHA`) unless `target_commitish` says otherwise.
+- The commit released (the tag's, peeled) must be in the history of a
+  release branch (`release.github.branches`, default: the repository's
+  default branch), or nothing is created or uploaded. An answer that is
+  neither yes nor no (a missing branch, an API error) stops the release.
 - Known token values are replaced by `***` in errors, the step summary and
   action outputs, and registered with `::add-mask::` for the log.
 

@@ -5,6 +5,20 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
 ## Unreleased
 
+- **Release branches** (release provenance): the release stage requires the
+  commit being released (the existing tag's, peeled; else where GitHub
+  would create the tag) to be in the history of a release branch, new
+  `release.github.branches` (exact names; default: the repository's default
+  branch on GitHub), before it creates or uploads anything — a `v*` tag
+  pushed on a feature branch or a commit on no branch is no longer
+  released. It reads each branch's head and compares it with the commit
+  through the API; a missing branch, an unexpected answer or an API error
+  stops the release (fail closed). Also, a tag that cannot be read while
+  the built commit is unknown now stops the release (was a warning).
+  **Compatibility**: a project that releases from a branch other than its
+  default branch must list it, e.g. `branches: [main, v1.x]`; a
+  `preflight.branch` outside the list is warned about.
+
 - **Merge gate**: new `cmd/pr-gate` decides whether a pull request may be
   merged and, only with `-merge`, merges it pinned to the reviewed head
   (`PUT pulls/{n}/merge` with `sha`, sent once) and verifies the merge

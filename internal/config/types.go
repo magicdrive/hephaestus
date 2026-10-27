@@ -309,6 +309,12 @@ type GitHubRelease struct {
 	GenerateNotes bool `yaml:"generate_notes"`
 	// TargetCommitish is used only when the tag does not exist yet.
 	TargetCommitish string `yaml:"target_commitish"`
+	// Branches are the release branches: the commit being released (the
+	// tag's, peeled) must be in the history of one of them, or nothing is
+	// created or uploaded. Exact branch names, no patterns. Empty means the
+	// repository's default branch on GitHub only; list a maintenance branch
+	// (with the default branch) only when releases are really cut from it.
+	Branches []string `yaml:"branches"`
 	// ReplaceExistingAssets allows replacing a same-named asset whose
 	// content differs on a draft release. A published release's assets are
 	// never replaced. Identical assets are always a no-op.

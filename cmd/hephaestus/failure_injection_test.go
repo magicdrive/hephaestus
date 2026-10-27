@@ -161,6 +161,7 @@ func TestPipelineFailureInjection(t *testing.T) {
 	}
 	endpoints := []endpoint{
 		{"release-lookup", e2eReleaseRepo, "GET", `/releases/tags/`, false, 0},
+		{"release-branch", e2eReleaseRepo, "GET", `/compare/`, false, 0},
 		{"release-create", e2eReleaseRepo, "POST", `/releases$`, true, 0},
 		{"asset-upload", e2eReleaseRepo, "POST", `/releases/\d+/assets$`, true, 0},
 		// The second asset fails: one asset is on the draft already.

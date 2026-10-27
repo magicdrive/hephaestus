@@ -23,6 +23,8 @@ const (
 	fakeRepo  = "tool"
 	pageSize  = 2 // small, so pagination is exercised
 	webBase   = "https://github.example/" + fakeOwner + "/" + fakeRepo
+	// fakeBranchHead is the head of main unless a test sets branches.
+	fakeBranchHead = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
 )
 
 // fakeGitHub is a stateful in-memory GitHub releases API. API and upload
@@ -45,6 +47,15 @@ type fakeGitHub struct {
 	tags map[string]string
 	// tagObjects maps annotated tag object SHAs to the object they tag.
 	tagObjects map[string]string
+	// defaultBranch is the repository's default branch ("" means main).
+	defaultBranch string
+	// branches maps the branches to their head commit (GET
+	// git/ref/heads/<branch>); nil means one branch, main, at
+	// fakeBranchHead.
+	branches map[string]string
+	// inBranch says whether commit is in the history of branch (GET
+	// compare/<head>...<commit>); nil means every commit is in every branch.
+	inBranch func(branch, commit string) bool
 	// hook runs before the default handling; returning true means it wrote
 	// the response. It is called without f.mu held.
 	hook        func(w http.ResponseWriter, r *http.Request, body []byte) bool
@@ -291,6 +302,9 @@ func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) 
 		reply(w, 200, map[string]any{"sha": sha, "object": map[string]any{"sha": target, "type": typ}})
 		return
 	}
+	if f.routeBranches(w, r) {
+		return
+	}
 	prefix := "/repos/" + fakeOwner + "/" + fakeRepo + "/releases"
 	p, ok := strings.CutPrefix(r.URL.Path, prefix)
 	if !ok {
@@ -500,4 +514,57 @@ func paginate[T any](w http.ResponseWriter, r *http.Request, all []T) {
 		w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?%s>; rel="next"`, r.Host, r.URL.Path, q.Encode()))
 	}
 	reply(w, 200, items)
+}
+
+// routeBranches answers the repository (its default branch), branch refs
+// and comparisons of a branch head with a commit; it reports whether the
+// request was one of them.
+func (f *fakeGitHub) routeBranches(w http.ResponseWriter, r *http.Request) bool {
+	base := "/repos/" + fakeOwner + "/" + fakeRepo
+	if r.Method != "GET" {
+		return false
+	}
+	branches := f.branches
+	if branches == nil {
+		branches = map[string]string{"main": fakeBranchHead}
+	}
+	if r.URL.Path == base {
+		def := f.defaultBranch
+		if def == "" {
+			def = "main"
+		}
+		reply(w, 200, map[string]any{"full_name": fakeOwner + "/" + fakeRepo, "default_branch": def})
+		return true
+	}
+	if b, ok := strings.CutPrefix(r.URL.Path, base+"/git/ref/heads/"); ok {
+		head, ok := branches[b]
+		if !ok {
+			reply(w, 404, map[string]any{"message": "Not Found"})
+			return true
+		}
+		reply(w, 200, map[string]any{"ref": "refs/heads/" + b, "object": map[string]any{"sha": head, "type": "commit"}})
+		return true
+	}
+	spec, ok := strings.CutPrefix(r.URL.Path, base+"/compare/")
+	if !ok {
+		return false
+	}
+	head, commit, ok := strings.Cut(spec, "...")
+	branch := ""
+	for b, h := range branches {
+		if h == head {
+			branch = b
+		}
+	}
+	switch {
+	case !ok || branch == "":
+		reply(w, 404, map[string]any{"message": "Not Found"})
+	case commit == head:
+		reply(w, 200, map[string]any{"status": "identical"})
+	case f.inBranch == nil || f.inBranch(branch, commit):
+		reply(w, 200, map[string]any{"status": "behind", "behind_by": 1})
+	default:
+		reply(w, 200, map[string]any{"status": "diverged", "ahead_by": 1, "behind_by": 1})
+	}
+	return true
 }

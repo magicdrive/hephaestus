@@ -33,7 +33,9 @@ const (
 	e2eReleaseRepo  = "acme/tool"
 	e2eTapRepo      = "acme/homebrew-tap"
 	e2eCommit       = "0123456789abcdef0123456789abcdef01234567"
-	e2eWeb          = "https://github.example/"
+	// e2eReleaseMain is the head of acme/tool's main.
+	e2eReleaseMain = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+	e2eWeb         = "https://github.example/"
 )
 
 type e2eRequest struct {
@@ -73,6 +75,9 @@ type e2eGitHub struct {
 	tags     map[string]string // tag -> commit
 	// failPublish answers every publishing PATCH (draft: false) with 500.
 	failPublish bool
+	// notOnMain makes every commit but main's head fall outside the
+	// history of acme/tool's main (its only branch).
+	notOnMain bool
 	// failPulls answers every pull request creation with 403.
 	failPulls bool
 	// fault, when set, fails the requests it matches
@@ -277,6 +282,31 @@ func (f *e2eGitHub) serve(w http.ResponseWriter, r *http.Request) {
 func (f *e2eGitHub) serveRelease(w http.ResponseWriter, r *http.Request, p []string, body []byte) {
 	m := r.Method
 	switch {
+	// The release branch check: the default branch, main's head, and the
+	// comparison of that head with the released commit.
+	case m == "GET" && len(p) == 0:
+		e2eReply(w, 200, map[string]any{"name": "tool", "full_name": e2eReleaseRepo, "default_branch": "main"})
+
+	case m == "GET" && len(p) >= 4 && p[0] == "git" && p[1] == "ref" && p[2] == "heads":
+		if strings.Join(p[3:], "/") != "main" {
+			e2eNotFound(w)
+			return
+		}
+		e2eReply(w, 200, map[string]any{"ref": "refs/heads/main", "object": map[string]any{"sha": e2eReleaseMain, "type": "commit"}})
+
+	case m == "GET" && len(p) >= 2 && p[0] == "compare":
+		base, head, ok := strings.Cut(strings.Join(p[1:], "/"), "...")
+		switch {
+		case !ok || base != e2eReleaseMain:
+			e2eNotFound(w)
+		case head == base:
+			e2eReply(w, 200, map[string]any{"status": "identical"})
+		case f.notOnMain:
+			e2eReply(w, 200, map[string]any{"status": "diverged", "ahead_by": 1, "behind_by": 1})
+		default:
+			e2eReply(w, 200, map[string]any{"status": "behind", "behind_by": 1})
+		}
+
 	case m == "GET" && len(p) == 4 && p[0] == "git" && p[1] == "ref" && p[2] == "tags":
 		sha, ok := f.tags[p[3]]
 		if !ok {
@@ -878,6 +908,26 @@ func TestPipelineE2E(t *testing.T) {
 					t.Errorf("identical immutable release: exit %d\n%s", code, log)
 				}
 			})
+		}
+	})
+
+	// The commit is not in the history of main, the default branch and the
+	// only release branch: nothing is created, uploaded or sent to the tap.
+	t.Run("commit not on the release branch", func(t *testing.T) {
+		e := newE2E(t, "", "")
+		e.gh.notOnMain = true
+		code, log := e.run("v1.0.0", "")
+		if code == 0 || !strings.Contains(log, "is not in the history of a release branch (main)") {
+			t.Fatalf("exit %d\n%s", code, log)
+		}
+		if w := e.gh.requests(e2eReleaseRepo, true); len(w) != 0 {
+			t.Errorf("release writes:\n%s", strings.Join(w, "\n"))
+		}
+		if r := e.gh.requests(e2eTapRepo, false); len(r) != 0 {
+			t.Errorf("tap touched:\n%s", strings.Join(r, "\n"))
+		}
+		if got := lastOutput(t, "status"); got != "failed" {
+			t.Errorf("status %q, want failed", got)
 		}
 	})
 
