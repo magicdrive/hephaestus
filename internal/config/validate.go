@@ -319,6 +319,25 @@ func (c *Config) Validate() error {
 				add(f.path, "%q is not a valid GitHub name", f.v)
 			}
 		}
+		seen := map[string]bool{}
+		for j, b := range g.Branches {
+			p := fmt.Sprintf("release.github.branches[%d]", j)
+			switch {
+			case !ValidReleaseBranch(b):
+				add(p, "%q is not an exact branch name (no pattern, full ref, commit or version)", b)
+			case seen[b]:
+				add(p, "%q is listed twice", b)
+			}
+			seen[b] = true
+		}
+		if pb := c.Preflight.Branch; pb != "" && g.IsEnabled() {
+			switch {
+			case len(g.Branches) > 0 && !seen[pb]:
+				c.warnings = append(c.warnings, fmt.Sprintf("preflight.branch %q is not in release.github.branches: hephaestus publish would tag a commit the release refuses; add it to release.github.branches", pb))
+			case len(g.Branches) == 0:
+				c.warnings = append(c.warnings, fmt.Sprintf("preflight.branch %q: the release accepts only commits of the default branch (release.github.branches is not set); unless %q is the default branch, list it in release.github.branches", pb, pb))
+			}
+		}
 	}
 
 	// brews[].ids select archives: those of the archives stage, or those a
@@ -761,3 +780,33 @@ func (c *Config) validatePreflight(add func(path, format string, args ...any)) {
 		}
 	}
 }
+
+// ValidReleaseBranch reports whether name can be a release branch
+// (release.github.branches): a name git check-ref-format --branch accepts,
+// that is not a pattern, a full ref ("refs/heads/main"), a commit SHA or a
+// version tag (v1.2.3), and cannot be taken for an option or a refspec.
+func ValidReleaseBranch(name string) bool {
+	if name == "" || name == "HEAD" || strings.HasPrefix(name, "-") || strings.HasPrefix(name, "+") ||
+		strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") || strings.HasSuffix(name, ".") ||
+		strings.HasSuffix(name, ".lock") || strings.Contains(name, "..") || strings.Contains(name, "//") ||
+		strings.Contains(name, "@{") || name == "@" || strings.HasPrefix(name, "refs/") ||
+		releaseBranchSHARe.MatchString(name) || releaseBranchVersionRe.MatchString(name) {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(" ~^:?*[\\", r) {
+			return false
+		}
+	}
+	for _, part := range strings.Split(name, "/") {
+		if strings.HasPrefix(part, ".") {
+			return false
+		}
+	}
+	return true
+}
+
+var (
+	releaseBranchSHARe     = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
+	releaseBranchVersionRe = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$`)
+)

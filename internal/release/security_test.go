@@ -575,7 +575,10 @@ func TestUnverifiableTagStopsBeforeAnyWrite(t *testing.T) {
 		})
 	}
 
-	t.Run("commit unknown: warning only", func(t *testing.T) {
+	// Without the built commit an unreadable tag used to be a warning; the
+	// release branch of the tag cannot be verified without it, so the
+	// release stops (fail closed).
+	t.Run("commit unknown: stops, the release branch cannot be verified", func(t *testing.T) {
 		f := newFakeGitHub(t)
 		f.hook = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
 			if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/acme/tool/git/ref/tags/") {
@@ -589,11 +592,12 @@ func TestUnverifiableTagStopsBeforeAnyWrite(t *testing.T) {
 		in := fx.input(f.client(t))
 		in.Vars.Commit = ""
 		in.Log = lb
-		if _, err := Run(context.Background(), in); err != nil {
-			t.Fatal(err)
+		_, err := Run(context.Background(), in)
+		if err == nil || !strings.Contains(err.Error(), "cannot read tag v1.0.0, so its release branch cannot be verified") {
+			t.Fatalf("err = %v", err)
 		}
-		if !strings.Contains(lb.String(), "could not check tag") {
-			t.Fatalf("no warning:\n%s", lb)
+		if w := f.writes(); len(w) != 0 {
+			t.Fatalf("wrote although the tag could not be read: %v", w)
 		}
 	})
 }

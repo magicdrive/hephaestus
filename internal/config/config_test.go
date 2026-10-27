@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -239,5 +240,38 @@ func TestPullRequestBranchConflicts(t *testing.T) {
 	cfg, err = load(head + "      branch: main\n      pull_request: {enabled: false}\n")
 	if err != nil || len(cfg.Warnings()) != 0 {
 		t.Errorf("direct commit to main: warnings %v, err %v", cfg.Warnings(), err)
+	}
+}
+
+// TestReleaseBranches: release.github.branches are exact branch names, each
+// once; a preflight.branch publish would tag outside them is warned about.
+func TestReleaseBranches(t *testing.T) {
+	base := "project: {name: t}\narchives: [{id: default, targets: [{os: linux, arch: amd64}]}]\nrelease:\n  github: {owner: o, name: t, branches: %s}\n"
+	cfg, err := load(fmt.Sprintf(base, "[main, v1.x, release/1.2]"))
+	if err != nil || strings.Join(cfg.Release.GitHub.Branches, ",") != "main,v1.x,release/1.2" || len(cfg.Warnings()) != 0 {
+		t.Fatalf("cfg %+v, warnings %v, err %v", cfg, cfg.Warnings(), err)
+	}
+	for _, bad := range []string{`"release/*"`, `"v1.?"`, `"[ab]"`, `refs/heads/main`, `v1.2.3`, `0123abc`, `"-main"`, `"+main"`, `"a..b"`, `"a b"`, `"a~1"`, `"a^"`, `"a:b"`, `"x.lock"`, `"a/.b"`, `"a/"`, `HEAD`, `"@"`, `"a@{1}"`, `""`} {
+		_, err := load(fmt.Sprintf(base, "["+bad+"]"))
+		if err == nil || !strings.Contains(err.Error(), "release.github.branches[0]") {
+			t.Errorf("branch %s: err = %v", bad, err)
+		}
+	}
+	if _, err := load(fmt.Sprintf(base, "[main, main]")); err == nil || !strings.Contains(err.Error(), `"main" is listed twice`) {
+		t.Errorf("duplicate: err = %v", err)
+	}
+
+	pf := "preflight: {branch: %s}\n"
+	cfg, err = load(fmt.Sprintf(base, "[main, v1.x]") + fmt.Sprintf(pf, "v1.x"))
+	if err != nil || len(cfg.Warnings()) != 0 {
+		t.Errorf("preflight.branch in the list: warnings %v, err %v", cfg.Warnings(), err)
+	}
+	cfg, err = load(fmt.Sprintf(base, "[main]") + fmt.Sprintf(pf, "v1.x"))
+	if err != nil || !strings.Contains(strings.Join(cfg.Warnings(), "\n"), `preflight.branch "v1.x" is not in release.github.branches`) {
+		t.Errorf("preflight.branch outside the list: warnings %v, err %v", cfg.Warnings(), err)
+	}
+	cfg, err = load(fmt.Sprintf(base, "[]") + fmt.Sprintf(pf, "v1.x"))
+	if err != nil || !strings.Contains(strings.Join(cfg.Warnings(), "\n"), "unless \"v1.x\" is the default branch") {
+		t.Errorf("preflight.branch, default branch only: warnings %v, err %v", cfg.Warnings(), err)
 	}
 }

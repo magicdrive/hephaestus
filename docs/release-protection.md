@@ -51,6 +51,7 @@ The formula downgrade guard is described in
 | A pull request edits the workflow so that `ci-gate` passes | `pull_request` runs the PR's own workflow file; only the owner merges, after review | Review workflow changes; a required check cannot prevent this alone |
 | A stale green check (base moved) | `pr-gate` requires the head to contain the base SHA it was given; strict checks on the tap | Repositories with strict off rely on `pr-gate` |
 | A release tag is moved or deleted | Tag ruleset: `update`, `deletion`, `non_fast_forward` | An admin can disable the ruleset |
+| A release tag is created on a commit outside the release branch (a feature branch, a commit on no branch) | The tag ruleset does not restrict creation. The release stage requires the tag's commit to be in the history of a release branch (`release.github.branches`, default: the default branch) before it writes anything; release workflows can also check it in a job before the build (`git merge-base --is-ancestor` in a full clone) | A commit merged into the default branch by a pull request is releasable by design; branch protection on the release branches decides what that is |
 | The tap is downgraded by merge order | tap stage skip + `version-guard` + strict | A bypass actor or a disabled ruleset |
 | A compromised action or tool version | Actions pinned by full commit SHA; Renovate updates with review | Runner images (`*-latest`) change underneath |
 | An admin bypass | `bypass_actors: []` in every ruleset | The owner can edit rulesets; that is the rollback path |

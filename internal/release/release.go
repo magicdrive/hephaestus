@@ -82,6 +82,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -529,7 +530,11 @@ func (r *runner) run(ctx context.Context) (*Result, error) {
 			return nil, fmt.Errorf("release: looking up %s %s: %w", repo, r.tag, err)
 		}
 	}
-	if err := r.checkTag(ctx, rel == nil || rel.Draft); err != nil {
+	tagged, err := r.checkTag(ctx, rel == nil || rel.Draft)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.checkBranch(ctx, tagged); err != nil {
 		return nil, err
 	}
 	if rel == nil {
@@ -851,33 +856,107 @@ func (r *runner) checkUnexpectedAssets(rel *github.Release, remote []github.Asse
 // checkTag verifies an existing tag against the built commit, and warns
 // when GitHub would create a missing tag at the default branch's HEAD (no
 // target_commitish and no known commit; only relevant while unpublished).
-func (r *runner) checkTag(ctx context.Context, unpublished bool) error {
+// It returns the commit the existing tag points to, "" when the tag does
+// not exist or was not read.
+func (r *runner) checkTag(ctx context.Context, unpublished bool) (string, error) {
 	if r.c != nil {
 		sha, err := r.tagCommit(ctx)
 		switch {
 		case err == nil:
 			if r.commit == "" {
 				r.logf("warning: tag %s points to %s; the built commit is unknown (pass --commit or set GITHUB_SHA), so it was not verified", r.tag, sha)
-				return nil
+				return sha, nil
 			}
 			if !strings.EqualFold(sha, r.commit) {
-				return fmt.Errorf("release: tag %s points to %s, but the artifacts were built from %s; build from the tagged commit or use another tag", r.tag, sha, r.commit)
+				return "", fmt.Errorf("release: tag %s points to %s, but the artifacts were built from %s; build from the tagged commit or use another tag", r.tag, sha, r.commit)
 			}
-			return nil
+			return sha, nil
 		case errors.Is(err, github.ErrNotFound):
 		case r.commit != "":
 			// GitHub ignores target_commitish for an existing tag: going on
 			// could publish this build under a tag of another commit.
-			return fmt.Errorf("release: cannot verify that tag %s points to %s, the commit that was built (nothing was created or uploaded): %w", r.tag, r.commit, err)
+			return "", fmt.Errorf("release: cannot verify that tag %s points to %s, the commit that was built (nothing was created or uploaded): %w", r.tag, r.commit, err)
 		default:
-			r.logf("warning: could not check tag %s: %v", r.tag, err)
+			// The release branch check cannot go on without the tag.
+			return "", fmt.Errorf("release: cannot read tag %s, so its release branch cannot be verified (nothing was created or uploaded): %w", r.tag, err)
 		}
 	}
 	if !unpublished || r.target != "" {
-		return nil
+		return "", nil
 	}
 	r.logf("warning: tag %s does not exist (or could not be checked) and neither release.github.target_commitish nor the commit (--commit / GITHUB_SHA) is set: GitHub will create the tag at the HEAD of the default branch when the release is published, which may not be the commit that was built; push the tag first or pass --commit", r.tag)
-	return nil
+	return "", nil
+}
+
+// checkBranch verifies the release's provenance: the commit being released
+// must be in the history of a release branch (release.github.branches,
+// default: the repository's default branch on GitHub), or nothing is
+// created or uploaded. The commit is the existing tag's (tagged, peeled),
+// else the target_commitish GitHub would create the tag at (the configured
+// one, else the built commit), else the default branch's head, where GitHub
+// creates a tag without a target. Each branch's head is read
+// (git/ref/heads/<branch>, an exact match) and compared with the commit
+// (compare/<head>...<commit>): "identical" or "behind" with nothing ahead
+// means the commit is in the branch's history, "ahead" or "diverged" that
+// it is not; any other answer, a missing branch or an API error fails the
+// check. Without a client (a dry run without a token) nothing can be read
+// and a warning is logged.
+func (r *runner) checkBranch(ctx context.Context, tagged string) error {
+	if r.c == nil {
+		r.logf("warning: no GitHub token: the release branch of %s was not verified", r.tag)
+		return nil
+	}
+	repo := r.owner + "/" + r.repo
+	branches := r.cfg.Branches
+	what, commit := "tag "+r.tag, tagged
+	if commit == "" {
+		what, commit = "target_commitish "+r.target, r.target
+	}
+	def := ""
+	if len(branches) == 0 || commit == "" {
+		info, err := r.c.GetRepository(ctx, r.owner, r.repo)
+		if err != nil {
+			return fmt.Errorf("release: cannot read the default branch of %s to verify the release branch (nothing was created or uploaded): %w", repo, err)
+		}
+		if def = info.DefaultBranch; def == "" {
+			return fmt.Errorf("release: %s reports no default branch, so the release branch cannot be verified (nothing was created or uploaded)", repo)
+		}
+		if len(branches) == 0 {
+			branches = []string{def}
+		}
+	}
+	list := strings.Join(branches, ", ")
+	if commit == "" {
+		if slices.Contains(branches, def) {
+			r.logf("release branch: GitHub will create tag %s at the head of %s, a release branch", r.tag, def)
+			return nil
+		}
+		return fmt.Errorf("release: tag %s does not exist and GitHub would create it at the head of the default branch %s, which is not a release branch (%s); nothing was created or uploaded", r.tag, def, list)
+	}
+	for _, b := range branches {
+		ref, err := r.c.GetRef(ctx, r.owner, r.repo, "heads/"+b)
+		if err != nil {
+			return fmt.Errorf("release: cannot read release branch %s of %s (nothing was created or uploaded): %w", b, repo, err)
+		}
+		head := strings.ToLower(ref.Object.SHA)
+		if ref.Ref != "refs/heads/"+b || ref.Object.Type != "commit" || !fullSHARe.MatchString(head) {
+			return fmt.Errorf("release: release branch %s of %s: GitHub answered ref %q, %s %q (nothing was created or uploaded)", b, repo, ref.Ref, ref.Object.Type, ref.Object.SHA)
+		}
+		cmp, err := r.c.CompareCommits(ctx, r.owner, r.repo, head, commit)
+		if err != nil {
+			return fmt.Errorf("release: cannot compare %s with release branch %s of %s (nothing was created or uploaded): %w", what, b, repo, err)
+		}
+		switch {
+		case (cmp.Status == github.CompareIdentical || cmp.Status == github.CompareBehind) && cmp.AheadBy == 0:
+			r.logf("release branch: %s (%s) is in the history of %s", what, commit, b)
+			return nil
+		case cmp.Status == github.CompareAhead || cmp.Status == github.CompareDiverged:
+			r.logf("release branch: %s (%s) is not in the history of %s (%s, %d ahead)", what, commit, b, cmp.Status, cmp.AheadBy)
+		default:
+			return fmt.Errorf("release: comparing %s with release branch %s of %s: GitHub answered status %q with %d ahead, which says neither yes nor no (nothing was created or uploaded)", what, b, repo, cmp.Status, cmp.AheadBy)
+		}
+	}
+	return fmt.Errorf("release: %s (%s) is not in the history of a release branch (%s); nothing was created or uploaded: release a commit of one of them, or list the branch in release.github.branches", what, commit, list)
 }
 
 // tagCommit returns the commit the tag points to, peeling annotated tags.
