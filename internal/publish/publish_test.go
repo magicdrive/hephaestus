@@ -3,6 +3,8 @@ package publish
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -679,7 +681,7 @@ func TestPublishRecheckBeforePush(t *testing.T) {
 
 func TestPublishLock(t *testing.T) {
 	h := newHarness(t)
-	unlock, err := lock(context.Background(), h.d)
+	lk, err := lock(context.Background(), h.d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -687,7 +689,7 @@ func TestPublishLock(t *testing.T) {
 	if o.State != Failed || !strings.Contains(o.Err.Error(), "another publish is running") || len(h.git.created) != 0 {
 		t.Fatalf("outcome %+v", o)
 	}
-	unlock()
+	lk.unlock()
 	if o, _ := publishRun(t, newHarnessShared(t, h), "v0.1.0-rc.1", fastOpts); o.State != Completed {
 		t.Fatalf("after unlock: %+v", o)
 	}
@@ -807,4 +809,23 @@ func TestPublishConcurrentClones(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestPublishLockLostBeforePush: when the lock file is removed while
+// publish holds it (as an older version's message advised), another
+// publish could lock a new file: the tag is not pushed.
+func TestPublishLockLostBeforePush(t *testing.T) {
+	h := newHarness(t)
+	h.git.afterCreate = func() {
+		if err := os.Remove(filepath.Join(h.git.dir, lockName)); err != nil {
+			t.Error(err)
+		}
+	}
+	o, _ := publishRun(t, h, "v0.1.0-rc.1", fastOpts)
+	if o.State != Failed || o.Err == nil || !strings.Contains(o.Err.Error(), "removed while held") || len(h.git.pushed) != 0 || h.git.pushTried {
+		t.Fatalf("outcome %+v pushed %v", o, h.git.pushed)
+	}
+	if !strings.Contains(strings.Join(o.Next, "\n"), "git tag -d") {
+		t.Errorf("next steps: %v", o.Next)
+	}
 }
