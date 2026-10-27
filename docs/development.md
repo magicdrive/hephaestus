@@ -22,7 +22,9 @@ Homebrew only for the end-to-end test.
 | `make e2e-homebrew` | Real Homebrew end-to-end test (`scripts/homebrew-e2e.sh`) |
 | `make snapshot` | Build, archive and checksum Hephaestus with itself; verify with `scripts/verify-dist.sh` |
 | `make clean` | Remove `./build` |
-| `make dev-tools` | Install `goreg` |
+| `make dev-tools` | Install `goreg` at `GOREG_VERSION` |
+| `make renovate-check` | Validate `renovate.json` with the Renovate pinned by `.github/renovate-check/package-lock.json` (Node.js of `.github/renovate-check/.node-version`, `npm ci`) |
+| `make renovate-check-test` | Failure-injection tests of that pinned install against a fake registry (Python 3, Node.js) |
 | `make goreg` | Order imports (std, third party, `github.com/magicdrive`, local) |
 | `make publish vX.Y.Z` | Release Hephaestus ([releasing.md](releasing.md)); also `publish-check`, `publish-status`, `publish-watch`, `publish-help` |
 
@@ -118,6 +120,7 @@ cache through the Actions cache service. Beyond that:
 | Job | Network beyond checkout and setup-go | Needed |
 | --- | --- | --- |
 | `lint` | Modules of golangci-lint and govulncheck (`go run pkg@version`, module proxy and checksum database); vulnerability database (vuln.go.dev) | Yes: the tools and the database are the check |
+| `renovate-check` | Node.js (`setup-node`, `.node-version`); Renovate and its dependencies from the npm registry by the lockfile (`npm ci`, integrity checked); the tests use a fake registry on loopback | Yes: the validator is the check |
 | `test` | Modules for the build (module proxy); the tests themselves none | Modules only; removable with a module cache |
 | `test-offline` | Modules before the tests; the tests run in a namespace with loopback only | Modules only |
 | `completion` | `apt-get` (zsh, fish) on Linux, `brew install fish` on macOS | Yes: real shells |
@@ -131,6 +134,30 @@ cache through the Actions cache service. Beyond that:
 | `action-smoke`, `action-boundary`, `action-isolation` | Artifact download of this commit's binaries; `setup-go` of the caller's Go for the fixture (no cache) | Artifact service and the caller's Go |
 | `action-isolation-detects-v1-1-0` | The published action v1.1.0, which installs Go and compiles Hephaestus | Yes: shows the isolation check can fail |
 | `ci-gate` | None | — |
+
+### Pinned and floating dependencies
+
+Everything CI and the Makefile fetch is pinned: actions to commit SHAs
+(`TestWorkflows_ActionsArePinnedToCommitSHAs`), Go tools to versions
+(`go run`/`go install pkg@vX.Y.Z`; the module proxy and checksum database
+verify them), the Go toolchain by `go.mod` (`toolchain`), Renovate and its
+whole tree by `.github/renovate-check/package-lock.json`, Node.js by
+`.github/renovate-check/.node-version`. Renovate updates all of them,
+the Makefile/`ci.yml` tool versions through `customManagers`.
+`TestFloatingDependencies` fails on `@latest`, `npx`, `npm install` and
+`go-version: stable` outside the exceptions below.
+
+These float on purpose:
+
+| What | Where | Why |
+| --- | --- | --- |
+| `go-version: stable` | `ci.yml` `race` (one leg) | Tests the newest Go release before `go.mod` moves to it |
+| `go-version: "1.26"` / `"1.27"` (latest patch) | `ci.yml` `action-isolation`, `action-isolation-detects-v1-1-0` | The caller's Go as callers install it; the jobs compare it before and after the action |
+| `go-version: stable` | `examples/workflows/tap-version-guard.yml` | A tap's CI compiles the guard with a current Go; the guard itself is pinned to a commit |
+| Runner images `ubuntu-latest`, `macos-latest`, `windows-latest` | Every workflow | GitHub's maintained images; the matrix also names fixed images (`ubuntu-24.04-arm`, `macos-15-intel`, `windows-11-arm`). Release builds do not depend on the image: Go comes from `go.mod` and builds are `-trimpath` |
+| `apt-get install zsh fish`, `brew install fish`, Homebrew itself | `completion`, `homebrew-e2e` | Real shells and the current Homebrew are what the tests check |
+
+There are no container images and no `npx` in this repository.
 
 The release workflows (`release.yml`, `release-rehearsal.yml`) need GitHub
 (release, attestations, the tap) by design; `verify-release.yml` downloads a

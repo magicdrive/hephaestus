@@ -42,6 +42,31 @@ jobs:
       - name: shellcheck
         run: shellcheck -x scripts/*.sh action/*.sh testdata/e2e/boundary/probe.sh testdata/e2e/completions/heph-comp cmd/hephaestus/completions/hephaestus.bash cmd/hephaestus/testdata/completion/complete.bash
 
+  renovate-check:
+    # renovate.json with renovate-config-validator --strict of the Renovate
+    # pinned by .github/renovate-check/package-lock.json (npm ci, integrity
+    # checked), and the failure-injection tests of that pinned install.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The Node.js Renovate's engines require (run.sh installs with
+      # --engine-strict). The npm cache holds only tarballs; `npm ci` checks
+      # each against the lockfile's integrity.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .github/renovate-check/.node-version
+          cache: npm
+          cache-dependency-path: .github/renovate-check/package-lock.json
+      - name: shellcheck
+        run: shellcheck .github/renovate-check/run.sh
+      - name: Test the pinned Renovate install
+        run: make renovate-check-test
+      - name: Validate renovate.json
+        run: make renovate-check
+
   test:
     # Linux amd64 and arm64, macOS arm64, Windows amd64. macOS Intel runs
     # in ci-extended.yml (weekly, or with the ci-extended label).
@@ -657,7 +682,7 @@ jobs:
   ci-gate:
     # The single required check, and what the release workflow waits for.
     if: always()
-    needs: [lint, test, test-offline, completion, race, fuzz-smoke, snapshot, homebrew-e2e, action-binary, action-install, e2e-action-install, action-release, action-smoke, action-boundary, action-isolation, action-isolation-detects-v1-1-0]
+    needs: [lint, renovate-check, test, test-offline, completion, race, fuzz-smoke, snapshot, homebrew-e2e, action-binary, action-install, e2e-action-install, action-release, action-smoke, action-boundary, action-isolation, action-isolation-detects-v1-1-0]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

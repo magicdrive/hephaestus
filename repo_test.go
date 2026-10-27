@@ -560,3 +560,48 @@ esac
 		}
 	}
 }
+
+// TestFloatingDependencies: what CI, the Makefile, the scripts and the
+// example workflows fetch is pinned. Unpinned fetches (@latest, npx, npm
+// install) fail; a floating Go version is allowed only where
+// docs/development.md ("Pinned and floating dependencies") lists it.
+func TestFloatingDependencies(t *testing.T) {
+	var files []string
+	for _, pattern := range []string{".github/workflows/*.yml", "examples/workflows/*.yml", "scripts/*.sh", "action/*.sh", ".github/renovate-check/*.sh"} {
+		m, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, m...)
+	}
+	files = append(files, "action.yml", "Makefile")
+	unpinned := regexp.MustCompile(`@latest\b|(^|[\s;&|(])npx\s|\bnpm\s+(install|i|add|exec)\b`)
+	floatingGo := regexp.MustCompile(`\bgo(-version)?:.*\bstable\b`)
+	// Lines selecting a floating Go per file; -1: any number (every job of
+	// the tap example compiles the guard with a current Go).
+	allowedGo := map[string]int{
+		".github/workflows/ci.yml":                 2, // race: matrix go: [go.mod, stable] and its setup-go
+		"examples/workflows/tap-version-guard.yml": -1,
+	}
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		goLines := 0
+		for i, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "#") {
+				continue
+			}
+			if unpinned.MatchString(line) {
+				t.Errorf("%s:%d: unpinned fetch: %s", f, i+1, strings.TrimSpace(line))
+			}
+			if floatingGo.MatchString(line) {
+				goLines++
+			}
+		}
+		if want := allowedGo[filepath.ToSlash(f)]; want >= 0 && goLines != want {
+			t.Errorf("%s: %d lines select a floating Go (stable), %d are documented in docs/development.md", f, goLines, want)
+		}
+	}
+}
