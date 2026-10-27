@@ -5,6 +5,23 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
 ## Unreleased
 
+- **Tap: same version, other checksums**: the tap stage fails, before
+  writing anything and in a dry run too, when the tap's base branch, the
+  pull request branch or an open pull request from the tap already has the
+  version being published with another sha256 for the same archive url:
+  the release's archives were replaced (a release created again for the
+  tag) or tampered with. The release workflows' read-only rehearsal stops
+  such a release before it is published. Other changes at the same version
+  (desc, caveats, a new platform) are proposed as before; allow_downgrade
+  does not apply. `tap.ChecksumChanges` is the rule, for the tap's CI to
+  reuse.
+- **Tap: forks no longer block publishing**: an open pull request from
+  someone else's fork that proposes a newer version (or this version with
+  other checksums) is reported as a warning instead of skipping the tap
+  stage; anyone can open one on a public tap, so it could stop every later
+  release from updating the formula while the release workflow stayed
+  green. Pull requests from a branch of the tap (or of the configured head
+  repository) still skip as before.
 - **Merge gate**: new `cmd/pr-gate` decides whether a pull request may be
   merged and, only with `-merge`, merges it pinned to the reviewed head
   (`PUT pulls/{n}/merge` with `sha`, sent once) and verifies the merge
