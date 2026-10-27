@@ -228,6 +228,15 @@ func TestExampleWorkflow_PullRequestTarget(t *testing.T) {
 				approveBy(t, s, ownerLogin, "admin", "admin")
 			},
 			want: []string{"::error::the pull request head moved to cccc"}, failed: "Rollback approval"},
+		{name: "head pushed between the API read and the fetch", change: down,
+			prepare: func(t *testing.T, s setup) {
+				old := s.p.head
+				pullJSON(t, s.stub, old, label)
+				approveBy(t, s, ownerLogin, "admin", "admin")
+				s.p.pushPR(map[string]string{"other.rb": formula("1.0.0")})
+				s.p.head = old // the event's head; refs/pull/7/head moved on
+			},
+			want: []string{"::error::the pull request head moved to"}, failed: "Fetch the pull request"},
 		{name: "label removed", change: down,
 			prepare: func(t *testing.T, s setup) {
 				pullJSON(t, s.stub, s.p.head)
@@ -354,7 +363,9 @@ func TestExampleWorkflow_PullRequestTarget(t *testing.T) {
 		p := newPRTarget(t, map[string]string{"tool.rb": brew("2.1.0")})
 		pullJSON(t, stub, p.head)
 		for _, ref := range []string{"main $(touch pwned)", "-x", "main:refs/heads/x", "../main"} {
-			if v := runVersionGuard(t, w, p, bin, stub, "", ref); v.green || v.failed != "Fetch the pull request" {
+			// Refused before git sees it.
+			if v := runVersionGuard(t, w, p, bin, stub, "", ref); v.green || v.failed != "Fetch the pull request" ||
+				!strings.Contains(v.out, "::error::unexpected pull request number or base branch") {
 				t.Fatalf("%q: %+v", ref, v)
 			}
 		}
