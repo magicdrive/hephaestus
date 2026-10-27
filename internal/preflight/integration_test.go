@@ -49,6 +49,14 @@ func repoWithRemote(t *testing.T) (work, bare string) {
 	work = filepath.Join(root, "work")
 	gitT(t, root, "init", "--quiet", "--bare", "--initial-branch=main", bare)
 	gitT(t, root, "init", "--quiet", "--initial-branch=main", work)
+	// git commit, and receive-pack after a push, start a detached
+	// "git maintenance run --auto" in that repository, which can still be
+	// running (taking its lock file, packing) while the test snapshots it:
+	// a write that is not the preflight's. No background process may touch
+	// either repository.
+	gitT(t, bare, "config", "receive.autogc", "false")
+	gitT(t, bare, "config", "maintenance.auto", "false")
+	gitT(t, work, "config", "maintenance.auto", "false")
 	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("hi\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
