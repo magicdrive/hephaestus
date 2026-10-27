@@ -106,11 +106,11 @@ func Publish(ctx context.Context, d *Deps, p *Project, pl *Plan, opts Options) *
 		return o
 	}
 
-	unlock, err := lock(ctx, d)
+	lk, err := lock(ctx, d)
 	if err != nil {
 		return fail(err)
 	}
-	defer unlock()
+	defer lk.unlock()
 
 	d.logf("==> preflight %s", tag)
 	rep := Preflight(ctx, d, p, pl)
@@ -126,6 +126,12 @@ func Publish(ctx context.Context, d *Deps, p *Project, pl *Plan, opts Options) *
 		return fail(err)
 	}
 
+	// The lock may have been lost while the prompt was open (its file
+	// removed, as an older version advised): then another publish may hold
+	// a lock on a new file.
+	if err := lk.verify(); err != nil {
+		return fail(err, "nothing was created or pushed; make sure no other publish runs in this clone, then run "+d.Command("publish")+" "+tag+" again")
+	}
 	d.logf("==> creating annotated tag %s at %s", tag, rep.Commit)
 	if err := d.Git.CreateTag(ctx, tag, rep.Commit, "Release "+tag); err != nil {
 		return fail(fmt.Errorf("create tag: %w", err), "nothing was pushed; check `git tag -l "+tag+"`")
@@ -151,6 +157,9 @@ func Publish(ctx context.Context, d *Deps, p *Project, pl *Plan, opts Options) *
 	}
 	if c, exists, err := d.Git.RemoteTag(ctx, tag); err != nil || exists {
 		return fail(fmt.Errorf("remote tag %s appeared (-> %q) or cannot be checked (%v)", tag, c, err), unpushedHint(d, tag)...)
+	}
+	if err := lk.verify(); err != nil {
+		return fail(err, unpushedHint(d, tag)...)
 	}
 
 	d.logf("==> pushing tag %s (not forced)", tag)
