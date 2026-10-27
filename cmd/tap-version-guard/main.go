@@ -39,8 +39,17 @@
 // (Formula/**, else HomebrewFormula/**, else *.rb at the root of the tap);
 // see strict.go.
 //
-// An intentional rollback passes with -allow-downgrade (reported as a
-// warning); see docs/tap-version-guard.md. Under -strict it lowers the
+// An intentional rollback passes, under -strict, only when it is
+// authorized exactly: -rollback PATH=FROM->TO, or -approvals with the
+// approval comments of the pull request, their authors' permissions and
+// -approval-head (see approval.go). Only that downgrade becomes a
+// warning; every other finding stays an error, and an authorization that
+// matches no downgrade of the change fails. The audit trail (approver,
+// comment, head, formula, versions, reason) goes to the log and, with
+// -summary, to the step summary. See docs/tap-version-guard.md.
+//
+// -allow-downgrade, kept for compatibility, lowers every downgrade
+// without saying which (the example workflow no longer uses it). Under -strict it lowers the
 // findings about which version and artifacts the tap serves (downgrade,
 // incomparable versions, same-version artifact change, url version
 // mismatch, removal), never those that mean the guard cannot read the
@@ -56,6 +65,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/magicdrive/hephaestus/internal/tap"
 )
@@ -74,8 +84,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	each := fs.Bool("each", false, "check every commit on the first-parent chain of base..head against its first parent (a push to the base branch)")
 	allow := fs.Bool("allow-downgrade", false, "report downgrades as warnings (an intentional rollback); with -strict also the other version and artifact findings")
 	strict := fs.Bool("strict", false, "also fail a formula with no or a non-semantic version, incomparable versions, the same version with other artifacts, a url of another version, a removed formula, a formula that is not a regular file (only the formulae Homebrew loads)")
+	var rollbackFlags stringsFlag
+	fs.Var(&rollbackFlags, "rollback", "with -strict: authorize one downgrade, PATH=FROM->TO (repeatable)")
+	approvals := fs.String("approvals", "", "with -strict: the issue comments of the pull request (JSON of GET repos/{repo}/issues/{n}/comments); approval comments authorize downgrades")
+	permissions := fs.String("permissions", "", "with -approvals: the collaborator permissions of the comment authors (JSON of GET repos/{repo}/collaborators/{login}/permission)")
+	approvalHead := fs.String("approval-head", "", "with -approvals: the pull request head SHA an approval must name")
+	approvalBefore := fs.String("approval-before", "", "with -approvals: only approvals created before this RFC 3339 time (the merge) count")
+	summary := fs.String("summary", "", "append the authorized rollbacks (the audit trail) to this Markdown file (the step summary)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: tap-version-guard [-C dir] [-base rev [-each] | -against rev] [-head rev] [-strict] [-allow-downgrade]")
+		fmt.Fprintln(stderr, "usage: tap-version-guard [-C dir] [-base rev [-each] | -against rev] [-head rev] [-strict] [-allow-downgrade | -rollback PATH=FROM->TO ... | -approvals file -permissions file -approval-head sha [-approval-before time]] [-summary file]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -91,10 +108,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tap-version-guard: -against excludes -base and -each")
 		return 2
 	}
+	rb, err := rollbackOptions(rollbackFlags, approvalInputFlags{*approvals, *permissions, *approvalHead, *approvalBefore}, *strict, *allow, stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "tap-version-guard: %v\n", err)
+		return 2
+	}
 	g := gitRepo(*dir)
-	opt := options{allow: *allow, strict: *strict}
+	opt := options{allow: *allow, strict: *strict, rollbacks: rb}
 	var failed bool
-	var err error
 	switch {
 	case *against != "":
 		var files []string
@@ -113,10 +134,63 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "tap-version-guard: %v\n", err)
 		return 2
 	}
-	if failed {
+	unused, err := finishRollbacks(rb, failed, *summary, stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "tap-version-guard: %v\n", err)
+		return 2
+	}
+	if failed || unused {
 		return 1
 	}
 	return 0
+}
+
+// stringsFlag is a repeatable string flag.
+type stringsFlag []string
+
+func (s *stringsFlag) String() string     { return strings.Join(*s, ",") }
+func (s *stringsFlag) Set(v string) error { *s = append(*s, v); return nil }
+
+type approvalInputFlags struct{ comments, permissions, head, before string }
+
+// rollbackOptions checks the rollback flags and reads the authorizations
+// (nil: none).
+func rollbackOptions(flags []string, a approvalInputFlags, strict, allow bool, w io.Writer) (*rollbacks, error) {
+	if len(flags) == 0 && a == (approvalInputFlags{}) {
+		return nil, nil
+	}
+	switch {
+	case !strict:
+		return nil, fmt.Errorf("-rollback and -approvals need -strict")
+	case allow:
+		return nil, fmt.Errorf("-allow-downgrade excludes -rollback and -approvals (it lowers every downgrade)")
+	case a.comments == "" && (a.permissions != "" || a.head != "" || a.before != ""):
+		return nil, fmt.Errorf("-permissions, -approval-head and -approval-before need -approvals")
+	case a.comments != "" && (a.permissions == "" || !sha40Re.MatchString(a.head)):
+		return nil, fmt.Errorf("-approvals needs -permissions and -approval-head (a 40-digit lowercase SHA)")
+	}
+	rb := &rollbacks{}
+	for _, f := range flags {
+		path, from, to, err := parseRollbackFlag(f)
+		if err != nil {
+			return nil, err
+		}
+		rb.add(path, from, to, approvalSource{flag: true})
+	}
+	if a.comments != "" {
+		in := approvalInput{comments: a.comments, permissions: a.permissions, head: a.head}
+		if a.before != "" {
+			t, err := time.Parse(time.RFC3339, a.before)
+			if err != nil {
+				return nil, fmt.Errorf("-approval-before %q: %w", a.before, err)
+			}
+			in.before = t
+		}
+		if err := loadApprovals(in, rb, w); err != nil {
+			return nil, err
+		}
+	}
+	return rb, nil
 }
 
 // checkEach checks every commit on the first-parent chain of base..head
@@ -148,15 +222,16 @@ func (g gitRepo) checkEach(base, head string, opt options, stdout io.Writer) (bo
 
 // options are the flags every mode applies.
 type options struct {
-	allow  bool // -allow-downgrade
-	strict bool // -strict
+	allow     bool       // -allow-downgrade
+	strict    bool       // -strict
+	rollbacks *rollbacks // -rollback, -approvals (nil: none)
 }
 
 // check compares the version of each file at from and at head; it reports
 // whether one goes down (or, with -strict, any finding fails).
 func (g gitRepo) check(from, head string, files []string, opt options, stdout io.Writer) (bool, error) {
 	if opt.strict {
-		return g.checkStrict(from, head, files, opt.allow, stdout)
+		return g.checkStrict(from, head, files, opt, stdout)
 	}
 	allow := opt.allow
 	failed := false

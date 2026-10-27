@@ -252,12 +252,9 @@ out); the tap workflow already describes its `merge_group` mode.
   the ruleset for that one merge as above.
 - A released tag is never moved. A bad release is followed by a new patch
   version; see [recovery.md](recovery.md).
-- An intentional formula rollback (a lower version, a removed formula, a
-  re-release with other artifacts) needs an explicit approval that
-  `version-guard` accepts. The approval scheme is being redesigned (a label
-  alone will not pass it: an admin's approval comment, bound to the pull
-  request's head SHA, read by a `pull_request_target` workflow); the design
-  and its procedure are in [tap-version-guard.md](tap-version-guard.md).
+- An intentional formula rollback needs the tap owner's approval comment for
+  the pull request head plus the label `formula-rollback`; the label alone
+  allows nothing (see [tap-version-guard.md](tap-version-guard.md#intentional-rollback)).
 
 ## Failure recovery
 
@@ -267,7 +264,7 @@ out); the tap workflow already describes its `merge_group` mode.
 | `ci-gate` failed but every job is green | a job was skipped or cancelled (concurrency) | re-run the workflow |
 | Branch is out of date (strict) | base moved | Update branch, wait for CI |
 | `pr-gate` exit 3, lock held | another merge is running | wait; never remove a held lock |
-| `version-guard` failed | one of: the PR lowers a formula's version; with `-strict` also a formula with no or a non-semantic version, versions that cannot be compared, the same version with other artifacts (url, sha256, mirror), a url naming another version than the formula, a removed formula, a formula that is not a regular file or an unsafe path | read the job's annotations; fix the formula, or close the PR. For an intended rollback, see the approval in [tap-version-guard.md](tap-version-guard.md) (being redesigned). Never disable the ruleset for it |
+| `version-guard` failed | one of: the PR lowers a formula's version; with `-strict` also a formula with no or a non-semantic version, versions that cannot be compared, the same version with other artifacts (url, sha256, mirror), a url naming another version than the formula, a removed formula, a formula that is not a regular file or an unsafe path | read the job's annotations; fix the formula, or close the PR. For an intended downgrade, the owner posts the `/formula-rollback` approval for its head, then labels it `formula-rollback` ([tap-version-guard.md](tap-version-guard.md#intentional-rollback)). Never disable the ruleset for it |
 
 ## Emergency procedure
 

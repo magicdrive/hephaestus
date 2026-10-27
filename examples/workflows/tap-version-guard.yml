@@ -3,27 +3,55 @@
 # requests merged last), swaps the artifacts of a version, removes a
 # formula or leaves one without a version. See docs/tap-version-guard.md.
 #
-# - version-guard (pull_request, merge_group): make it a required status
-#   check, with "require branches to be up to date before merging" (strict)
-#   or a merge queue: a pull_request check is only as fresh as the base it
-#   ran against, and re-running it checks the same old merge again.
+# - version-guard (pull_request_target): the required check. It runs the
+#   workflow of the default branch, never the pull request's: a pull
+#   request that edits or adds a workflow cannot change what checks it.
+#   It reads the pull request as git objects (fetched, never checked out)
+#   and runs no code of it. Make "version-guard" a required status check
+#   with "require branches to be up to date before merging".
+# - version-guard-pending / version-guard-verdict: post the verdict as the
+#   commit status "version-guard" on the pull request head, too. A check
+#   and a commit status of the same name must both pass, so a job named
+#   version-guard in a workflow the pull request adds (which runs on its
+#   own pull_request event) cannot stand in for this one: it cannot post
+#   the status (a fork's token is read-only).
+#   On merge_group it checks every step of a merge queue entry; no
+#   rollback can pass the queue.
 # - after-merge (push to the default branch, workflow_dispatch): detects a
 #   downgrade that landed anyway (an admin bypass, a direct push) and open
 #   pull requests that the new base turned into downgrades. It cannot
 #   block: it alerts, through after-merge-issue, the only job that may
-#   write (issues), and which runs no code of the tap or of Hephaestus.
+#   write issues, and which runs no code of the tap or of Hephaestus.
 #
-# A pull request labelled "formula-rollback" may lower a version, re-release
-# a version with other artifacts or remove a formula on purpose; it never
-# lets through a formula the guard cannot read (no version, a symlink).
+# A rollback (a downgrade on purpose) passes only when an admin of the
+# repository approved exactly it, for exactly this head, in a comment on
+# the pull request, and the pull request has the label formula-rollback:
+#
+#   /formula-rollback
+#   head: <the 40-digit head SHA of the pull request>
+#   formula: <path> <from> -> <to>
+#   reason: <why>
+#
+# Post the comment first, then add the label (the label runs the check
+# again; a comment does not). A new push, a removed label or an edited
+# comment fails the check again. The label alone, a comment of anyone who
+# is not an admin, author_association and the pull request's author count
+# for nothing. A removal, a re-release under the same version and a
+# formula the guard cannot read are never lowered.
 #
 # Every value of the event reaches the scripts through env, never inside
-# them; every script runs with bash -euo pipefail; a label that cannot be
-# read counts as absent.
+# them; every script runs with bash -euo pipefail; anything that cannot be
+# read fails the check (or, after the merge, counts as no approval).
+#
+# First install (bootstrap): pull_request_target runs the workflow of the
+# default branch, so the pull request that adds this file is not checked
+# by it. Merge that pull request before making version-guard required,
+# then set the ruleset. See the bootstrap section of the documentation.
 name: Formula version guard
 
 on:
-  pull_request:
+  # Not pull_request: its workflow comes from the pull request itself.
+  pull_request_target:
     # edited: the base branch was changed; (un)labeled: formula-rollback.
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
   merge_group:
@@ -33,8 +61,14 @@ on:
 
 permissions: {}
 
+# One verdict per pull request at a time: a newer event (a push, a label
+# removed) cancels the run of an older one before it posts its verdict.
+concurrency:
+  group: formula-version-guard-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+
 env:
-  # The Hephaestus commit you have reviewed (one with -strict, or later).
+  # The Hephaestus commit you have reviewed (one with -approvals, or later).
   GUARD: github.com/magicdrive/hephaestus/cmd/tap-version-guard@<full-commit-sha>
   # The Go that compiles the guard: at least the go line of the pinned
   # commit's go.mod. local: a newer requirement fails the build instead of
@@ -42,50 +76,126 @@ env:
   GOTOOLCHAIN: local
 
 jobs:
+  version-guard-pending:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - name: Commit status
+        shell: bash
+        env:
+          RESULT: pending
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # The verdict of version-guard as the commit status of the same
+          # name on the pull request head. Anything but success fails.
+          case "$RESULT" in
+          pending) state=pending description="checking the formulae" ;;
+          success) state=success description="no formula goes down, or an approved rollback" ;;
+          *) state=failure description="refused or not checked ($RESULT): see the run" ;;
+          esac
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::unexpected head SHA"
+            exit 1
+          fi
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state="$state" -f context=version-guard \
+            -f description="$description" -f target_url="$RUN_URL" > /dev/null
+          echo "version-guard: $state"
+
+  # The required check. No needs: a skipped job counts as a passing check.
   version-guard:
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
-      pull-requests: read # the rollback label of a merge queue entry
+      pull-requests: read # the pull request, its labels and comments
     steps:
-      - name: Rollback label
-        id: rollback
+      - name: Rollback approval
+        id: approval
+        if: github.event_name == 'pull_request_target'
         shell: bash
         env:
-          EVENT: ${{ github.event_name }}
-          PR_ROLLBACK: ${{ contains(github.event.pull_request.labels.*.name, 'formula-rollback') }}
-          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          allow=false
-          case "$EVENT" in
-          pull_request)
-            if [ "$PR_ROLLBACK" = true ]; then allow=true; fi
-            ;;
-          merge_group)
-            # gh-readonly-queue/<base>/pr-<number>-<sha>: the entry's pull request.
-            pr="$(sed -n 's|^gh-readonly-queue/.*/pr-\([0-9][0-9]*\)-[0-9a-f]*$|\1|p' <<<"$QUEUE_REF")"
-            if [ -z "$pr" ]; then
-              echo "::warning::cannot tell the pull request of the queue entry: checked without the rollback label"
-            elif labels="$(gh api --paginate "repos/$REPO/issues/$pr/labels" --jq '.[].name')"; then
-              if grep -qxF formula-rollback <<<"$labels"; then allow=true; fi
-            else
-              echo "::warning::cannot read the labels of #$pr: checked without the rollback label"
-            fi
-            ;;
-          esac
-          echo "allow=$allow" >> "$GITHUB_OUTPUT"
-      # pull_request checks out the merge of the pull request into the
-      # current base (HEAD^1 is the base); merge_group checks out the
-      # queue entry, stacked on the entries ahead of it.
+          if [[ ! "$PR" =~ ^[1-9][0-9]*$ ]] || [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::unexpected pull request number or head SHA"
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/approval"
+          mkdir -p "$dir"
+          : > "$dir/comments.json"
+          : > "$dir/permissions.json"
+          # The pull request as it is now: the run of a later event (a
+          # push, a label) decides for that event.
+          pr="$(gh api "repos/$REPO/pulls/$PR")"
+          now="$(jq -r '.head.sha' <<<"$pr")"
+          if [ "$now" != "$HEAD_SHA" ]; then
+            echo "::error::the pull request head moved to $now; the run for the new head decides"
+            exit 1
+          fi
+          if [ "$(jq -r '[.labels[].name] | any(. == "formula-rollback")' <<<"$pr")" != true ]; then
+            echo "No formula-rollback label: no rollback can pass."
+            echo "rollback=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The label is there: the approval comments and the permission
+          # of each of their authors. The guard judges them; any failed
+          # read fails the check.
+          gh api --paginate "repos/$REPO/issues/$PR/comments" > "$dir/comments.json"
+          jq -r '.[] | select((.body // "") | startswith("/formula-rollback")) | .user.login // empty' "$dir/comments.json" | sort -u > "$dir/logins"
+          while read -r login; do
+            # Not a user login (a bot): the guard ignores the comment.
+            if [[ ! "$login" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then continue; fi
+            gh api "repos/$REPO/collaborators/$login/permission" >> "$dir/permissions.json"
+            echo >> "$dir/permissions.json"
+          done < "$dir/logins"
+          echo "rollback=true" >> "$GITHUB_OUTPUT"
+      # pull_request_target: the default branch, where this workflow comes
+      # from (the pull request is fetched below as objects only).
+      # merge_group: the queue entry, stacked on the entries ahead of it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: ${{ github.event_name == 'merge_group' && '0' || '2' }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Fetch the pull request
+        if: github.event_name == 'pull_request_target'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          if [[ ! "$PR" =~ ^[1-9][0-9]*$ ]] || ! git check-ref-format --branch "$BASE_REF" > /dev/null; then
+            echo "::error::unexpected pull request number or base branch"
+            exit 1
+          fi
+          # The current tip of the base branch and the pull request head,
+          # into refs of their own; the work tree stays the default branch.
+          # (A private tap: gh lends the read-only token to git.)
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+            fetch --quiet --no-tags origin \
+            "+refs/heads/$BASE_REF:refs/remotes/guard/base" \
+            "+refs/pull/$PR/head:refs/remotes/guard/head" < /dev/null
+          got="$(git rev-parse refs/remotes/guard/head)"
+          if [ "$got" != "$HEAD_SHA" ]; then
+            echo "::error::the pull request head moved to $got; the run for the new head decides"
+            exit 1
+          fi
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.3"
@@ -94,22 +204,64 @@ jobs:
         shell: bash
         env:
           EVENT: ${{ github.event_name }}
-          ALLOW: ${{ steps.rollback.outputs.allow }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ROLLBACK: ${{ steps.approval.outputs.rollback }}
           QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
           set -euo pipefail
           GOBIN="$RUNNER_TEMP/bin" go install "$GUARD"
           guard="$RUNNER_TEMP/bin/tap-version-guard"
           flags=(-strict)
-          if [ "$ALLOW" = true ]; then flags+=(-allow-downgrade); fi
           if [ "$EVENT" = merge_group ]; then
             # Every step from the base branch to this entry, against its
             # first parent: an older release queued behind a newer one
-            # fails even when the group's net change goes up.
+            # fails even when the group's net change goes up. No rollback
+            # passes the queue: merge an approved rollback without it.
             "$guard" -base "$QUEUE_BASE" -each "${flags[@]}"
-          else
-            "$guard" "${flags[@]}"
+            exit 0
           fi
+          if [ "$ROLLBACK" = true ]; then
+            dir="$RUNNER_TEMP/approval"
+            flags+=(-approvals "$dir/comments.json" -permissions "$dir/permissions.json" -approval-head "$HEAD_SHA" -summary "$GITHUB_STEP_SUMMARY")
+          fi
+          # The formulae the head changed since its merge base with the
+          # current tip of the base branch, at that tip and at the head.
+          "$guard" -against refs/remotes/guard/base -head "$HEAD_SHA" "${flags[@]}"
+
+  version-guard-verdict:
+    needs: [version-guard-pending, version-guard]
+    # Not when cancelled: the newer run that cancelled it posts the verdict.
+    if: ${{ !cancelled() && github.event_name == 'pull_request_target' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - name: Commit status
+        shell: bash
+        env:
+          RESULT: ${{ needs.version-guard.result }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # The verdict of version-guard as the commit status of the same
+          # name on the pull request head. Anything but success fails.
+          case "$RESULT" in
+          pending) state=pending description="checking the formulae" ;;
+          success) state=success description="no formula goes down, or an approved rollback" ;;
+          *) state=failure description="refused or not checked ($RESULT): see the run" ;;
+          esac
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::unexpected head SHA"
+            exit 1
+          fi
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state="$state" -f context=version-guard \
+            -f description="$description" -f target_url="$RUN_URL" > /dev/null
+          echo "version-guard: $state"
 
   after-merge:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -156,25 +308,54 @@ jobs:
           # The guard's ::error lines as text for a code block of the issue.
           findings() { printf '%s\n' "$1" | sed -n 's/^::error[^:]*:://p' | tr -d '`'; }
 
-          # rollback_merge SHA sets label=true when SHA merged a pull
-          # request labelled formula-rollback; a failed read counts as no
-          # label.
+          # approvals N HEAD sets approval=(...) to the guard flags that
+          # judge the approval comments of pull request N for HEAD; it
+          # fails when they cannot be read.
+          approvals() {
+            local d="$RUNNER_TEMP/approvals-$1" logins login
+            mkdir -p "$d"
+            : > "$d/permissions.json"
+            gh api --paginate "repos/$REPO/issues/$1/comments" > "$d/comments.json" || return 1
+            logins="$(jq -r '.[] | select((.body // "") | startswith("/formula-rollback")) | .user.login // empty' "$d/comments.json" | sort -u)" || return 1
+            while read -r login; do
+              if [[ ! "$login" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then continue; fi
+              gh api "repos/$REPO/collaborators/$login/permission" >> "$d/permissions.json" || return 1
+              echo >> "$d/permissions.json"
+            done <<<"$logins"
+            approval=(-approvals "$d/comments.json" -permissions "$d/permissions.json" -approval-head "$2")
+          }
+
+          # rollback_merge SHA sets approval=(...) when SHA merged a pull
+          # request labelled formula-rollback: its approvals for its head,
+          # posted before the merge. A failed read counts as no approval.
           rollback_merge() {
-            local pulls
-            label=false
+            local pulls pr number head merged
+            approval=()
             if ! pulls="$(gh api "repos/$REPO/commits/$1/pulls")"; then
-              echo "::warning::cannot read the pull request of $1: checked without the rollback label"
+              echo "::warning::cannot read the pull request of $1: checked without a rollback approval"
               return 0
             fi
-            if [ "$(jq -r --arg c "$1" '[.[] | select(.merge_commit_sha == $c and .merged_at != null) | .labels[].name] | any(. == "formula-rollback")' <<<"$pulls")" = true ]; then
-              label=true
+            pr="$(jq -c --arg c "$1" '[.[] | select(.merge_commit_sha == $c and .merged_at != null and ([.labels[].name] | any(. == "formula-rollback")))][0] // empty' <<<"$pulls")"
+            if [ -z "$pr" ]; then return 0; fi
+            number="$(jq -r '.number' <<<"$pr")"
+            head="$(jq -r '.head.sha' <<<"$pr")"
+            merged="$(jq -r '.merged_at' <<<"$pr")"
+            if [[ ! "$number" =~ ^[1-9][0-9]*$ ]] || [[ ! "$head" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::warning::unexpected pull request of $1: checked without a rollback approval"
+              return 0
             fi
+            if ! approvals "$number" "$head"; then
+              approval=()
+              echo "::warning::cannot read the rollback approvals of #$number: checked without them"
+              return 0
+            fi
+            approval+=(-approval-before "$merged")
           }
 
           # 1. The push itself, commit by commit along the first parents (a
           #    merge queue group or several merges at once), each with the
-          #    rollback label of its own pull request. A new branch or a
-          #    forced push has no usable "before": the last commit only.
+          #    rollback approvals of its own pull request. A new branch or
+          #    a forced push has no usable "before": the last commit only.
           if [ "$EVENT" = push ]; then
             if [[ "$BEFORE" =~ ^[0-9a-f]{40}$ ]] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] &&
               git merge-base --is-ancestor "$BEFORE" "$AFTER" 2>/dev/null; then
@@ -186,7 +367,7 @@ jobs:
             for c in $commits; do
               flags=(-strict)
               rollback_merge "$c"
-              if [ "$label" = true ]; then flags+=(-allow-downgrade); fi
+              if [ "${#approval[@]}" -gt 0 ]; then flags+=("${approval[@]}" -summary "$GITHUB_STEP_SUMMARY"); fi
               rc=0
               out="$("$guard" -base "$c^1" -head "$c" "${flags[@]}")" || rc=$?
               printf '%s\n' "$out"
@@ -218,9 +399,9 @@ jobs:
           fi
 
           # 2. Open pull requests against the branch, re-checked against its
-          #    current tip: their green pull_request checks may predate it.
-          #    One that fails against its own merge base is blocked by its
-          #    own required check already and is not reported.
+          #    current tip: their green checks may predate it. One that
+          #    fails against its own merge base is blocked by its own
+          #    required check already and is not reported.
           tip="$(git rev-parse HEAD)"
           prs="$RUNNER_TEMP/prs.txt"
           if ! gh pr list --repo "$REPO" --base "$BRANCH" --state open --limit 200 \
@@ -235,6 +416,11 @@ jobs:
             echo "::warning::200 or more open pull requests: the rest are not checked"
           fi
           while read -r number sha rollback; do
+            if [[ ! "$number" =~ ^[1-9][0-9]*$ ]] || [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+              errors=1
+              echo "::error::unexpected pull request entry"
+              continue
+            fi
             if ! git fetch --quiet --no-tags origin "+refs/pull/$number/head:refs/remotes/pr/$number" < /dev/null; then
               errors=1
               echo "::error::cannot fetch pull request #$number"
@@ -245,7 +431,13 @@ jobs:
               continue
             fi
             flags=(-strict)
-            if [ "$rollback" = true ]; then flags+=(-allow-downgrade); fi
+            if [ "$rollback" = true ]; then
+              if approvals "$number" "$sha" < /dev/null; then
+                flags+=("${approval[@]}")
+              else
+                echo "::warning::cannot read the rollback approvals of #$number: checked without them"
+              fi
+            fi
             if ! mb="$(git merge-base "$tip" "$sha")"; then
               errors=1
               echo "::error::pull request #$number has no merge base with $BRANCH"
