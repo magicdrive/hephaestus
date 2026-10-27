@@ -5,6 +5,16 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
 ## Unreleased
 
+- **Merge gate**: new `cmd/pr-gate` decides whether a pull request may be
+  merged and, only with `-merge`, merges it pinned to the reviewed head
+  (`PUT pulls/{n}/merge` with `sha`, sent once) and verifies the merge
+  commit's parents. Every condition fails closed: open, not a draft, exact
+  head and base commits, behind 0, mergeable and clean (bounded re-reads
+  while GitHub computes it), required checks read from the branch rules and
+  branch protection (or named with `-require`), every check, status and
+  workflow run completed, the latest attempt of each check decides, and a
+  required check is satisfied only by `success` (not `skipped` or
+  `neutral`). Without `-merge` it only reads (docs/pr-gate.md).
 - **Release workflow checks**: `hephaestus preflight` reads the release
   workflow (`preflight.workflow`, default `.github/workflows/release.yml`)
   and the CI workflow it runs from the work tree, and checks the

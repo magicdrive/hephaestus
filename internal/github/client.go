@@ -13,6 +13,8 @@
 //     retried automatically: creating a release, uploading an asset, creating
 //     a ref or a pull request may have succeeded even when the response was
 //     lost, so callers re-read state before trying again (see RetryDelay).
+//     MergePull is sent exactly once too, although it is a PUT: a merge
+//     whose response was lost must be confirmed by reading the pull request.
 //   - Response bodies are size-limited, every attempt has a timeout, and the
 //     token never appears in an error message.
 package github
