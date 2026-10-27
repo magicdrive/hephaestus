@@ -318,7 +318,7 @@ func newAfterMerge(t *testing.T) *afterMerge {
 		r.commit(map[string]string{"tool.rb": pr.content})
 	}
 	r.git("checkout", "-q", "main")
-	if out, err := exec.Command("git", "init", "-q", "--bare", a.origin).CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "init", "-q", "--bare", "-b", "main", a.origin).CombinedOutput(); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	return a
