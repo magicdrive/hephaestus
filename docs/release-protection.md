@@ -196,8 +196,9 @@ out); the tap workflow already describes its `merge_group` mode.
   the ruleset for that one merge as above.
 - A released tag is never moved. A bad release is followed by a new patch
   version; see [recovery.md](recovery.md).
-- A formula downgrade is reverted by a pull request labeled
-  `formula-rollback` (see [tap-version-guard.md](tap-version-guard.md)).
+- An intentional formula rollback needs the tap owner's approval comment for
+  the pull request head plus the label `formula-rollback`; the label alone
+  allows nothing (see [tap-version-guard.md](tap-version-guard.md#intentional-rollback)).
 
 ## Failure recovery
 
@@ -207,7 +208,7 @@ out); the tap workflow already describes its `merge_group` mode.
 | `ci-gate` failed but every job is green | a job was skipped or cancelled (concurrency) | re-run the workflow |
 | Branch is out of date (strict) | base moved | Update branch, wait for CI |
 | `pr-gate` exit 3, lock held | another merge is running | wait; never remove a held lock |
-| `version-guard` failed | the PR lowers a formula | close it, or label `formula-rollback` if intended |
+| `version-guard` failed | the PR lowers a formula | close it; if intended, the owner posts the `/formula-rollback` approval for its head, then labels it `formula-rollback` |
 
 ## Emergency procedure
 
