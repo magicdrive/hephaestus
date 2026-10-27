@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"maps"
 	"os"
 	"os/exec"
@@ -41,8 +42,9 @@ type wfStep struct {
 }
 
 type wfJob struct {
+	Name        string            `yaml:"name"`
 	If          string            `yaml:"if"`
-	Needs       string            `yaml:"needs"`
+	Needs       any               `yaml:"needs"`
 	Permissions map[string]string `yaml:"permissions"`
 	Outputs     map[string]string `yaml:"outputs"`
 	Steps       []wfStep          `yaml:"steps"`
@@ -50,6 +52,7 @@ type wfJob struct {
 
 type workflow struct {
 	On          map[string]any    `yaml:"on"`
+	Concurrency map[string]any    `yaml:"concurrency"`
 	Permissions map[string]string `yaml:"permissions"`
 	Env         map[string]string `yaml:"env"`
 	Jobs        map[string]wfJob  `yaml:"jobs"`
@@ -86,9 +89,11 @@ func TestExampleWorkflow_Hardening(t *testing.T) {
 		t.Errorf("top-level permissions %v, want {} (each job names its own)", w.Permissions)
 	}
 	wantPerms := map[string]map[string]string{
-		"version-guard":     {"contents": "read", "pull-requests": "read"},
-		"after-merge":       {"contents": "read", "pull-requests": "read"},
-		"after-merge-issue": {"issues": "write"},
+		"version-guard-pending": {"statuses": "write"},
+		"version-guard":         {"contents": "read", "pull-requests": "read"},
+		"version-guard-verdict": {"statuses": "write"},
+		"after-merge":           {"contents": "read", "pull-requests": "read"},
+		"after-merge-issue":     {"issues": "write"},
 	}
 	if got := slices.Sorted(maps.Keys(w.Jobs)); !slices.Equal(got, slices.Sorted(maps.Keys(wantPerms))) {
 		t.Errorf("jobs %v", got)
@@ -98,16 +103,57 @@ func TestExampleWorkflow_Hardening(t *testing.T) {
 			t.Errorf("%s: permissions %v, want %v", job, w.Jobs[job].Permissions, want)
 		}
 	}
-	types, _ := w.On["pull_request"].(map[string]any)["types"].([]any)
+	// The required check runs the workflow of the default branch: a
+	// pull_request trigger would run the one the pull request brings.
+	if _, ok := w.On["pull_request"]; ok {
+		t.Error("on: pull_request runs the workflow of the pull request; use pull_request_target")
+	}
+	if _, ok := w.On["pull_request_review"]; ok {
+		t.Error("on: pull_request_review runs the workflow of the pull request")
+	}
+	prt, _ := w.On["pull_request_target"].(map[string]any)
+	types, _ := prt["types"].([]any)
 	for _, ty := range []string{"opened", "synchronize", "reopened", "edited", "labeled", "unlabeled"} {
 		if !slices.Contains(types, any(ty)) {
-			t.Errorf("pull_request does not run on %s", ty)
+			t.Errorf("pull_request_target does not run on %s", ty)
 		}
+	}
+	if len(prt) != 1 {
+		t.Errorf("pull_request_target %v: no branch or path filter (every pull request is checked)", prt)
+	}
+	if g, _ := w.Concurrency["group"].(string); !strings.Contains(g, "github.event.pull_request.number") ||
+		w.Concurrency["cancel-in-progress"] != "${{ github.event_name == 'pull_request_target' }}" {
+		t.Errorf("concurrency %v: one verdict per pull request, the newest event wins", w.Concurrency)
 	}
 	if !strings.HasPrefix(w.Env["GUARD"], "github.com/magicdrive/hephaestus/cmd/tap-version-guard@") || w.Env["GOTOOLCHAIN"] != "local" {
 		t.Errorf("env %v", w.Env)
 	}
+	if strings.Contains(raw, "-allow-downgrade") {
+		t.Error("the example uses -allow-downgrade: a label alone would lower every downgrade")
+	}
+	// A skipped job reports success: the required check depends on no
+	// job, and no other job is named version-guard.
+	if g := w.Jobs["version-guard"]; g.Needs != nil || g.If != "github.event_name == 'pull_request_target' || github.event_name == 'merge_group'" {
+		t.Errorf("version-guard: needs %v if %q", g.Needs, g.If)
+	}
+	for name, job := range w.Jobs {
+		if name != "version-guard" && (job.Name == "version-guard" || strings.Contains(name, "version-guard") && job.Name != "") {
+			t.Errorf("%s: named %q", name, job.Name)
+		}
+	}
+	if v := w.Jobs["version-guard-verdict"]; !slices.Equal(toStrings(v.Needs), []string{"version-guard-pending", "version-guard"}) ||
+		v.If != "${{ !cancelled() && github.event_name == 'pull_request_target' }}" {
+		t.Errorf("version-guard-verdict: needs %v if %q", v.Needs, v.If)
+	}
+	if w.Jobs["version-guard-pending"].If != "github.event_name == 'pull_request_target'" {
+		t.Errorf("version-guard-pending: if %q", w.Jobs["version-guard-pending"].If)
+	}
+	pending, verdict := w.step(t, "version-guard-pending", "Commit status"), w.step(t, "version-guard-verdict", "Commit status")
+	if pending.Run != verdict.Run || pending.Env["RESULT"] != "pending" || verdict.Env["RESULT"] != "${{ needs.version-guard.result }}" {
+		t.Errorf("the commit status steps differ: %q / %q", pending.Env["RESULT"], verdict.Env["RESULT"])
+	}
 	pinned := regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$`)
+	writes := map[string]bool{"version-guard-pending": true, "version-guard-verdict": true, "after-merge-issue": true}
 	for name, job := range w.Jobs {
 		for _, s := range job.Steps {
 			where := name + "/" + s.Name + s.Uses
@@ -115,12 +161,19 @@ func TestExampleWorkflow_Hardening(t *testing.T) {
 				if !pinned.MatchString(s.Uses) || !regexp.MustCompile(regexp.QuoteMeta(s.Uses)+` # v\d`).MatchString(raw) {
 					t.Errorf("%s: not pinned to a commit SHA with a # vX.Y.Z comment", where)
 				}
-				if name == "after-merge-issue" {
-					t.Errorf("%s: the job that writes issues runs no action", where)
+				if writes[name] {
+					t.Errorf("%s: a job that writes runs no action", where)
 				}
 			}
-			if strings.HasPrefix(s.Uses, "actions/checkout@") && s.With["persist-credentials"] != "false" {
-				t.Errorf("%s: persist-credentials must be false", where)
+			if strings.HasPrefix(s.Uses, "actions/checkout@") {
+				if s.With["persist-credentials"] != "false" {
+					t.Errorf("%s: persist-credentials must be false", where)
+				}
+				// pull_request_target checks out the default branch, never
+				// the pull request (its files are read as git objects).
+				if _, ok := s.With["ref"]; ok {
+					t.Errorf("%s: checks out %q", where, s.With["ref"])
+				}
 			}
 			if strings.HasPrefix(s.Uses, "actions/setup-go@") {
 				if !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(s.With["go-version"]) || s.With["cache"] != "false" {
@@ -146,14 +199,27 @@ func TestExampleWorkflow_Hardening(t *testing.T) {
 					t.Errorf("%s: the guard runs without -strict", where)
 				}
 			}
-			if name == "after-merge-issue" && (strings.Contains(s.Run, "GUARD") || strings.Contains(s.Run, "git ")) {
-				t.Errorf("%s: the job that writes issues runs no guard and no git", where)
+			if writes[name] && (strings.Contains(s.Run, "GUARD") || strings.Contains(s.Run, "git ") || strings.Contains(s.Run, "guard\"")) {
+				t.Errorf("%s: a job that writes runs no guard and no git", where)
+			}
+			if name == "version-guard" && (strings.Contains(s.Run, "checkout") || strings.Contains(s.Run, "git switch") || strings.Contains(s.Run, "git worktree")) {
+				t.Errorf("%s: the pull request is never checked out", where)
 			}
 		}
 	}
 	if j := w.Jobs["after-merge-issue"]; j.Needs != "after-merge" || j.If != "always() && needs.after-merge.outputs.found == '1'" {
 		t.Errorf("after-merge-issue: needs %q if %q", j.Needs, j.If)
 	}
+}
+
+func toStrings(v any) []string {
+	l, _ := v.([]any)
+	var s []string
+	for _, x := range l {
+		str, _ := x.(string)
+		s = append(s, str)
+	}
+	return s
 }
 
 // stubs puts fake gh and go on PATH. gh answers from files in dir (and
@@ -173,17 +239,41 @@ func stubs(t *testing.T) (bin, dir string) {
 	gh := `#!/usr/bin/env bash
 set -u
 echo "gh $*" >> "$STUB_DIR/calls"
-case "$1 ${2:-}" in
-"api --paginate")
-  [ -e "$STUB_DIR/labels.fail" ] && { echo "HTTP 502" >&2; exit 1; }
-  cat "$STUB_DIR/labels" ;;
-"api repos/"*/pulls)
-  [ -e "$STUB_DIR/pulls.fail" ] && { echo "HTTP 502" >&2; exit 1; }
-  sha="${2#*/commits/}"; sha="${sha%/pulls}"
+fail() { echo "HTTP 502" >&2; exit 1; }
+if [ "$1 ${2:-}" = "pr list" ]; then
+  [ -e "$STUB_DIR/prs.fail" ] && fail
+  cat "$STUB_DIR/prs" 2>/dev/null || true
+  exit 0
+fi
+[ "$1" = api ] || { echo "unexpected gh $*" >&2; exit 3; }
+path="" method=GET
+for a in "${@:2}"; do
+  case "$a" in
+  repos/*) path="$a" ;;
+  POST) method=POST ;;
+  esac
+done
+case "$method $path" in
+"POST repos/"*/statuses/*)
+  [ -e "$STUB_DIR/statuses.fail" ] && fail
+  printf '%s\n' "$*" >> "$STUB_DIR/statuses"
+  echo '{}' ;;
+"GET repos/"*/commits/*/pulls)
+  [ -e "$STUB_DIR/pulls.fail" ] && fail
+  sha="${path#*/commits/}"; sha="${sha%/pulls}"
   if [ -e "$STUB_DIR/pulls-$sha.json" ]; then cat "$STUB_DIR/pulls-$sha.json"; else echo '[]'; fi ;;
-"pr list")
-  [ -e "$STUB_DIR/prs.fail" ] && { echo "HTTP 502" >&2; exit 1; }
-  cat "$STUB_DIR/prs" 2>/dev/null || true ;;
+"GET repos/"*/pulls/*)
+  [ -e "$STUB_DIR/pull.fail" ] && fail
+  cat "$STUB_DIR/pull.json" ;;
+"GET repos/"*/issues/*/comments)
+  [ -e "$STUB_DIR/comments.fail" ] && fail
+  n="${path%/comments}"; n="${n##*/}"
+  if [ -e "$STUB_DIR/comments-$n.json" ]; then cat "$STUB_DIR/comments-$n.json"; else echo '[]'; fi ;;
+"GET repos/"*/collaborators/*/permission)
+  [ -e "$STUB_DIR/permission.fail" ] && fail
+  login="${path%/permission}"; login="${login##*/}"
+  [ -e "$STUB_DIR/perm-$login.json" ] || { echo "HTTP 404: Not Found" >&2; exit 1; }
+  cat "$STUB_DIR/perm-$login.json" ;;
 *) echo "unexpected gh $*" >&2; exit 3 ;;
 esac
 `
@@ -203,8 +293,20 @@ chmod +x "$GOBIN/tap-version-guard"
 }
 
 // runStep runs a step's script as Actions would (bash, in dir) with env
-// and returns its output and the outputs it set.
+// and returns its output and the outputs it set; it fails the test when
+// the script fails.
 func runStep(t *testing.T, s wfStep, dir, bin, stub string, env map[string]string) (string, map[string]string) {
+	t.Helper()
+	out, outputs, code := runStepCode(t, s, dir, bin, stub, env)
+	if code != 0 {
+		t.Fatalf("step %q: exit %d\n%s", s.Name, code, out)
+	}
+	return out, outputs
+}
+
+// runStepCode is runStep for a script that may fail. env may set
+// RUNNER_TEMP and GITHUB_STEP_SUMMARY (steps of one job share them).
+func runStepCode(t *testing.T, s wfStep, dir, bin, stub string, env map[string]string) (string, map[string]string, int) {
 	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
@@ -218,6 +320,7 @@ func runStep(t *testing.T, s wfStep, dir, bin, stub string, env map[string]strin
 	out := filepath.Join(tmp, "output")
 	cmd := exec.Command("bash", "--noprofile", "--norc", "-eo", "pipefail", script)
 	cmd.Dir = dir
+	// Later entries win: env may replace RUNNER_TEMP and the summary.
 	cmd.Env = []string{
 		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"HOME=" + tmp, "STUB_DIR=" + stub, "GUARD_BINARY=" + self,
@@ -228,8 +331,13 @@ func runStep(t *testing.T, s wfStep, dir, bin, stub string, env map[string]strin
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	b, err := cmd.CombinedOutput()
+	code := 0
 	if err != nil {
-		t.Fatalf("step %q: %v\n%s", s.Name, err, b)
+		ee, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("step %q: %v\n%s", s.Name, err, b)
+		}
+		code = ee.ExitCode()
 	}
 	outputs := map[string]string{}
 	data, _ := os.ReadFile(out)
@@ -238,66 +346,13 @@ func runStep(t *testing.T, s wfStep, dir, bin, stub string, env map[string]strin
 			outputs[k] = v
 		}
 	}
-	return string(b), outputs
+	return string(b), outputs, code
 }
 
 func envKeys(t *testing.T, s wfStep, want ...string) {
 	t.Helper()
 	if got := slices.Sorted(maps.Keys(s.Env)); !slices.Equal(got, slices.Sorted(slices.Values(want))) {
 		t.Fatalf("step %q env %v, the test sets %v", s.Name, got, want)
-	}
-}
-
-// TestExampleWorkflow_RollbackLabel: the label allows a rollback only when
-// it is read; anything else (no label, an API failure, an unknown queue
-// entry) checks without it.
-func TestExampleWorkflow_RollbackLabel(t *testing.T) {
-	w, _ := readExample(t)
-	s := w.step(t, "version-guard", "Rollback label")
-	envKeys(t, s, "EVENT", "PR_ROLLBACK", "QUEUE_REF", "GH_TOKEN", "REPO")
-	const queueRef = "gh-readonly-queue/main/pr-12-0123456789abcdef0123456789abcdef01234567"
-	for _, tc := range []struct {
-		name               string
-		event, pr, queue   string
-		labels             string // "" none; "fail": the API fails
-		want               string
-		wantCall, wantWarn bool
-	}{
-		{"pull request with the label", "pull_request", "true", "", "", "true", false, false},
-		{"pull request without it", "pull_request", "false", "", "", "false", false, false},
-		{"pull request, empty value", "pull_request", "", "", "", "false", false, false},
-		{"queue entry with the label", "merge_group", "", queueRef, "bug\nformula-rollback\n", "true", true, false},
-		{"queue entry without it", "merge_group", "", queueRef, "formula-rollback-later\nbug\n", "false", true, false},
-		{"queue entry, labels unreadable", "merge_group", "", queueRef, "fail", "false", true, true},
-		{"queue entry, unknown ref", "merge_group", "", "gh-readonly-queue/main/weird", "formula-rollback\n", "false", false, true},
-		{"queue entry, crafted ref", "merge_group", "", "x$(touch pwned)`touch pwned`/pr-1-ab", "formula-rollback\n", "false", false, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			bin, stub := stubs(t)
-			if tc.labels == "fail" {
-				os.WriteFile(filepath.Join(stub, "labels.fail"), nil, 0o644)
-			} else {
-				os.WriteFile(filepath.Join(stub, "labels"), []byte(tc.labels), 0o644)
-			}
-			dir := t.TempDir()
-			out, outputs := runStep(t, s, dir, bin, stub, map[string]string{
-				"EVENT": tc.event, "PR_ROLLBACK": tc.pr, "QUEUE_REF": tc.queue, "GH_TOKEN": "t", "REPO": "o/tap",
-			})
-			if _, err := os.Stat(filepath.Join(dir, "pwned")); err == nil {
-				t.Fatal("the queue ref ran a command")
-			}
-			if outputs["allow"] != tc.want {
-				t.Fatalf("allow=%q, want %q\n%s", outputs["allow"], tc.want, out)
-			}
-			calls, _ := os.ReadFile(filepath.Join(stub, "calls"))
-			if (len(calls) > 0) != tc.wantCall || (tc.wantCall && !strings.Contains(string(calls), "repos/o/tap/issues/12/labels")) {
-				t.Fatalf("gh calls %q", calls)
-			}
-			if strings.Contains(out, "::warning::") != tc.wantWarn {
-				t.Fatalf("warning: %s", out)
-			}
-		})
 	}
 }
 
@@ -360,18 +415,26 @@ func TestExampleWorkflow_AfterMerge(t *testing.T) {
 		found, errors string
 		report, out   string
 	}
-	run := func(t *testing.T, a *afterMerge, work, event, before string, stub, bin string) result {
+	runSummary := func(t *testing.T, a *afterMerge, work, event, before string, stub, bin, summary string) result {
 		t.Helper()
-		out, o := runStep(t, s, work, bin, stub, map[string]string{
+		env := map[string]string{
 			"EVENT": event, "BEFORE": before, "AFTER": a.git("rev-parse", "main"), "BRANCH": "main",
 			"GH_TOKEN": "t", "REPO": "o/tap", "GIT_TERMINAL_PROMPT": "0",
 			"GUARD": w.Env["GUARD"], "GOTOOLCHAIN": "local",
-		})
+		}
+		if summary != "" {
+			env["GITHUB_STEP_SUMMARY"] = summary
+		}
+		out, o := runStep(t, s, work, bin, stub, env)
 		rep, err := base64.StdEncoding.DecodeString(o["report"])
 		if err != nil {
 			t.Fatalf("report output: %v", err)
 		}
 		return result{o["found"], o["errors"], string(rep), out}
+	}
+	run := func(t *testing.T, a *afterMerge, work, event, before string, stub, bin string) result {
+		t.Helper()
+		return runSummary(t, a, work, event, before, stub, bin, "")
 	}
 	write := func(t *testing.T, dir, name, content string) {
 		t.Helper()
@@ -392,38 +455,77 @@ func TestExampleWorkflow_AfterMerge(t *testing.T) {
 			t.Fatalf("%+v", got)
 		}
 	})
-	t.Run("A then B pushed, B labelled formula-rollback", func(t *testing.T) {
-		t.Parallel()
-		bin, stub := stubs(t)
-		a := newAfterMerge(t)
-		a.merge("pr-a")
-		mergeB := a.merge("pr-b")
-		write(t, stub, "pulls-"+mergeB+".json", `[{"number":2,"merge_commit_sha":"`+mergeB+`","merged_at":"2026-10-27T00:00:00Z","labels":[{"name":"formula-rollback"}]}]`)
-		got := run(t, a, a.publish(nil), "push", a.oldBase, stub, bin)
-		if got.found != "0" || got.errors != "0" || !strings.Contains(got.out, "(allowed: -allow-downgrade)") {
-			t.Fatalf("%+v", got)
+	// pullOf is the answer of commits/{sha}/pulls for the merge of B.
+	pullOf := func(merge, head, mergedAt string, labels ...string) string {
+		ls := []map[string]string{}
+		for _, l := range labels {
+			ls = append(ls, map[string]string{"name": l})
 		}
-	})
-	t.Run("A then B pushed, the label of another commit does not count", func(t *testing.T) {
+		b, _ := json.Marshal([]map[string]any{{"number": 2, "merge_commit_sha": merge, "merged_at": mergedAt,
+			"head": map[string]string{"sha": head}, "labels": ls}})
+		return string(b)
+	}
+	const mergedAt = "2026-10-27T02:00:00Z"
+	for _, tc := range []struct {
+		name       string
+		labels     []string
+		approver   string // "" no approval comment
+		permission string
+		created    string
+		otherHead  bool
+		fail       string // a stub that fails
+		found      string
+		want       string
+	}{
+		{"labelled and approved by the admin before the merge", []string{"formula-rollback"}, ownerLogin, "admin", t0, false, "", "0", "(authorized rollback: approved by magicdrive"},
+		{"the label alone", []string{"formula-rollback"}, "", "", "", false, "", "1", "version goes down from 2.0.0 to 1.5.0"},
+		{"approved, not labelled", nil, ownerLogin, "admin", t0, false, "", "1", "version goes down"},
+		{"approved by a writer", []string{"formula-rollback"}, "w", "write", t0, false, "", "1", "w has write"},
+		{"approved after the merge", []string{"formula-rollback"}, ownerLogin, "admin", "2026-10-27T03:00:00Z", false, "", "1", "not before 2026-10-27T02:00:00Z (the merge)"},
+		{"approved for another head", []string{"formula-rollback"}, ownerLogin, "admin", t0, true, "", "1", "it approves head"},
+		{"comments unreadable", []string{"formula-rollback"}, ownerLogin, "admin", t0, false, "comments.fail", "1", "::warning::cannot read the rollback approvals of #2"},
+		{"permission unreadable", []string{"formula-rollback"}, ownerLogin, "admin", t0, false, "permission.fail", "1", "::warning::cannot read the rollback approvals of #2"},
+		{"pull request unreadable", []string{"formula-rollback"}, ownerLogin, "admin", t0, false, "pulls.fail", "1", "::warning::cannot read the pull request"},
+	} {
+		t.Run("A then B pushed, B "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			bin, stub := stubs(t)
+			a := newAfterMerge(t)
+			a.merge("pr-a")
+			head := a.git("rev-parse", "pr-b")
+			mergeB := a.merge("pr-b")
+			write(t, stub, "pulls-"+mergeB+".json", pullOf(mergeB, head, mergedAt, tc.labels...))
+			if tc.approver != "" {
+				approved := head
+				if tc.otherHead {
+					approved = strings.Repeat("b", 40)
+				}
+				approve(t, stub, 2, fakeComment{9, tc.approver, approvalBody(approved, "tool.rb 2.0.0 -> 1.5.0"), tc.created, tc.created}, tc.permission)
+			}
+			if tc.fail != "" {
+				write(t, stub, tc.fail, "")
+			}
+			summary := filepath.Join(t.TempDir(), "summary")
+			got := runSummary(t, a, a.publish(nil), "push", a.oldBase, stub, bin, summary)
+			if got.found != tc.found || got.errors != "0" || !strings.Contains(got.out, tc.want) {
+				t.Fatalf("%+v", got)
+			}
+			sum, _ := os.ReadFile(summary)
+			if audited := strings.Contains(string(sum), "| tool.rb | 2.0.0 → 1.5.0 | magicdrive |"); audited != (tc.found == "0") {
+				t.Fatalf("audit trail %v:\n%s", audited, sum)
+			}
+		})
+	}
+	t.Run("A then B pushed, the approval of another commit does not count", func(t *testing.T) {
 		t.Parallel()
 		bin, stub := stubs(t)
 		a := newAfterMerge(t)
 		mergeA := a.merge("pr-a")
+		head := a.git("rev-parse", "pr-b")
 		mergeB := a.merge("pr-b")
-		write(t, stub, "pulls-"+mergeB+".json", `[{"number":2,"merge_commit_sha":"`+mergeA+`","merged_at":"2026-10-27T00:00:00Z","labels":[{"name":"formula-rollback"}]}]`)
+		write(t, stub, "pulls-"+mergeB+".json", pullOf(mergeA, head, mergedAt, "formula-rollback"))
+		approve(t, stub, 2, fakeComment{9, ownerLogin, approvalBody(head, "tool.rb 2.0.0 -> 1.5.0"), t0, t0}, "admin")
 		if got := run(t, a, a.publish(nil), "push", a.oldBase, stub, bin); got.found != "1" {
-			t.Fatalf("%+v", got)
-		}
-	})
-	t.Run("labels unreadable: no rollback", func(t *testing.T) {
-		t.Parallel()
-		bin, stub := stubs(t)
-		a := newAfterMerge(t)
-		a.merge("pr-a")
-		a.merge("pr-b")
-		write(t, stub, "pulls.fail", "")
-		got := run(t, a, a.publish(nil), "push", a.oldBase, stub, bin)
-		if got.found != "1" || !strings.Contains(got.out, "::warning::cannot read the pull request") {
 			t.Fatalf("%+v", got)
 		}
 	})
@@ -452,8 +554,21 @@ func TestExampleWorkflow_AfterMerge(t *testing.T) {
 			t.Fatalf("%+v", got)
 		}
 		write(t, stub, "prs", "2 "+a.git("rev-parse", "pr-b")+" true\n")
+		if got := run(t, a, work, "workflow_dispatch", "", stub, bin); got.found != "1" {
+			t.Fatalf("the label alone: %+v", got)
+		}
+		approve(t, stub, 2, fakeComment{9, ownerLogin, approvalBody(a.git("rev-parse", "pr-b"), "tool.rb 2.0.0 -> 1.5.0"), t0, t0}, "admin")
 		if got := run(t, a, work, "workflow_dispatch", "", stub, bin); got.found != "0" || got.errors != "0" {
-			t.Fatalf("labelled: %+v", got)
+			t.Fatalf("labelled and approved: %+v", got)
+		}
+		write(t, stub, "prs", "2 "+a.git("rev-parse", "pr-b")+" false\n")
+		if got := run(t, a, work, "workflow_dispatch", "", stub, bin); got.found != "1" {
+			t.Fatalf("approved, label removed: %+v", got)
+		}
+		write(t, stub, "prs", "2 "+a.git("rev-parse", "pr-b")+" true\n")
+		write(t, stub, "comments.fail", "")
+		if got := run(t, a, work, "workflow_dispatch", "", stub, bin); got.found != "1" || !strings.Contains(got.out, "cannot read the rollback approvals of #2") {
+			t.Fatalf("approvals unreadable: %+v", got)
 		}
 	})
 	t.Run("pull requests unreadable: the job fails, no issue", func(t *testing.T) {
@@ -498,4 +613,12 @@ func TestExampleWorkflow_AfterMerge(t *testing.T) {
 			t.Fatalf("%+v", got)
 		}
 	})
+}
+
+// approve stubs the approval comment c on pull request n and the
+// permission of its author.
+func approve(t *testing.T, stub string, n int, c fakeComment, permission string) {
+	t.Helper()
+	writeJSON(t, filepath.Join(stub, "comments-"+strconv.Itoa(n)+".json"), []map[string]any{c.json()})
+	writeJSON(t, filepath.Join(stub, "perm-"+c.login+".json"), perm(c.login, permission, permission))
 }

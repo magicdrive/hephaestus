@@ -33,7 +33,9 @@ import (
 // formula the guard cannot read (never overridable).
 
 // overridable findings: an intentional rollback, a removal or a re-release
-// is a decision someone can take (and label); the guard reports it.
+// is a decision someone can take; -allow-downgrade (kept for
+// compatibility) reports them as warnings. An authorized rollback
+// (approval.go) lowers only the one downgrade it names.
 const overridable = true
 
 // heredocStartRe matches the start of a heredoc (<<~EOS, <<-EOS, <<EOS,
@@ -63,7 +65,8 @@ type treeEntry struct {
 	content []byte
 }
 
-func (g gitRepo) checkStrict(from, head string, files []string, allow bool, w io.Writer) (bool, error) {
+func (g gitRepo) checkStrict(from, head string, files []string, opt options, w io.Writer) (bool, error) {
+	allow := opt.allow
 	oldDir, oldBad, err := g.formulaDir(from)
 	if err != nil {
 		return false, err
@@ -135,13 +138,14 @@ func (g gitRepo) checkStrict(from, head string, files []string, allow bool, w io
 				return false, err
 			}
 		}
-		judge(p, o, n, report, w)
+		judge(p, o, n, report, opt.rollbacks, w)
 	}
 	return failed, nil
 }
 
-// judge reports the findings of one formula, o before and n after.
-func judge(p string, o, n treeEntry, report func(string, bool, string, string), w io.Writer) {
+// judge reports the findings of one formula, o before and n after. A
+// downgrade that rb authorizes exactly is a warning; nothing else is.
+func judge(p string, o, n treeEntry, report func(string, bool, string, string), rb *rollbacks, w io.Writer) {
 	switch {
 	case !o.exists && !n.exists:
 		return
@@ -153,7 +157,7 @@ func judge(p string, o, n treeEntry, report func(string, bool, string, string), 
 		if o.regular {
 			v = orNone(tap.FormulaVersion(o.content))
 		}
-		report(p, overridable, fmt.Sprintf("%s: formula removed (was %s)", p, v), "Removing a formula is a decision for the rollback label (formula-rollback)")
+		report(p, overridable, fmt.Sprintf("%s: formula removed (was %s)", p, v), "A rollback approval never covers a removal; removing a formula is the owner's decision outside this check")
 		return
 	}
 	newV := tap.FormulaVersion(n.content)
@@ -186,6 +190,11 @@ func judge(p string, o, n treeEntry, report func(string, bool, string, string), 
 	case !ok:
 		report(p, overridable, fmt.Sprintf("%s: cannot compare version %s with %s (not semantic versions)", p, orNone(oldV), newV), "Check the order by hand")
 	case c > 0:
+		if e := rb.match(p, oldV, newV); e != nil {
+			e.used = true
+			annotate(w, "warning", p, fmt.Sprintf("%s: version goes down from %s to %s (authorized rollback: %s)", p, oldV, newV, e.describe()))
+			return
+		}
 		report(p, overridable, fmt.Sprintf("%s: version goes down from %s to %s", p, oldV, newV), downgradeAdvice)
 	case c == 0:
 		if what := artifactChange(o.content, n.content); what != "" {
