@@ -328,6 +328,7 @@ Formula はマニフェストから生成します。URL は公開したリリ�
 | [Threat model](docs/security/threat-model.md) | 資産、攻撃者、対策、残余リスク |
 | [Development](docs/development.md) | make ターゲット、テスト、golden ファイル、fuzz、E2E |
 | [Release preflight](docs/preflight.md) | `hephaestus preflight --tag vX.Y.Z`：タグを push する前の読み取り専用チェック |
+| [Formula downgrade guard](docs/tap-version-guard.md) | 複数のリリースの formula PR、マージ順、tap の CI チェック、意図的なロールバック |
 | [Recovering a release](docs/recovery.md) | `hephaestus status`、失敗箇所ごとの安全な復旧 |
 | [Publishing a release](docs/publish.md) | `hephaestus publish vX.Y.Z` と、各プロジェクトの `make publish vX.Y.Z`：規約、安全のためのルール、復旧 |
 | [Releasing](docs/releasing.md) | Hephaestus 自身のリリース手順（`make publish vX.Y.Z`、プレリリース、失敗時の復旧） |

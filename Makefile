@@ -34,6 +34,11 @@ install:
 test:
 	@$(GO) test -count=1 ./...
 
+# Run the tests with no network (Linux: network namespace, needs sudo)
+.PHONY: test-offline
+test-offline:
+	@scripts/test-offline.sh
+
 # Run tests verbosely with a clean test cache
 .PHONY: test-verbose
 test-verbose:

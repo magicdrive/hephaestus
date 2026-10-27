@@ -34,6 +34,19 @@
 // formula is then updated with a warning. This applies to both modes (in
 // pull request mode the base branch is compared).
 //
+// Open pull requests (pull request mode): the base branch is not the only
+// place a version can come from. When the pull requests of two releases are
+// open at once, merging the older one last downgrades the formula. Before
+// proposing, the other open pull requests against the base branch are read
+// (the formula at their head commit): when one proposes a newer version,
+// nothing is written and the result is skipped as for a newer base (unless
+// allow_downgrade is set); one with an older version is named in a warning
+// and in the new pull request's body, which also states that no older
+// version may be merged after it. The scan is repeated after the pull
+// request is opened, so two runs racing each other still warn about each
+// other. Only the tap's own CI can enforce the merge order: see
+// cmd/tap-version-guard.
+//
 // Commit author: when commit_author is unset the commit is attributed to the
 // token's identity (GitHub's default for API commits). Unlike GoReleaser,
 // which defaults to "goreleaserbot <bot@goreleaser.com>", Hephaestus does not
@@ -88,6 +101,8 @@ const (
 	// maxCompareFiles is the number of files GitHub lists at most in a
 	// comparison.
 	maxCompareFiles = 300
+	// maxRivalPulls bounds the open pull requests whose formula is read.
+	maxRivalPulls = 100
 )
 
 // Input configures Run.
@@ -164,6 +179,8 @@ type publisher struct {
 	res     Result
 	// downOld and downNew are the versions behind a skipped downgrade.
 	downOld, downNew string
+	// older are the open pull requests proposing an older version.
+	older []rival
 }
 
 func (p *publisher) logf(format string, args ...any) {
@@ -526,6 +543,21 @@ func (p *publisher) pullRequest(ctx context.Context) error {
 		return nil
 	}
 	existedOnBase := onBase != nil
+	var baseContent []byte
+	if onBase != nil {
+		baseContent = onBase.Content
+	}
+	headLabel := headOwner + ":" + head
+
+	// Other open pull requests for this formula: a newer one is a
+	// downgrade as a newer base is.
+	seen, err := p.checkRivals(ctx, baseOwner, baseRepo, base, headLabel, baseContent, nil)
+	if err != nil {
+		return err
+	}
+	if p.res.Status == StatusSkipped {
+		return nil
+	}
 
 	// 2. The head branch, created from the base branch's HEAD if missing.
 	_, err = p.c.GetRef(ctx, headOwner, headRepo, "heads/"+head)
@@ -586,6 +618,13 @@ func (p *publisher) pullRequest(ctx context.Context) error {
 		}
 		p.res.PullRequestURL = pr.HTMLURL
 		wrote = true
+	}
+	if !p.in.DryRun {
+		// Pull requests opened meanwhile (a concurrent release) are only
+		// reported: this one exists now.
+		if _, err := p.checkRivals(ctx, baseOwner, baseRepo, base, headLabel, baseContent, seen); err != nil {
+			return err
+		}
 	}
 
 	switch {
@@ -880,10 +919,7 @@ func (p *publisher) warn(format string, args ...any) {
 // in the tap) with an older version, in which case Reason is set. Versions
 // that cannot be compared, and allow_downgrade, produce warnings instead.
 func (p *publisher) downgrade(existing []byte) bool {
-	oldV, newV := formulaVersion(existing), formulaVersion(p.content)
-	if newV == "" {
-		newV = p.in.Vars.Version
-	}
+	oldV, newV := formulaVersion(existing), p.version()
 	if oldV == "" || newV == "" || oldV == newV {
 		return false
 	}
@@ -919,7 +955,7 @@ func (p *publisher) skipDowngrade() {
 // openPull creates the pull request. CreatePull is never retried blindly: a
 // 422 (e.g. "A pull request already exists") is answered by searching again.
 func (p *publisher) openPull(ctx context.Context, baseOwner, baseRepo, headOwner, head, headRef, base string) (*github.PullRequest, error) {
-	body := fmt.Sprintf("Update the %s formula to version %s.\n\nOpened by Hephaestus.", p.b.Name, p.in.Vars.Version)
+	body := p.pullBody()
 	pr, err := p.c.CreatePull(ctx, baseOwner, baseRepo, github.NewPullRequest{
 		Title: p.p.Message, Head: headRef, Base: base, Body: body, Draft: p.p.Draft,
 	})
@@ -934,4 +970,131 @@ func (p *publisher) openPull(ctx context.Context, baseOwner, baseRepo, headOwner
 		}
 	}
 	return nil, hint(fmt.Errorf("opening a pull request on %s/%s: %w", baseOwner, baseRepo, err), baseOwner+"/"+baseRepo)
+}
+
+// version is the version of the formula being published.
+func (p *publisher) version() string {
+	if v := formulaVersion(p.content); v != "" {
+		return v
+	}
+	return p.in.Vars.Version
+}
+
+// rival is another open pull request against the base branch whose head
+// has a version of the formula other than the base branch's.
+type rival struct {
+	Number  int
+	URL     string
+	Version string
+}
+
+// checkRivals reads the formula at the head of every other open pull
+// request against base and compares its version with the one being
+// published. A newer one makes the result skipped (a pre-check, seen ==
+// nil) unless allow_downgrade is set; anything else is a warning. Pull
+// requests in seen were reported already. It returns the pull requests it
+// looked at.
+func (p *publisher) checkRivals(ctx context.Context, baseOwner, baseRepo, base, headLabel string, baseContent []byte, seen map[int]bool) (map[int]bool, error) {
+	full := baseOwner + "/" + baseRepo
+	prs, err := p.c.ListPulls(ctx, baseOwner, baseRepo, github.ListPullsOptions{Base: base, State: "open"})
+	if err != nil {
+		return nil, hint(fmt.Errorf("listing open pull requests of %s: %w", full, err), full)
+	}
+	pre := seen == nil
+	looked := map[int]bool{}
+	ours := p.version()
+	n := 0
+	for _, pr := range prs {
+		if pr.Base.Ref != base || strings.EqualFold(pr.Head.Label, headLabel) || seen[pr.Number] {
+			continue
+		}
+		looked[pr.Number] = true
+		if n++; n > maxRivalPulls {
+			p.warn("more than %d open pull requests on %s@%s: the others were not checked for older or newer versions of %s", maxRivalPulls, full, base, p.p.Path)
+			break
+		}
+		if pr.Head.SHA == "" {
+			p.warn("cannot read the head of open pull request %s; check by hand that it does not change %s", pr.HTMLURL, p.p.Path)
+			continue
+		}
+		fc, err := p.c.GetContents(ctx, baseOwner, baseRepo, p.p.Path, pr.Head.SHA)
+		if errors.Is(err, github.ErrNotFound) {
+			continue // the pull request does not have the formula
+		}
+		if err != nil {
+			return nil, hint(fmt.Errorf("reading %s at the head of %s: %w", p.p.Path, pr.HTMLURL, err), full)
+		}
+		if bytes.Equal(fc.Content, baseContent) || bytes.Equal(fc.Content, p.content) {
+			continue // does not change the formula, or proposes this very one
+		}
+		v := formulaVersion(fc.Content)
+		if v == "" {
+			continue
+		}
+		r := rival{Number: pr.Number, URL: pr.HTMLURL, Version: v}
+		a, ok1 := parseSemver(v)
+		b, ok2 := parseSemver(ours)
+		if !ok1 || !ok2 {
+			p.warn("open pull request %s changes %s to version %q, which cannot be compared with %q: merge them in version order", r.URL, p.p.Path, v, ours)
+			continue
+		}
+		switch c := compareSemver(a, b); {
+		case c > 0:
+			switch {
+			case !pre:
+				p.warn("open pull request %s (opened meanwhile) proposes version %s of %s, newer than %s: do not merge %s after it; close this one", r.URL, v, p.p.Path, ours, p.p.Path)
+			case p.b.AllowDowngrade:
+				p.warn("open pull request %s proposes version %s of %s, newer than %s: merging this one after it downgrades the formula (allow_downgrade is set)", r.URL, v, p.p.Path, ours)
+			default:
+				p.downOld, p.downNew = v, ours
+				p.res.Reason = fmt.Sprintf("open pull request %s already proposes version %s of %s, newer than %s; not proposing an older one (set brews[].allow_downgrade: true to force)", r.URL, v, p.p.Path, ours)
+				p.res.Status, p.res.NoOp = StatusSkipped, true
+				p.warn("formula %s: open pull request %s proposes a newer version (%s); not proposing %s (set brews[].allow_downgrade: true to force)", p.b.Name, r.URL, v, ours)
+				p.logf("skipped: %s", p.res.Reason)
+				return looked, nil
+			}
+		case c == 0:
+			p.warn("open pull request %s also proposes version %s of %s: merge only one of them", r.URL, v, p.p.Path)
+		default:
+			p.older = append(p.older, r)
+			p.warn("open pull request %s proposes older version %s of %s: close it; merging it after %s downgrades the formula", r.URL, v, p.p.Path, ours)
+		}
+	}
+	return looked, nil
+}
+
+// pullBody is the body of a new formula pull request. It states the merge
+// order and names the open pull requests with older versions; the marker
+// comment lets a tap's CI or a reviewer find the formula and version.
+func (p *publisher) pullBody() string {
+	v := p.version()
+	var b strings.Builder
+	fmt.Fprintf(&b, "Update the %s formula to version %s.\n\n", p.b.Name, v)
+	fmt.Fprintf(&b, "**Merge order:** do not merge a pull request with an older version of %s after this one: it would downgrade the formula. Close older ones instead.\n", p.p.Path)
+	if len(p.older) > 0 {
+		b.WriteString("\nOlder open pull requests to close:\n")
+		for _, r := range p.older {
+			fmt.Fprintf(&b, "- #%d (%s)\n", r.Number, r.Version)
+		}
+	}
+	fmt.Fprintf(&b, "\n<!-- hephaestus-formula: %s %s -->\n\nOpened by Hephaestus.", p.p.Path, v)
+	return b.String()
+}
+
+// FormulaVersion returns the version a formula declares, "" when it
+// declares none (see formulaVersion). It is what the downgrade checks and
+// cmd/tap-version-guard compare.
+func FormulaVersion(content []byte) string { return formulaVersion(content) }
+
+// CompareVersions orders two semantic versions (an optional leading "v")
+// by precedence: prerelease below release, numeric identifiers numerically,
+// build metadata ignored. ok is false when either is not a semantic
+// version.
+func CompareVersions(a, b string) (c int, ok bool) {
+	x, ok1 := parseSemver(a)
+	y, ok2 := parseSemver(b)
+	if !ok1 || !ok2 {
+		return 0, false
+	}
+	return compareSemver(x, y), true
 }

@@ -11,6 +11,7 @@ Homebrew only for the end-to-end test.
 | `make install` | `go install` with version information |
 | `make test` | `go test -count=1 ./...` |
 | `make test-verbose` | Clean the test cache, run tests verbosely |
+| `make test-offline` | `go test -count=1 ./...` with no network (Linux, sudo; `scripts/test-offline.sh`) |
 | `make race` | `go test -race -count=1 ./...` (needs cgo) |
 | `make vet` | `go vet` for the host and for `GOOS=windows` |
 | `make fmt-check` | Fail when `gofmt -l .` lists files |
@@ -33,12 +34,24 @@ enforces it.
 
 | Kind | Where | Notes |
 | --- | --- | --- |
-| Unit | `*_test.go` beside the code | No network, no wall-clock dependence, files under `t.TempDir()` |
+| Unit | `*_test.go` beside the code | No network (enforced: `scripts/test-offline.sh`, CI job `test-offline`), no wall-clock dependence, files under `t.TempDir()` |
 | Golden | `internal/homebrew/testdata/*.golden` | Generated formulae; also parsed with `ruby -c` when Ruby is installed (`TestGoldenRubySyntax`) |
 | Integration | `internal/archive` (archives written and read back with Go and with system `tar`/`unzip`), `internal/release` and `internal/tap` (stateful fake GitHub servers), `cmd/hephaestus` (CLI runs against temporary projects) | |
 | Fuzz | `Fuzz*` functions in `config`, `manifest`, `pathutil`, `glob`, `homebrew` | Discovered automatically by `scripts/fuzz.sh` |
 | Repository | `repo_test.go` | Pinned actions, read-only default permissions, release gating, Makefile/CI tool versions, documented action inputs and outputs, relative links, configuration examples in Markdown |
 | End-to-end | `scripts/homebrew-e2e.sh`, fixture in `testdata/e2e/fixture` | Real `brew` |
+
+### No network in unit and integration tests
+
+`go test ./...` must pass without any network: fake GitHub servers listen
+on loopback, and nothing reaches the module proxy or downloads a toolchain.
+`scripts/test-offline.sh` (`make test-offline`, Linux, needs sudo) downloads
+the modules first, then runs `go test -count=1 ./...` in a new network
+namespace with loopback only, `GOPROXY=off`, `GOFLAGS=-mod=mod` and
+`GOTOOLCHAIN=local`; it fails if the namespace can reach an outside address
+or resolve a name. The CI job `test-offline` runs it on every change. Tests
+that check public GitHub (published releases, attestations, the production
+tap) are separate end-to-end jobs; see [Network use in CI](#network-use-in-ci).
 
 ### Golden files
 
@@ -89,11 +102,39 @@ it created on exit; CI runs it on macOS and Linux.
 ## CI
 
 `.github/workflows/ci.yml` (push to `main`, pull requests, and as the release
-gate): lint, tests on three OSes, race tests, fuzz smoke, snapshot,
+gate): lint, tests on three OSes, tests without network, race tests, fuzz smoke, snapshot,
 Homebrew E2E, a run of the action itself, and `ci-gate`, the single required
 check. `.github/workflows/ci-extended.yml` (weekly, manual, `ci-extended`
 label): shuffled tests on four platforms, repeated process tests, 60 s per
 fuzz target.
+
+### Network use in CI
+
+Every job checks out the repository and (except the jobs that run the
+action without Go) sets up Go with `actions/setup-go`, which downloads the
+toolchain unless the runner image has it, and restores and saves the module
+cache through the Actions cache service. Beyond that:
+
+| Job | Network beyond checkout and setup-go | Needed |
+| --- | --- | --- |
+| `lint` | Modules of golangci-lint and govulncheck (`go run pkg@version`, module proxy and checksum database); vulnerability database (vuln.go.dev) | Yes: the tools and the database are the check |
+| `test` | Modules for the build (module proxy); the tests themselves none | Modules only; removable with a module cache |
+| `test-offline` | Modules before the tests; the tests run in a namespace with loopback only | Modules only |
+| `completion` | `apt-get` (zsh, fish) on Linux, `brew install fish` on macOS | Yes: real shells |
+| `race` | `stable` Go for one matrix leg | Yes: tests the next Go |
+| `fuzz-smoke`, `snapshot` | Modules; artifact upload on fuzz failure | Modules only |
+| `homebrew-e2e` | Homebrew (`brew audit --strict` and `brew install` of a local tap; `brew install fish`, `apt-get`); the v1.0.0 formula of the production tap at a fixed commit and its release archive | Yes: real Homebrew and the upgrade from a published version |
+| `action-binary` | Modules; artifact upload | Artifact service only |
+| `action-install` | None | — |
+| `e2e-action-install` | Published v1.1.0 and v1.2.0-rc.1 release assets, `gh attestation verify` (GitHub API, Sigstore trust root) | Yes: the real release path |
+| `action-release` | The published action v1.2.0-rc.1, its release binary and attestation | Yes: the action as callers run it |
+| `action-smoke`, `action-boundary`, `action-isolation` | Artifact download of this commit's binaries; `setup-go` of the caller's Go for the fixture (no cache) | Artifact service and the caller's Go |
+| `action-isolation-detects-v1-1-0` | The published action v1.1.0, which installs Go and compiles Hephaestus | Yes: shows the isolation check can fail |
+| `ci-gate` | None | — |
+
+The release workflows (`release.yml`, `release-rehearsal.yml`) need GitHub
+(release, attestations, the tap) by design; `verify-release.yml` downloads a
+published release.
 
 ## Releasing
 

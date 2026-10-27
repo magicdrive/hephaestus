@@ -306,8 +306,15 @@ the tap:
 - The formula pull request is verified (only the formula changes, every URL
   and SHA-256 is this release's) and **never merged** by publish: review and
   merge it on the tap.
-- Two publish processes in one clone are prevented by a lock file in the git
-  directory (`hephaestus-publish.lock`). Across clones and machines the tag
+- Two publish processes in one clone (also in two worktrees of it) are
+  prevented by an operating system file lock (flock on Unix, LockFileEx on
+  Windows) on `hephaestus-publish.lock` in the git common directory. The
+  system releases it when the process exits, also when it is killed
+  (`SIGKILL`) or crashes, so a killed publish never blocks the next one and
+  the file never needs to be removed; a running publish's lock is never
+  taken over. The file only records the holder (pid, host, start time) for
+  the error message. On a file system without file locks (some NFS or FUSE
+  mounts) publish refuses to run. Across clones and machines the tag
   on GitHub decides: the push is never forced and the tag ruleset forbids
   updating it, so when another clone pushed the tag first, publish follows
   that release if the tag names the commit it checked, and otherwise stops
