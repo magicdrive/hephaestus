@@ -195,7 +195,14 @@ func TestViolationsAreDetected(t *testing.T) {
 		{"secrets indexed", sub("          command: release\n", "          command: release\n          tap-token: ${{ secrets['HOMEBREW_TAP_GITHUB_TOKEN'] }}\n"), nil, nil,
 			IDTap, "indexes or serializes secrets"},
 
+		{"rehearsal publishes", sub("          stages: formula,tap\n          dry-run: \"true\"\n", "          stages: formula,tap\n"), nil, nil,
+			IDTap, `step "Rehearse the formula and tap pull request (read-only)" is not a dry run`},
+
 		// workflow.release
+		{"release step made conditional", sub("      - name: Publish the GitHub release\n", "      - name: Publish the GitHub release\n        if: steps.plan.outputs.tap == 'publish'\n"), nil, nil,
+			IDRelease, `step "Publish the GitHub release" publishes the release with if:`},
+		{"release step may fail", sub("      - name: Publish the GitHub release\n", "      - name: Publish the GitHub release\n        continue-on-error: true\n"), nil, nil,
+			IDRelease, "publishes the release with continue-on-error"},
 		{"another trigger", sub("on:\n  push:\n    tags: [\"v*\"]\n", "on:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n"), nil, nil,
 			IDRelease, "runs on workflow_dispatch"},
 		{"branch pushes", sub("    tags: [\"v*\"]\n", "    tags: [\"v*\"]\n    branches: [master]\n"), nil, nil,

@@ -277,6 +277,33 @@ func publishes(s *step) bool {
 	return false
 }
 
+// publishesRelease reports whether a publishing step publishes the GitHub
+// release (not only the tap).
+func publishesRelease(s *step) bool {
+	if isHephaestusAction(s.uses) {
+		cmd, st := s.with["command"], s.with["stages"]
+		return cmd == "release" || ((cmd == "" || cmd == "run") && (st == "" || st == "all" || strings.Contains(st, "release")))
+	}
+	return strings.Contains(s.run, "release")
+}
+
+// dryRun reports whether a step runs Hephaestus as a dry run only.
+func dryRun(s *step) bool {
+	if isHephaestusAction(s.uses) {
+		return s.with["dry-run"] == "true"
+	}
+	ms := cliPublishRe.FindAllStringSubmatch(s.run, -1)
+	if len(ms) == 0 {
+		return strings.Contains(s.run, "--dry-run")
+	}
+	for _, m := range ms {
+		if !strings.Contains(m[2], "--dry-run") {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *checker) findPublishingJob() {
 	var jobs []*job
 	for _, j := range c.release.jobs {
@@ -378,8 +405,14 @@ func (c *checker) checkRelease() Result {
 		p = append(p, fmt.Sprintf("%s: the publishing job %s has continue-on-error", w.path, j.id))
 	}
 	for _, s := range c.pubSteps {
-		if truthy(s.contOnErr) && strings.Contains(strings.ToLower(s.run+s.with["command"]+s.with["stages"]), "release") {
+		if !publishesRelease(s) {
+			continue
+		}
+		if truthy(s.contOnErr) {
 			p = append(p, fmt.Sprintf("%s: job %s step %s publishes the release with continue-on-error: a failed release would pass the run", w.path, j.id, s.label()))
+		}
+		if cond := normalizeCond(s.cond); cond != "" && cond != "success()" {
+			p = append(p, fmt.Sprintf("%s: job %s step %s publishes the release with if: %q: a skipped release step passes the run", w.path, j.id, s.label(), s.cond))
 		}
 	}
 	return Result{Problems: p, Message: fmt.Sprintf("job %s publishes, in environment %s, after %s", j.id, j.environment, strings.Join(calls, ", ")),
@@ -707,6 +740,9 @@ func (c *checker) checkTap() Result {
 			p = append(p, fmt.Sprintf("%s: no step named %q: hephaestus publish verifies the tap by the names %q and %q, each with if: %s", w.path, n, TapRehearsalStep, TapPublishStep, TapCondition))
 		case s != nil && normalizeCond(s.cond) != TapCondition:
 			p = append(p, fmt.Sprintf("%s: step %q has if: %q; want exactly if: %s", w.path, n, s.cond, TapCondition))
+		}
+		if s != nil && n == TapRehearsalStep && !dryRun(s) {
+			p = append(p, fmt.Sprintf("%s: step %q is not a dry run (dry-run: \"true\" / --dry-run): it would write to the tap before the release is published", w.path, n))
 		}
 	}
 	msg := fmt.Sprintf("%s reaches %d planned steps (%d get its value), each with if: %s", secret, refSteps, tokenSteps, TapCondition)
