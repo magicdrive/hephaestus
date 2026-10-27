@@ -5,6 +5,16 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
 ## Unreleased
 
+- **Merge gate**: new `cmd/pr-gate` decides whether a pull request may be
+  merged and, only with `-merge`, merges it pinned to the reviewed head
+  (`PUT pulls/{n}/merge` with `sha`, sent once) and verifies the merge
+  commit's parents. Every condition fails closed: open, not a draft, exact
+  head and base commits, behind 0, mergeable and clean (bounded re-reads
+  while GitHub computes it), required checks read from the branch rules and
+  branch protection (or named with `-require`), every check, status and
+  workflow run completed, the latest attempt of each check decides, and a
+  required check is satisfied only by `success` (not `skipped` or
+  `neutral`). Without `-merge` it only reads (docs/pr-gate.md).
 - **Release workflow checks**: `hephaestus preflight` reads the release
   workflow (`preflight.workflow`, default `.github/workflows/release.yml`)
   and the CI workflow it runs from the work tree, and checks the
@@ -35,6 +45,15 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   warning. New `cmd/tap-version-guard` and
   `examples/workflows/tap-version-guard.yml` let a tap's CI fail a change
   that lowers a formula's version (docs/tap-version-guard.md).
+- The publish lock also excludes older versions that locked with
+  `O_EXCL` on the same file: they find the file and refuse, and a file one
+  of them wrote (`pid N`) is now refused instead of taken over, since its
+  holder may still be running (it is never judged by the pid; empty the
+  file once no older publish runs). Content neither version writes is
+  refused too. Publish refuses a clone on a network or user-space file
+  system (NFS, SMB, WebDAV, FUSE, 9p, a network drive), where a lock that
+  succeeds may hold only on this host, and checks right before creating and
+  pushing the tag that the lock file is still the one it locked.
 - The publish lock is an operating system file lock (flock on Unix,
   LockFileEx on Windows) instead of a file created with `O_EXCL`. A publish
   killed with `SIGKILL` (or crashed) left `hephaestus-publish.lock` behind

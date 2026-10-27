@@ -232,6 +232,18 @@ Any repository can inspect a release with `hephaestus status --tag vX.Y.Z`;
   the lock by itself.
 - **`cannot lock .../hephaestus-publish.lock`**: the file system of the
   clone does not support file locks; publish from a clone on a local disk.
+- **`refusing to lock ...: ... is on a nfs file system`** (or smb, fuse,
+  a network drive): a lock there may exclude only this host; publish from a
+  clone on a local disk.
+- **`... was written by an older hephaestus ("pid N")`**: an older version
+  (which locked by creating the file) may still be publishing from this
+  clone. Check (`ps`) that no older `make publish` runs in this clone or
+  its worktrees, then empty the file: `: > "$(git rev-parse
+  --git-common-dir)/hephaestus-publish.lock"`. Do not remove it.
+- **`publish lock ... was removed while held`** (or replaced, rewritten):
+  someone removed the lock file while publish ran, so another publish could
+  have locked a new one. Nothing was pushed; delete the local tag it names
+  and run publish again once no other publish runs.
 - **Run stays queued**: an environment approval (required reviewers) or
   runner availability; approve it on the run page, `make publish-watch` keeps
   following it.

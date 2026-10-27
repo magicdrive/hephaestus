@@ -313,8 +313,19 @@ the tap:
   (`SIGKILL`) or crashes, so a killed publish never blocks the next one and
   the file never needs to be removed; a running publish's lock is never
   taken over. The file only records the holder (pid, host, start time) for
-  the error message. On a file system without file locks (some NFS or FUSE
-  mounts) publish refuses to run. Across clones and machines the tag
+  the error message. On a file system without file locks, and on a network
+  or user-space file system (NFS, SMB, WebDAV, FUSE, 9p, a network drive)
+  where a lock that succeeds may hold only on this host (NFS mounted with
+  `nolock`), publish refuses to run. An older hephaestus locked by creating
+  the same file with `O_EXCL`: it refuses while the file exists, which is
+  always once this version has run, and this version refuses a file an
+  older one wrote (`pid N`) — it cannot tell whether that publish still
+  runs, and never judges by the pid. Check that no older publish runs,
+  then empty the file (`: > .git/hephaestus-publish.lock`; do not remove
+  it). Right before it creates and pushes the tag, publish checks that the
+  file is still the one it locked; if it was removed or replaced, another
+  publish may hold a lock on the new file, and nothing is pushed. Across
+  clones and machines the tag
   on GitHub decides: the push is never forced and the tag ruleset forbids
   updating it, so when another clone pushed the tag first, publish follows
   that release if the tag names the commit it checked, and otherwise stops

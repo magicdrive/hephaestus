@@ -443,6 +443,7 @@ Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
 | [Development](docs/development.md) | Make targets, tests, golden files, fuzzing, E2E |
 | [Release preflight](docs/preflight.md) | `hephaestus preflight --tag vX.Y.Z`: read-only checks before pushing a tag |
 | [Formula downgrade guard](docs/tap-version-guard.md) | Open formula pull requests of several releases, merge order, the tap's CI check, rollbacks |
+| [Merge gate](docs/pr-gate.md) | `cmd/pr-gate`: fail-closed checks before merging a pull request, and a merge pinned to the reviewed head |
 | [Recovering a release](docs/recovery.md) | `hephaestus status`, every failure point and its safe recovery |
 | [Publishing a release](docs/publish.md) | `hephaestus publish vX.Y.Z` and `make publish vX.Y.Z` in your project: conventions, safety rules, recovery |
 | [Releasing](docs/releasing.md) | How Hephaestus releases itself: `make publish vX.Y.Z`, prereleases, recovery |
