@@ -5,6 +5,25 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
 ## Unreleased
 
+- **Release workflow checks**: `hephaestus preflight` reads the release
+  workflow (`preflight.workflow`, default `.github/workflows/release.yml`)
+  and the CI workflow it runs from the work tree, and checks the
+  conventions `hephaestus publish` relies on, which were verified only after
+  the release was published: `workflow.release` (tag pushes only, read-only
+  default permissions, one publishing job in an environment that needs the
+  CI job), `workflow.pins` (every action pinned to a commit SHA, Hephaestus
+  pins with their release as a comment and CI on the release's commit),
+  `workflow.tap` (the tap token only in the two named tap steps, after the
+  plan step, with `if: steps.plan.outputs.tap == 'publish'`),
+  `workflow.attestation` (every planned asset attested before publishing)
+  and `workflow.ci-gate` (`ci-gate` needs every CI job, `if: always()`).
+  They read YAML only, so they work for any language, and fail closed on
+  what they cannot read unambiguously. They are **warnings**: a violation
+  makes the preflight `WARN` (exit 0) and fails `--strict`, and so
+  `hephaestus publish` now stops before pushing the tag instead of after
+  publishing; `preflight.skip` turns one off. `hephaestus check
+  --workflows` runs the same checks without a tag (for pull request CI) and
+  exits 1 on a violation.
 - The tap stage verifies a pull request head branch that someone else
   created between its check that the branch is missing and its create (a
   422 "Reference already exists"), as it verifies any existing branch: it

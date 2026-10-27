@@ -1,0 +1,153 @@
+name: Release
+
+# A v* tag releases kjak with Hephaestus (hephaestus.yaml):
+#   ci      the whole ci.yml on the tagged commit;
+#   build   build, archive and checksum, with a read-only token and no
+#           secrets; dist/ (with its manifest) is verified and handed on;
+#   release in the `release` environment, without building anything:
+#           plan the release (prerelease? tap?), rehearse the tap pull
+#           request, attest the archives, publish the GitHub release
+#           (immutable once published), then open the formula pull request
+#           on magicdrive/homebrew-tap. A prerelease (v0.2.0-rc.1) skips
+#           both tap steps, which then never receive the tap token.
+# The step names, the plan step and the attestations are conventions that
+# `make publish` (hephaestus publish) verifies; see docs/release.md.
+# Recovery: docs/release.md.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # QUALITY GATES: exactly the CI of every pull request (as in ark).
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: [ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: false  # the release is built without a restored cache
+
+      - name: Build, archive and checksum
+        uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: run
+          stages: build,archive,checksum
+          fresh: "true"
+          github-token: ""
+
+      # The five archives, their layout, static linking, and the binary for
+      # this runner prints `kjak version <tag>`.
+      - name: Verify archives
+        run: sh scripts/verify-dist.sh dist "$GITHUB_REF_NAME"
+
+      - name: Upload dist
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [ci, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write      # create the release and upload its assets
+      id-token: write      # the build provenance attestation
+      attestations: write
+    steps:
+      # hephaestus.yaml only: no project code is built or run in this job.
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download dist
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Checksums of the downloaded archives
+        working-directory: dist
+        run: sha256sum -c kjak_checksums.txt
+
+      # What this tag releases, from hephaestus.yaml only (no token, no
+      # project code): prerelease=true|false and tap=publish|skip
+      # (skip_upload: auto skips the tap for a prerelease). The action
+      # refuses a prerelease whose plan would update the tap.
+      - name: Plan the release
+        id: plan
+        uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: plan
+
+      # A dry run without a tap token cannot read the tap and would pass;
+      # this checks the secret is set without reading it into a shell.
+      - name: The tap token is set
+        if: steps.plan.outputs.tap == 'publish'
+        env:
+          TAP_TOKEN_SET: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN != '' }}
+        run: |
+          [ "$TAP_TOKEN_SET" = true ] || { echo "::error::HOMEBREW_TAP_GITHUB_TOKEN is not set in the release environment"; exit 1; }
+
+      # Before the release becomes public (and immutable): the tap token, the
+      # tap's layout, a newer formula on the tap and the pull request branch.
+      - name: Rehearse the formula and tap pull request (read-only)
+        if: steps.plan.outputs.tap == 'publish'
+        uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: run
+          stages: formula,tap
+          dry-run: "true"
+          github-token: ""
+          tap-token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      # `gh attestation verify <archive> --repo magicdrive/kjak` (README)
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/kjak_*.tar.gz
+            dist/kjak_*.zip
+            dist/kjak_checksums.txt
+
+      - name: Publish the GitHub release
+        uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: release
+
+      # A pre-release (v0.2.0-rc.1) leaves the tap alone: the plan says
+      # tap=skip (skip_upload: auto), and this step does not run.
+      - name: Generate the formula and open a tap pull request
+        if: steps.plan.outputs.tap == 'publish'
+        uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: run
+          stages: formula,tap
+          github-token: ""
+          tap-token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

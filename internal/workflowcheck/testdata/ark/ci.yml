@@ -1,0 +1,610 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  # The release workflow runs these same gates before it publishes anything.
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels its older run; runs of main, and the
+# release's run of these gates (workflow_call from release.yml, under the
+# caller's workflow name and the tag), are never cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The verifications run as independent jobs, in parallel; ci-gate (last)
+  # fails unless every one of them succeeded and the race shards together
+  # ran exactly the tests the unit job ran. Each job keeps its own Go build
+  # cache (setup-go keyed by go.sum and the job's file in .github/ci/cache-keys).
+  # Every test job reports through .github/ci/test-report.py: counts, failures
+  # and skips (with reasons) in the log and the step summary; the full test
+  # lists in the job's test-report artifact.
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: |
+            go.sum
+            .github/ci/cache-keys/lint
+
+      - name: Check formatting
+        run: |
+          # Exclude testdata: fixtures are not real source and some are
+          # intentionally malformed (e.g. internal/golden/testdata/go/broken.go
+          # freezes broken-source extraction behavior and must not be parseable).
+          files=$(git ls-files '*.go' | grep -v '/testdata/' | xargs gofmt -l)
+          if [ -n "$files" ]; then
+            echo "gofmt found unformatted files:"
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
+
+      # Pinned: staticcheck 2026.2.1 (v0.8.1, the latest release) cannot read
+      # Go 1.27.2's export data; this development version can. Return to a
+      # release once one supports Go 1.27.2.
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0-0.dev.0.20261009230814-452d5bb86b45
+
+      - name: Run staticcheck (intelligence core)
+        run: |
+          staticcheck \
+            ./internal/cache/... \
+            ./internal/context/... \
+            ./internal/index/... \
+            ./internal/resolver/... \
+            ./internal/language/... \
+            ./internal/languages/... \
+            ./internal/mcp/... \
+            ./internal/symbol/... \
+            ./internal/reference/... \
+            ./internal/repomap/... \
+            ./internal/impact/... \
+            ./internal/search/... \
+            ./internal/fsroot/... \
+            ./internal/accesspolicy/... \
+            ./internal/safewalk/...
+
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: |
+            go.sum
+            .github/ci/cache-keys/unit
+
+      - name: Install zsh (shell completion tests)
+        # internal/completion runs the completion scripts under real bash and
+        # zsh; without zsh those subtests are skipped.
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
+      - name: Run tests
+        run: |
+          set +e
+          go test -json ./... > "$RUNNER_TEMP/unit.json"
+          rc=$?
+          set -e
+          python3 .github/ci/test-report.py "$RUNNER_TEMP/unit.json" unit-linux "$RUNNER_TEMP/reports"
+          exit $rc
+
+      - name: Upload the test report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-report-unit-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reports
+          if-no-files-found: error
+
+  # `go test -race ./...`, split into the shards of .github/ci/race-shards.txt:
+  # each shard starts its packages slowest first, a package may be split in
+  # two by one regexp (-run in one shard, -skip in another), and "*" takes
+  # every package no line names. Same flags and environment as one run over
+  # ./... (race-shard.py run); ci-gate checks every test ran exactly once.
+  race:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: |
+            go.sum
+            .github/ci/cache-keys/race-${{ matrix.shard }}
+
+      - name: List the shard's packages
+        run: |
+          python3 .github/ci/race-shard.py list "${{ matrix.shard }}" > "$RUNNER_TEMP/packages"
+          cat "$RUNNER_TEMP/packages"
+          [ -s "$RUNNER_TEMP/packages" ]
+
+      - name: Install zsh (shell completion tests)
+        # As in the unit job, for the shard that runs internal/completion.
+        run: |
+          if cut -d' ' -f1 "$RUNNER_TEMP/packages" | grep -qx 'github.com/magicdrive/ark/internal/completion'; then
+            sudo apt-get update && sudo apt-get install -y zsh
+          fi
+
+      - name: Run tests with race detector
+        # The descriptor-anchored file access tests (internal/fsroot,
+        # internal/accesspolicy) need symlinks: make their absence a failure,
+        # not a skip.
+        env:
+          ARK_REQUIRE_SYMLINKS: "1"
+        run: |
+          set +e
+          python3 .github/ci/race-shard.py run "${{ matrix.shard }}" "$RUNNER_TEMP/race.json"
+          rc=$?
+          set -e
+          python3 .github/ci/test-report.py "$RUNNER_TEMP/race.json" "race-${{ matrix.shard }}-linux" "$RUNNER_TEMP/reports"
+          exit $rc
+
+      - name: Upload the test report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-report-race-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reports
+          if-no-files-found: error
+
+  # Every fuzz smoke target of .github/ci/fuzz-smoke.txt, by group: each
+  # alone, for 10 seconds, with -run '^$' (the unit and race jobs run the
+  # packages' tests).
+  fuzz-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: |
+            go.sum
+            .github/ci/cache-keys/fuzz-${{ matrix.group }}
+
+      # go test sets no timeout while it fuzzes (testing stops its alarm
+      # before the fuzzing phase): a wedged target would hold the job for
+      # GitHub's 6 hours. A group takes about a minute; past 20 the step
+      # fails, its log showing the target it was in.
+      - name: Run fuzz smoke
+        timeout-minutes: 20
+        run: .github/ci/fuzz-smoke.sh "${{ matrix.group }}" "$RUNNER_TEMP/fuzz-diagnostics"
+
+      # A failing target's go test output and the inputs its run added to
+      # testdata/fuzz/<target> (the crash input, when the failure was an
+      # input's): put one back there and go test -run '<target>/<input>'
+      # runs it again.
+      - name: Upload the fuzz failure diagnostics
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-diagnostics-${{ matrix.group }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fuzz-diagnostics
+          if-no-files-found: warn
+
+  # The descriptor-anchored file access foundation (internal/fsroot,
+  # internal/accesspolicy) and the case-insensitive name tests (C1: the MCP
+  # path gate, MCP walks, the dump) on the systems whose file systems fold
+  # names: Windows (os.Root and object identities instead of openat; NTFS)
+  # and macOS (APFS, case-insensitive by default, plus a case-sensitive
+  # volume for the C1-6 tests). Linux runs the same tests in the unit and
+  # race jobs,
+  # where the case-folding ones skip (ext4 is case-sensitive). Symlinks and
+  # case folding are required here: a skip for either fails the job; skips
+  # for attacks the system itself refuses are listed.
+  filesystem-security:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Create a case-sensitive volume (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil create -size 64m -fs "Case-sensitive APFS" -volname arkcs "$RUNNER_TEMP/cs.dmg"
+          hdiutil attach -nobrowse -mountpoint "$RUNNER_TEMP/csvol" "$RUNNER_TEMP/cs.dmg"
+          echo "ARK_CASE_SENSITIVE_DIR=$RUNNER_TEMP/csvol" >> "$GITHUB_ENV"
+
+      - name: Run file access security tests (race detector)
+        # Every command runs; any failure fails the step. The report lists
+        # every skip with its reason and every KNOWN-GAP line.
+        shell: bash
+        env:
+          ARK_REQUIRE_SYMLINKS: "1"
+          ARK_REQUIRE_CASE_FOLDING: "1"
+        run: |
+          rc=0
+          out="$RUNNER_TEMP/filesystem-security.json"
+          go test -race -count=1 -json ./internal/fsroot ./internal/accesspolicy ./internal/safewalk >> "$out" || rc=1
+          go test -count=1 -json -race -run 'TestCase_|TestB[0-9]|TestC3_|TestRequestAccess_|TestWarmIndexReads_|TestParseMemo_|TestDumpSymlinkToIgnored|TestMCPCase_|TestCLICase_' ./internal/mcp ./internal/core ./tests/integration >> "$out" || rc=1
+          go test -count=1 -json -race -run 'TestParallel' ./internal/index ./internal/golden >> "$out" || rc=1
+          py=python3; "$py" -c '' 2>/dev/null || py=python
+          system=$(echo "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')
+          "$py" .github/ci/test-report.py "$out" "filesystem-security-$system" "$RUNNER_TEMP/reports"
+          exit $rc
+
+      - name: Upload the test report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-report-filesystem-security-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reports
+          if-no-files-found: error
+
+  # The TypeScript compiler differential: Ark's TypeScript readings compared
+  # with the pinned compiler (.github/ts-oracle). Node.js and TypeScript are
+  # CI-only; Ark never depends on them. The tests skip without a compiler, so
+  # this job makes them required: no compiler, the wrong version, a skip or a
+  # mismatch fails it.
+  typescript-compiler-differential:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: |
+            go.sum
+            .github/ci/cache-keys/typescript-compiler-differential
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.17.0'
+
+      - name: Run TypeScript compiler differential
+        run: .github/ts-oracle/run.sh
+
+  # The whole test suite, with the race detector, on macOS (arm64, APFS),
+  # which the Linux jobs above cannot see. Windows runs the file access
+  # subset (filesystem-security) and the release binaries (release-binaries):
+  # the whole suite does not pass there yet (paths are compared with '/').
+  # `go test -race ./...` split into the shards of race-shards.txt, as the
+  # race job is, but planned on macOS: race-shard.py lists the packages with
+  # macOS's own `go list ./...`, and "*" takes every package no line names.
+  # Each shard keeps the plan it ran with its report; ci-gate checks that the
+  # shards ran every package of that plan exactly once (check-native.py).
+  native-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: |
+            go.sum
+            .github/ci/cache-keys/native-${{ matrix.shard }}
+
+      - name: List the shard's packages
+        run: |
+          mkdir -p "$RUNNER_TEMP/reports"
+          python3 .github/ci/race-shard.py all > "$RUNNER_TEMP/reports/native-${{ matrix.shard }}-macos.plan.txt"
+          python3 .github/ci/race-shard.py list "${{ matrix.shard }}" > "$RUNNER_TEMP/packages"
+          cat "$RUNNER_TEMP/packages"
+          [ -s "$RUNNER_TEMP/packages" ]
+
+      - name: Run tests with race detector
+        shell: bash
+        run: |
+          set +e
+          python3 .github/ci/race-shard.py run "${{ matrix.shard }}" "$RUNNER_TEMP/native.json"
+          rc=$?
+          set -e
+          python3 .github/ci/test-report.py "$RUNNER_TEMP/native.json" "native-${{ matrix.shard }}-macos" "$RUNNER_TEMP/reports"
+          exit $rc
+
+      - name: Upload the test report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-report-native-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reports
+          if-no-files-found: error
+
+  # Known vulnerabilities in the code Ark calls: its modules and the Go
+  # standard library of go.mod's version.
+  vulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: |
+            go.sum
+            .github/ci/cache-keys/vulncheck
+
+      - name: Run govulncheck
+        run: make vulncheck
+
+  # The workflows (actionlint, with shellcheck over their run scripts), the
+  # repository's shell scripts and renovate.json.
+  workflow-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: |
+            go.sum
+            .github/ci/cache-keys/workflow-lint
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.17.0'
+
+      - name: Run actionlint
+        run: make actionlint
+
+      - name: Run shellcheck
+        run: shellcheck .github/release/*.sh .github/ci/*.sh .github/ts-oracle/run.sh
+
+      - name: Validate renovate.json
+        run: make renovate-check
+
+  # The release, as a snapshot: hephaestus.yaml checked, every target built,
+  # archived and checksummed by the Hephaestus action exactly as the release
+  # workflow builds a tag (version 0.0.0-SNAPSHOT, nothing is published), and
+  # verified as the release workflow verifies a release: the eight archives,
+  # their layout and checksums, and each binary's target and build flags.
+  release-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: |
+            go.sum
+            .github/ci/cache-keys/release-snapshot
+
+      - name: Check the Hephaestus configuration
+        uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: check
+          github-token: ""
+
+      - name: Build, archive and checksum a snapshot
+        uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: run
+          stages: build,archive,checksum
+          snapshot: "true"
+          fresh: "true"
+          github-token: ""
+
+      - name: Verify the snapshot as a release is verified
+        run: .github/release/verify-dist.sh dist --snapshot
+
+      - name: Upload the snapshot archives
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-snapshot
+          path: |
+            dist/*.tar.gz
+            dist/ark_checksums.txt
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  # Every binary of the snapshot, run natively on its own system (the
+  # release cross-compiles them all on Linux): it starts, reports its
+  # version, prints its help, parses Go with tree-sitter and dumps a
+  # directory (.github/release/smoke.sh).
+  release-binaries:
+    needs: [release-snapshot]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: linux_amd64 linux_386
+          - os: ubuntu-24.04-arm
+            targets: linux_arm64
+          - os: macos-latest
+            targets: darwin_arm64
+          - os: macos-15-intel
+            targets: darwin_amd64
+          - os: windows-latest
+            targets: windows_amd64 windows_386
+          - os: windows-11-arm
+            targets: windows_arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Download the snapshot archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-snapshot
+          path: dist
+
+      - name: Run this system's release binaries
+        env:
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          for t in $TARGETS; do
+            # A relative directory: Git Bash's tar reads D:\... as a remote host.
+            mkdir -p "smoke/$t"
+            tar -xzf "dist/ark_0.0.0-SNAPSHOT_$t.tar.gz" -C "smoke/$t"
+            exe="smoke/$t/ark"
+            case "$t" in windows_*) exe="$exe.exe" ;; esac
+            .github/release/smoke.sh "$exe" v0.0.0-SNAPSHOT
+          done
+
+  # The release formula on the snapshot archives, with the real Homebrew of
+  # Linux and macOS: generated from hephaestus.yaml (file:// URLs), brew
+  # style, brew audit --strict, install, test, the completions where
+  # Homebrew loads them, uninstall (.github/release/homebrew-e2e.sh).
+  homebrew-e2e:
+    needs: [release-snapshot]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: |
+            go.sum
+            .github/ci/cache-keys/homebrew-e2e
+
+      - name: Put Homebrew on PATH (Linux)
+        if: runner.os == 'Linux'
+        run: echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+
+      - name: Download the snapshot archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-snapshot
+          path: dist
+
+      - name: Formula, brew style, audit --strict, install, test, uninstall
+        run: make homebrew-e2e
+
+  # The gate: green only if every verification job above succeeded (a
+  # failure, cancellation or skip of any job, or of any matrix leg, fails
+  # it), the race shards together ran exactly the packages and tests the
+  # unit job ran (.github/ci/check-coverage.py) and the macOS native shards
+  # ran every package of macOS's plan exactly once (.github/ci/check-native.py).
+  # It also lists, per system, the filesystem-security tests that skipped.
+  ci-gate:
+    if: always()
+    needs: [lint, unit, race, fuzz-smoke, filesystem-security, typescript-compiler-differential, native-tests, vulncheck, workflow-lint, release-snapshot, release-binaries, homebrew-e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Every verification job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS"])
+          want = {"lint", "unit", "race", "fuzz-smoke", "filesystem-security", "typescript-compiler-differential",
+                  "native-tests", "vulncheck", "workflow-lint", "release-snapshot", "release-binaries", "homebrew-e2e"}
+          results = {job: v["result"] for job, v in needs.items()}
+          for job in sorted(want | set(results)):
+              print(f"{job}: {results.get(job, 'missing')}")
+          if set(results) != want or any(r != "success" for r in results.values()):
+              sys.exit("a verification job did not succeed")
+          EOF
+
+      - name: Checkout code
+        if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Every attempt of a re-run run keeps its artifacts: the reports are
+      # named by attempt, and each job's latest is the one checked
+      # (select-reports.py) — never a failed attempt's report a rerun job
+      # replaced, whatever artifact ids download-artifact would prefer.
+      - name: Download the test reports
+        if: always()
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: test-report-*
+          path: downloaded-reports
+
+      - name: Each job's report of its latest attempt
+        if: always()
+        run: python3 .github/ci/select-reports.py downloaded-reports reports
+
+      - name: Race shards ran exactly the unit tests; skips per system
+        if: always()
+        run: python3 .github/ci/check-coverage.py reports windows macos
+
+      - name: macOS native shards ran every package exactly once
+        if: always()
+        run: python3 .github/ci/check-native.py reports

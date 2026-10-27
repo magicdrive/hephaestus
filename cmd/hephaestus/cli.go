@@ -18,6 +18,7 @@ import (
 	"github.com/magicdrive/hephaestus/internal/manifest"
 	"github.com/magicdrive/hephaestus/internal/pipeline"
 	"github.com/magicdrive/hephaestus/internal/tmpl"
+	"github.com/magicdrive/hephaestus/internal/workflowcheck"
 )
 
 // Version is the running hephaestus version, set by Execute.
@@ -147,6 +148,9 @@ func runFlags(cmd string, opts *Options, stages, phase *string) *flag.FlagSet {
 	fs.StringVar(&opts.Repo, "repo", "", "owner/name of the release repository (default: config, then $GITHUB_REPOSITORY)")
 	fs.StringVar(&opts.TokenEnv, "token-env", "GITHUB_TOKEN", "environment variable holding the release token")
 	fs.StringVar(&opts.TapTokenEnv, "tap-token-env", "HOMEBREW_TAP_GITHUB_TOKEN", "environment variable holding the tap token")
+	if cmd == "check" {
+		fs.BoolVar(&opts.Workflows, "workflows", false, "also check the release workflow's conventions (docs/preflight.md#release-workflow); a violation exits 1")
+	}
 	if cmd == "run" {
 		fs.StringVar(stages, "stages", "", "comma-separated stages to run, or all (default: every configured stage)")
 		fs.StringVar(phase, "phase", "", "run only the selected stages of one phase: local (build, archive, checksum) or publish (release, formula, tap)")
@@ -294,5 +298,69 @@ func check(cfg *config.Config, opts *Options) int {
 			fmt.Fprintf(opts.Stdout, "  GoReleaser defaults (brews_from): %s\n", strings.Join(b.GoReleaserDefaults, "; "))
 		}
 	}
+	if opts.Workflows {
+		return checkWorkflows(cfg, opts)
+	}
 	return 0
+}
+
+// checkWorkflows runs the release workflow checks (check --workflows) on
+// the repository holding the configuration, for the assets of --tag
+// (default v0.0.0: only the names' shape matters). Anything that keeps a
+// check from running fails it.
+func checkWorkflows(cfg *config.Config, opts *Options) int {
+	root, err := repositoryRoot(cfg.Root)
+	if err != nil {
+		fmt.Fprintf(opts.Stderr, "error: --workflows: %v\n", err)
+		return 1
+	}
+	tag := opts.Tag
+	if tag == "" {
+		tag = "v0.0.0"
+	}
+	vars, err := workflowcheck.TagVars(cfg, tag)
+	if err != nil {
+		fmt.Fprintf(opts.Stderr, "error: --workflows: --tag %q: %v\n", tag, err)
+		return 2
+	}
+	o := workflowcheck.FromConfig(workflowcheck.Options{Dir: root}, cfg, vars)
+	fmt.Fprintf(opts.Stdout, "release workflow checks (%s, assets of %s):\n", root, tag)
+	code := 0
+	for _, r := range workflowcheck.Run(o) {
+		fmt.Fprintf(opts.Stdout, "  %-4s  %-22s %s\n", r.Status, r.ID, workflowSummary(r))
+		for _, p := range r.Problems[min(1, len(r.Problems)):] {
+			fmt.Fprintf(opts.Stdout, "        %-22s %s\n", "", p)
+		}
+		if r.Status == workflowcheck.Fail {
+			code = 1
+			fmt.Fprintf(opts.Stdout, "        %-22s → %s\n", "", r.Fix)
+		}
+	}
+	return code
+}
+
+func workflowSummary(r workflowcheck.Result) string {
+	if len(r.Problems) > 0 {
+		return r.Problems[0]
+	}
+	return r.Message
+}
+
+// repositoryRoot is dir or its nearest parent with a .git entry (a
+// directory, or a file in a worktree or submodule).
+func repositoryRoot(dir string) (string, error) {
+	d, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			return d, nil
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return "", fmt.Errorf("no git repository holds %s, so its .github/workflows cannot be found", dir)
+		}
+		d = parent
+	}
 }

@@ -51,6 +51,7 @@ Exit codes: `0` written, `1` the file exists or cannot be written, `2` usage.
 | `--repo` | config, then `$GITHUB_REPOSITORY` | release repository |
 | `--token-env` | `GITHUB_TOKEN` | variable holding the release token |
 | `--tap-token-env` | `HOMEBREW_TAP_GITHUB_TOKEN` | variable holding the tap token |
+| `--workflows` (`check`) | off | also check the release workflow and the CI workflow it runs against the [workflow conventions](preflight.md#release-workflow) (the `workflow.*` checks of `preflight`), for the assets of `--tag` (default `v0.0.0`); a violation, or a repository that cannot be found, exits `1`. For CI on pull requests, before a release is tagged |
 
 Exit codes: `0` success, `1` an invalid configuration or a failed stage,
 `2` invalid flags. Re-running after a failure resumes from the manifest

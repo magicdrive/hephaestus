@@ -179,6 +179,25 @@ func TestScenarios(t *testing.T) {
 		{"offline", "v1.2.0", func(f *fixture) { f.in.Offline, f.in.GitHub = true, nil }, "github.repository", Skip, "offline"},
 		{"offline keeps local checks", "v1.2.0", func(f *fixture) { f.in.Offline, f.in.GitHub = true, nil }, "git.worktree", Pass, "clean"},
 		{"repo override", "v1.2.0", func(f *fixture) { f.in.Repo = "other/tool" }, "git.remote", Fail, "releases go to other/tool"},
+
+		// The release workflow (warnings: a violation fails only --strict).
+		{"action not pinned", "v1.2.0", func(f *fixture) {
+			editWorkflow(f, "release.yml", "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1", "actions/checkout@v7")
+		}, "workflow.pins", Warn, "uses actions/checkout@v7 is not pinned to a full commit SHA"},
+		{"tap token without the plan condition", "v1.2.0", func(f *fixture) {
+			editWorkflow(f, "release.yml", "      - name: Generate the formula and open a tap pull request\n        if: steps.plan.outputs.tap == 'publish'\n", "      - name: Generate the formula and open a tap pull request\n")
+		}, "workflow.tap", Warn, `want exactly if: steps.plan.outputs.tap == 'publish'`},
+		{"publishing job without the configured environment", "v1.2.0", func(f *fixture) { f.in.Config.Preflight.Environment = "production" }, "workflow.release", Warn, "runs in environment release, want production"},
+		{"checksum file not attested", "v1.2.0", func(f *fixture) { editWorkflow(f, "release.yml", "            dist/tool_checksums.txt\n", "") }, "workflow.attestation", Warn, "does not cover tool_checksums.txt"},
+		{"prerelease assets attested", "v1.2.0-rc.1", nil, "workflow.attestation", Pass, "5 assets attested"},
+		{"ci-gate misses a job", "v1.2.0", func(f *fixture) { editWorkflow(f, "ci.yml", "    needs: [test]\n", "    needs: []\n") }, "workflow.ci-gate", Warn, "ci-gate does not need test"},
+		{"configured workflow missing", "v1.2.0", func(f *fixture) { f.in.Config.Preflight.Workflow = "publish.yml" }, "workflow.release", Warn, ".github/workflows/publish.yml does not exist"},
+		{"no workflow configured nor present", "v1.2.0", func(f *fixture) {
+			f.in.Config.Preflight.Workflow = ""
+			f.git.top = filepath.Join(f.git.top, "elsewhere")
+		}, "workflow.tap", Skip, "no .github/workflows/release.yml"},
+		{"workflow checks need the work tree", "v1.2.0", func(f *fixture) { f.git.top = "" }, "workflow.pins", Skip, "requires git.repository"},
+		{"workflow checks offline", "v1.2.0", func(f *fixture) { f.in.Offline, f.in.GitHub = true, nil }, "workflow.tap", Pass, "reaches 2 planned steps"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -194,6 +213,19 @@ func TestScenarios(t *testing.T) {
 				t.Errorf("%s: %s without remediation", tc.id, r.Status)
 			}
 		})
+	}
+}
+
+// editWorkflow replaces old with new in the fixture's workflow file; the
+// replacement must apply.
+func editWorkflow(f *fixture, file, old, new string) {
+	p := filepath.Join(f.git.top, ".github", "workflows", file)
+	b, err := os.ReadFile(p)
+	if err != nil || !strings.Contains(string(b), old) {
+		panic(fmt.Sprintf("%s: %q not found (%v)", file, old, err))
+	}
+	if err := os.WriteFile(p, []byte(strings.Replace(string(b), old, new, 1)), 0o644); err != nil {
+		panic(err)
 	}
 }
 
@@ -214,6 +246,10 @@ func TestOverallAndExitCodes(t *testing.T) {
 		{"warn strict", func(f *fixture) { f.gh.rulesets = f.gh.rulesets[1:] }, true, OverallWarn, ExitFail},
 		{"unknown", func(f *fixture) { f.gh.errs["ListRepositorySecretNames"] = apiErr(403, "forbidden") }, false, OverallUnknown, ExitIncomplete},
 		{"unknown strict", func(f *fixture) { f.gh.errs["ListRepositorySecretNames"] = apiErr(403, "forbidden") }, true, OverallUnknown, ExitFail},
+		// A workflow convention broken: WARN, which fails only --strict (and
+		// so hephaestus publish, which runs it strict).
+		{"workflow warn", func(f *fixture) { editWorkflow(f, "ci.yml", "    if: always()\n", "") }, false, OverallWarn, ExitPass},
+		{"workflow warn strict", func(f *fixture) { editWorkflow(f, "ci.yml", "    if: always()\n", "") }, true, OverallWarn, ExitFail},
 		{"fail beats unknown", func(f *fixture) {
 			f.gh.errs["ListRepositorySecretNames"] = apiErr(403, "forbidden")
 			f.git.status = "?? x"
@@ -268,8 +304,12 @@ func TestAPIReuse(t *testing.T) {
 // TestJSONIsStable: the same input gives byte-identical JSON, which decodes
 // into the documented shape.
 func TestJSONIsStable(t *testing.T) {
+	// One work tree for both runs: its path is in the report.
+	top := t.TempDir()
+	writeWorkflows(t, top, testReleaseWorkflow, testCIWorkflow)
 	render := func() []byte {
 		f := newFixture(t, "v1.2.0")
+		f.git.top = top
 		f.gh.rulesets = f.gh.rulesets[1:]
 		var b bytes.Buffer
 		if err := f.run(t, false).WriteJSON(&b); err != nil {
@@ -350,6 +390,11 @@ func ExampleChecks() {
 	// config.release
 	// config.release-notes
 	// config.formula
+	// workflow.release
+	// workflow.pins
+	// workflow.tap
+	// workflow.attestation
+	// workflow.ci-gate
 	// github.repository
 	// github.release
 	// github.ci

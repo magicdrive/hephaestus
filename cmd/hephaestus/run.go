@@ -38,9 +38,12 @@ type Options struct {
 	Repo        string
 	TokenEnv    string
 	TapTokenEnv string
-	Stages      []pipeline.Stage
-	Stdout      io.Writer
-	Stderr      io.Writer
+	// Workflows (check only) also checks the release workflow's
+	// conventions (internal/workflowcheck).
+	Workflows bool
+	Stages    []pipeline.Stage
+	Stdout    io.Writer
+	Stderr    io.Writer
 
 	// redact replaces known secrets in messages, outputs and the summary.
 	redact *redactor

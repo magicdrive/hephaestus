@@ -9,6 +9,7 @@ import (
 
 	"github.com/magicdrive/hephaestus/internal/github"
 	"github.com/magicdrive/hephaestus/internal/version"
+	"github.com/magicdrive/hephaestus/internal/workflowcheck"
 )
 
 // GitHub is the read-only GitHub access the preflight needs. Every method
@@ -80,6 +81,12 @@ type lazy[T any] struct {
 	err  error
 }
 
+// getOnce is get for a computation that cannot fail.
+func (l *lazy[T]) getOnce(f func() T) T {
+	v, _ := l.get(func() (T, error) { return f(), nil })
+	return v
+}
+
 func (l *lazy[T]) get(f func() (T, error)) (T, error) {
 	if !l.done {
 		l.v, l.err = f()
@@ -112,6 +119,7 @@ type state struct {
 	defBranch  lazy[string]
 	releases   lazy[[]github.Release]
 	tapRepos   map[string]*lazy[*github.Repository]
+	workflows  lazy[map[string]workflowcheck.Result]
 }
 
 func newState(ctx context.Context, in Input) *state {

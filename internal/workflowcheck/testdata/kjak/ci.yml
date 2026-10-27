@@ -1,0 +1,259 @@
+name: CI
+
+# Every push to main and every pull request; release.yml runs it too
+# (workflow_call) on the tagged commit before anything is released. The
+# layout follows enma's ci.yml (test, lint, dist) plus ark's fuzz smoke;
+# the release archives are built by Hephaestus (hephaestus.yaml).
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels its older run. Called from
+# release.yml, github.workflow is "Release" and the ref is the tag, so the
+# group never matches (or cancels) a run of this workflow on main, and a
+# tag's run is never canceled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Windows is tested on every change: kjak has Windows code of its own (the
+  # configuration lock, paths), which broke there once already. Every
+  # release platform runs natively (hephaestus.yaml): linux amd64
+  # (ubuntu-latest) and arm64 (ubuntu-24.04-arm), darwin arm64
+  # (macos-latest) and amd64 (macos-15-intel), windows amd64
+  # (windows-latest). windows/arm64 is not released: it is cross-compiled
+  # with its tests only (lint job), not run.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: make fmt-check
+
+      - name: Vet
+        run: go vet ./...
+
+      # Includes the end-to-end tests of the built binary (internal/e2e).
+      # -count=1: no cached results.
+      - name: Test
+        run: go test -count=1 ./...
+
+      # the race detector needs cgo, which the Windows image lacks
+      - name: Test (race)
+        if: runner.os != 'Windows'
+        env:
+          CGO_ENABLED: "1"
+        run: go test -count=1 -race ./...
+
+      # The binary built the way a release builds it (-trimpath -s -w,
+      # main.version), run as a user runs it: --version, --help, every
+      # command's help, a fresh configuration and a dry run (scripts/smoke.sh).
+      - name: CLI smoke test
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          bin="build/smoke/kjak$(go env GOEXE)"  # relative: RUNNER_TEMP is D:\a\_temp on Windows
+          go build -trimpath -ldflags "-s -w -X main.version=v0.0.0-smoke" -o "$bin" ./main.go
+          sh scripts/smoke.sh "$bin" "kjak version v0.0.0-smoke"
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Module files are tidy
+        run: |
+          go mod verify
+          go mod tidy -diff
+
+      - name: Staticcheck
+        run: make staticcheck  # version pinned in the Makefile (STATICCHECK)
+
+      # .golangci.yml, for linux, darwin and windows (GOOS)
+      - name: golangci-lint
+        run: make golangci-lint  # version pinned in the Makefile (GOLANGCI_LINT)
+
+      - name: Go vet for windows
+        run: GOOS=windows go vet ./...
+
+      # windows/arm64 has no release and no runner here: its build, vet
+      # and test binaries must still compile (the tests are not run)
+      - name: Cross-compile windows/arm64 (build, vet, tests)
+        env:
+          GOOS: windows
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: |
+          go build -o /dev/null .
+          go vet ./...
+          go test -count=1 -exec /bin/true ./...
+
+      # every mutant of scripts/mutants.tsv still applies to the code (the
+      # mutation run itself is mutation.yml: weekly and on demand)
+      - name: Mutants apply
+        run: make mutation-check
+
+      - name: Shell scripts
+        run: shellcheck -s sh scripts/*.sh
+
+      - name: Workflows (actionlint)
+        run: make actionlint  # version pinned in the Makefile (ACTIONLINT)
+
+  renovate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js (Renovate needs Node 24)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Validate renovate.json
+        run: make renovate-check  # version pinned in the Makefile (RENOVATE_VERSION)
+
+  # kjak parses what it does not control (TOML, webhook and SMTP replies).
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Fuzz every target for 10s
+        run: make fuzz
+
+  # Builds every release target with the real hephaestus.yaml and checks the
+  # archives. No token is passed; nothing is published (snapshot).
+  dist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Govulncheck
+        run: make vulncheck  # version pinned in the Makefile (GOVULNCHECK)
+
+      - name: Hephaestus check
+        uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: check
+          github-token: ""
+
+      - name: Hephaestus snapshot (build, archive, checksum)
+        id: snapshot
+        uses: magicdrive/hephaestus@e544acf59c79cbafa04a48002b0f30f91a02f8ba # v1.3.0
+        with:
+          command: run
+          stages: build,archive,checksum
+          snapshot: "true"
+          fresh: "true"
+          github-token: ""
+
+      - name: Verify archives
+        run: sh scripts/verify-dist.sh dist SNAPSHOT
+
+      - name: Show artifacts
+        env:
+          ARTIFACTS: ${{ steps.snapshot.outputs.artifacts }}
+        run: echo "$ARTIFACTS" | jq .
+
+  # The formula Hephaestus generates, installed by the real Homebrew from the
+  # local archives (file:// URLs) in a throw-away tap: brew style, audit
+  # --strict, install, the installed kjak (scripts/smoke.sh), brew test,
+  # uninstall. Nothing is written to magicdrive/homebrew-tap.
+  homebrew-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Put Homebrew on PATH (Linux)
+        if: runner.os == 'Linux'
+        run: echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+
+      - name: Archives -> formula -> brew style, audit, install, test, uninstall
+        run: make homebrew-e2e  # Hephaestus pinned in the Makefile (HEPHAESTUS_VERSION)
+
+  # The one check the main ruleset requires (and `make publish` checks):
+  # it fails unless every job above succeeded (a failed, skipped or
+  # canceled job fails it too). Keep `needs` in step with the jobs above
+  # (TestCIGateNeedsEveryJob).
+  ci-gate:
+    if: always()
+    needs: [test, lint, renovate, fuzz, dist, homebrew-e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every CI job succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            [ "$r" = success ] || { echo "::error::a CI job did not succeed ($r)"; exit 1; }
+          done
