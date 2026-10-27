@@ -45,7 +45,20 @@
 // version may be merged after it. The scan is repeated after the pull
 // request is opened, so two runs racing each other still warn about each
 // other. Only the tap's own CI can enforce the merge order: see
-// cmd/tap-version-guard.
+// cmd/tap-version-guard. Only pull requests from a branch of the tap (or of
+// the configured head repository, for a fork) count: one from anyone
+// else's fork is reported as a warning but never skips or fails publishing,
+// since anyone can open one on a public tap.
+//
+// Same version, other checksums: a formula of the version being published
+// that is already on the base branch, on the head branch or in an open pull
+// request, and lists another sha256 for the same url (see ChecksumChanges),
+// means the release's archives were replaced (e.g. a release deleted and
+// created again for the tag) or tampered with. The tap stage then fails
+// before writing anything, in a dry run too, so the rehearsal before a
+// release is published stops it; allow_downgrade does not apply. A change
+// of anything else at the same version (desc, caveats, a new platform) is
+// proposed as usual.
 //
 // Commit author: when commit_author is unset the commit is attributed to the
 // token's identity (GitHub's default for API commits). Unlike GoReleaser,
@@ -442,6 +455,11 @@ func (p *publisher) commit(ctx context.Context, owner, repo, branch string, guar
 		if guard && cur != nil && p.downgrade(cur.Content) {
 			return false, existed, errDowngrade
 		}
+		if cur != nil {
+			if err := p.checksumConflict(cur.Content, full+"@"+branch); err != nil {
+				return false, existed, err
+			}
+		}
 		if p.in.DryRun {
 			p.logf("would commit %s to %s@%s", p.p.Path, full, branch)
 			return true, existed, nil
@@ -541,6 +559,11 @@ func (p *publisher) pullRequest(ctx context.Context) error {
 	if onBase != nil && p.downgrade(onBase.Content) {
 		p.skipDowngrade()
 		return nil
+	}
+	if onBase != nil {
+		if err := p.checksumConflict(onBase.Content, baseFull+"@"+base); err != nil {
+			return err
+		}
 	}
 	existedOnBase := onBase != nil
 	var baseContent []byte
@@ -1038,9 +1061,12 @@ func (p *publisher) checkRivals(ctx context.Context, baseOwner, baseRepo, base, 
 			p.warn("open pull request %s changes %s to version %q, which cannot be compared with %q: merge them in version order", r.URL, p.p.Path, v, ours)
 			continue
 		}
+		trusted := p.trustedHead(pr.Head.Label, baseOwner)
 		switch c := compareSemver(a, b); {
 		case c > 0:
 			switch {
+			case !trusted:
+				p.warn("open pull request %s from %s, not a branch of %s, proposes version %s of %s, newer than %s: it does not stop this release; do not merge %s after it unless it is a release", r.URL, pr.Head.Label, p.trustedRepos(baseOwner, baseRepo), v, p.p.Path, ours, p.p.Path)
 			case !pre:
 				p.warn("open pull request %s (opened meanwhile) proposes version %s of %s, newer than %s: do not merge %s after it; close this one", r.URL, v, p.p.Path, ours, p.p.Path)
 			case p.b.AllowDowngrade:
@@ -1054,6 +1080,13 @@ func (p *publisher) checkRivals(ctx context.Context, baseOwner, baseRepo, base, 
 				return looked, nil
 			}
 		case c == 0:
+			if err := p.checksumConflict(fc.Content, "open pull request "+r.URL); err != nil {
+				if !trusted {
+					p.warn("open pull request %s from %s, not a branch of %s, proposes version %s of %s with other sha256 checksums than this release: do not merge it", r.URL, pr.Head.Label, p.trustedRepos(baseOwner, baseRepo), v, p.p.Path)
+					continue
+				}
+				return nil, err
+			}
 			p.warn("open pull request %s also proposes version %s of %s: merge only one of them", r.URL, v, p.p.Path)
 		default:
 			p.older = append(p.older, r)
@@ -1061,6 +1094,27 @@ func (p *publisher) checkRivals(ctx context.Context, baseOwner, baseRepo, base, 
 		}
 	}
 	return looked, nil
+}
+
+// trustedHead reports whether an open pull request's head label
+// ("owner:branch") is a branch of the tap (base) repository or of the
+// configured head repository: pushed by someone who can write there, as
+// this project's releases are. Any other head is a fork of someone else,
+// which anyone can open on a public tap: it is reported, but it never skips
+// or fails publishing, or an outsider could stop the tap from being
+// updated.
+func (p *publisher) trustedHead(label, baseOwner string) bool {
+	owner, _, ok := strings.Cut(label, ":")
+	return ok && (strings.EqualFold(owner, baseOwner) || strings.EqualFold(owner, p.p.Owner))
+}
+
+// trustedRepos names the repositories trustedHead accepts, for messages.
+func (p *publisher) trustedRepos(baseOwner, baseRepo string) string {
+	base := baseOwner + "/" + baseRepo
+	if head := p.p.Owner + "/" + p.p.Name; !strings.EqualFold(head, base) {
+		return base + " or " + head
+	}
+	return base
 }
 
 // pullBody is the body of a new formula pull request. It states the merge
@@ -1097,4 +1151,125 @@ func CompareVersions(a, b string) (c int, ok bool) {
 		return 0, false
 	}
 	return compareSemver(x, y), true
+}
+
+// --- Same version, other checksums ---
+
+var sha256StmtRe = regexp.MustCompile(`^sha256[ \t]+["']([0-9A-Fa-f]{64})["']`)
+
+// formulaChecksums maps every url statement of a formula to the sha256
+// statement that follows it in the same block (url "…" then sha256 "…", as
+// Homebrew requires), outside heredocs. Resource blocks count too: their
+// archives are as much a part of the installed formula. A url without a
+// sha256 is left out; for a url listed twice the first pair wins.
+func formulaChecksums(content []byte) map[string]string {
+	out := map[string]string{}
+	pending := map[int]string{} // indent -> url awaiting its sha256
+	heredoc := ""
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimRight(line, " \t\r")
+		trimmed := strings.TrimLeft(line, " \t")
+		if heredoc != "" {
+			if trimmed == heredoc {
+				heredoc = ""
+			}
+			continue
+		}
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if m := heredocRe.FindStringSubmatch(trimmed); m != nil && m[1] == m[3] {
+			heredoc = m[2]
+		}
+		indent := len(line) - len(trimmed)
+		if trimmed == "end" || strings.HasPrefix(trimmed, "end ") || strings.HasPrefix(trimmed, "end.") {
+			for i := range pending {
+				if i > indent {
+					delete(pending, i)
+				}
+			}
+			continue
+		}
+		if m := urlStmtRe.FindStringSubmatch(trimmed); m != nil {
+			pending[indent] = m[1]
+			continue
+		}
+		if m := sha256StmtRe.FindStringSubmatch(trimmed); m != nil {
+			if u, ok := pending[indent]; ok {
+				if _, dup := out[u]; !dup {
+					out[u] = strings.ToLower(m[1])
+				}
+				delete(pending, indent)
+			}
+		}
+	}
+	return out
+}
+
+// sameVersion reports whether two declared versions are the same release:
+// equal by semantic version precedence, or, when either is not a semantic
+// version, equal as strings. An undeclared version ("") is never the same.
+func sameVersion(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if c, ok := CompareVersions(a, b); ok {
+		return c == 0
+	}
+	return a == b
+}
+
+// ChecksumChanges returns, sorted, the urls whose sha256 differs between
+// existing and proposed when both formulae declare the same version (see
+// FormulaVersion and CompareVersions): the archives of a release that is
+// already in the tap (or proposed to it) were replaced, e.g. by a release
+// deleted and created again for the same tag, or by tampering. It returns
+// nil when the versions differ or cannot be told, and when no url that both
+// list changed its sha256: a url added or removed (a new platform) and a
+// change of anything but the checksums (desc, caveats, install) are not
+// checksum changes. The tap stage refuses to propose such a formula;
+// cmd/tap-version-guard can apply the same rule to a tap change.
+func ChecksumChanges(existing, proposed []byte) []string {
+	if !sameVersion(formulaVersion(existing), formulaVersion(proposed)) {
+		return nil
+	}
+	old, cur := formulaChecksums(existing), formulaChecksums(proposed)
+	var changed []string
+	for u, sum := range cur {
+		if was, ok := old[u]; ok && was != sum {
+			changed = append(changed, u)
+		}
+	}
+	slices.Sort(changed)
+	return changed
+}
+
+// ChecksumConflictError reports that the formula being published declares
+// the same version as one already in the tap (or proposed to it) with other
+// sha256 checksums for the same urls. It is never resolved automatically,
+// not even with allow_downgrade: one of the two describes archives that are
+// not the release's.
+type ChecksumConflictError struct {
+	Path, Version, Where string
+	URLs                 []string
+}
+
+func (e *ChecksumConflictError) Error() string {
+	shown := e.URLs
+	if len(shown) > 3 {
+		shown = append(shown[:3:3], fmt.Sprintf("and %d more", len(e.URLs)-3))
+	}
+	return fmt.Sprintf("%s declares version %s with other sha256 checksums than this release for %s (%s): "+
+		"the release's archives were replaced (a release created again for the same tag?) or one of the two was tampered with; "+
+		"nothing was written. Verify the release's archives against their attestations, then fix the tap by hand, or publish a new version",
+		e.Where, e.Version, e.Path, strings.Join(shown, ", "))
+}
+
+// checksumConflict is a ChecksumConflictError when existing, found at
+// where, has this formula's version with other checksums; else nil.
+func (p *publisher) checksumConflict(existing []byte, where string) error {
+	if urls := ChecksumChanges(existing, p.content); len(urls) > 0 {
+		return &ChecksumConflictError{Path: p.p.Path, Version: p.version(), Where: where, URLs: urls}
+	}
+	return nil
 }
