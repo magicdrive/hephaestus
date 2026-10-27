@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -450,27 +448,4 @@ Pushing the tag starts the release workflow; a pushed tag is never moved or dele
 
 func (d *Deps) logf(format string, args ...any) {
 	fmt.Fprintf(d.Out, format+"\n", args...)
-}
-
-// lock prevents two publish processes in one clone (make -j, a second
-// terminal). The lock file lives in the git directory.
-func lock(ctx context.Context, d *Deps) (func(), error) {
-	dir, err := d.Git.CommonDir(ctx)
-	if err != nil {
-		return nil, err
-	}
-	p := filepath.Join(dir, "hephaestus-publish.lock")
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return nil, fmt.Errorf("another publish is running (%s exists; remove it if no publish is running)", p)
-		}
-		return nil, err
-	}
-	_, werr := fmt.Fprintf(f, "pid %d\n", os.Getpid())
-	if err := errors.Join(werr, f.Close()); err != nil {
-		_ = os.Remove(p)
-		return nil, err
-	}
-	return func() { _ = os.Remove(p) }, nil
 }
