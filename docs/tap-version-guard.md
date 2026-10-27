@@ -45,22 +45,129 @@ name them.
 change lowers the version of any formula (`*.rb` present on both sides):
 
 ```sh
-go run github.com/magicdrive/hephaestus/cmd/tap-version-guard@<commit> [-base HEAD^1] [-head HEAD] [-allow-downgrade]
+go run github.com/magicdrive/hephaestus/cmd/tap-version-guard@<commit> [-base HEAD^1 [-each] | -against <tip>] [-head HEAD] [-allow-downgrade]
 ```
 
-Exit status: `0` no downgrade, `1` a downgrade, `2` usage or git error. The
-default range `HEAD^1..HEAD` is what a `pull_request` run checks out: the
-merge of the pull request into the current base branch.
+| Mode | Compares | For |
+| --- | --- | --- |
+| default (`-base HEAD^1`) | `base..head` | a `pull_request` run: the merge of the pull request into the base as it was when the run started |
+| `-base <sha> -each` | every commit on the first-parent chain of `base..head` against its first parent | a merge queue entry (`merge_group.base_sha`), a push (`before..after`): a downgrade inside a group or a fast-forward of several merges fails even when the net change goes up |
+| `-against <tip>` | the formulae `head` changed since its merge base with `tip`, at `tip` and at `head` | an unmerged pull request head against the base branch's current tip, with no merge commit: re-checking open pull requests after the base moved, and right before merging |
 
-To adopt it, copy
-[examples/workflows/tap-version-guard.yml](../examples/workflows/tap-version-guard.yml)
-into the tap's `.github/workflows/` and, in a ruleset on the tap's default
-branch:
+Exit status: `0` no downgrade, `1` a downgrade, `2` usage or git error.
 
-- require the status check `version-guard`;
-- require branches to be up to date before merging (strict), or use a merge
-  queue. Without it the check of the older pull request may have run before
-  the newer one was merged, and its green result is stale.
+### Why the pull request check alone is not enough
+
+A `pull_request` check runs on the merge of the pull request into the base
+**as it was then**. After a newer release is merged, the older pull
+request's green check stays green; re-running it checks the same old merge
+commit again (the run keeps its `GITHUB_SHA`). Two release pull requests
+from one base change the same formula lines, so in practice the older one
+conflicts and GitHub cannot merge it until someone resolves the conflict;
+a resolution is a new commit, which runs the check again and fails. A
+downgrade gets through only around that: a resolution that is not pushed
+to the pull request (a manual merge pushed to the base), a merge commit
+prepared before the newer release landed, formulae edited outside the
+generated lines, an admin bypass, or a direct push.
+
+### Options
+
+| Option | Blocks a stale green check? | Cost | Where |
+| --- | --- | --- | --- |
+| Required status check `version-guard` | No, alone: a green result from an older base still counts | None | Ruleset |
+| Required check + **require branches to be up to date** (strict) | Yes: the pull request must contain the current base, and updating it re-runs the check | Every merge needs an update of the other open pull requests | Ruleset |
+| **Merge queue** + required check with `merge_group` | Yes: the check runs on the queue entry, built on the current base and the entries ahead of it (`-each` from `base_sha`) | Merges wait for the queue's run; available only to repositories owned by an organization (a tap under a personal account cannot use it) | Ruleset + `merge_group` trigger |
+| Check after the merge (`push` to the base branch) | No, it detects: opens an issue with the restore steps | A downgrade may be visible until it is restored | Workflow (`after-merge` job) |
+| Re-check open pull requests when the base moves | No, it detects: names the pull requests to close in the same issue | One run per push | Workflow (`after-merge` job, `-against`) |
+| `workflow_dispatch` | No: a manual re-check of every open pull request | Manual | Workflow (`after-merge` job) |
+| Update the branch (GitHub's "Update branch") | Only together with strict: it creates the fresh merge the check runs on | Manual per pull request | — |
+| A GitHub App that sets a required status on every open pull request when the base moves | Yes, if its status is required | An App to write, host and trust with `statuses: write` | Outside this repository |
+| Reviewers merge in version order (Hephaestus names older pull requests) | Only as reliable as people | None | Pull request body, release run warnings |
+
+The recommended setting is a merge queue, or strict status checks when the
+tap cannot use one (a personal account's tap); the `after-merge` job is a detector for what gets
+around either (bypass, direct push), not a replacement.
+
+### Adopting it
+
+Copy [examples/workflows/tap-version-guard.yml](../examples/workflows/tap-version-guard.yml)
+into the tap's `.github/workflows/`, replace `<full-commit-sha>` with the
+Hephaestus commit you reviewed (one with `-against` and `-each`), and set
+the ruleset of the tap's default branch. The ruleset is the tap owner's
+decision; nothing in Hephaestus changes it.
+
+**In the GitHub UI** (tap repository, Settings, Rules, Rulesets, the ruleset
+targeting the default branch, or New branch ruleset):
+
+1. Enforcement status: Active. Target branches: Include default branch.
+2. Enable **Require status checks to pass**; Add checks: `version-guard`
+   (source: GitHub Actions); enable **Require branches to be up to date
+   before merging**.
+3. Or, with a merge queue: enable **Require merge queue** (merge method
+   Merge, build concurrency as needed, "Only merge non-failing pull
+   requests"); `version-guard` stays a required check, and the workflow's
+   `merge_group` trigger runs it on each entry.
+4. Keep the bypass list empty (or know that a bypass is what the
+   `after-merge` job then reports).
+5. Optionally create the label `formula-rollback`.
+
+**With the API** (`gh`, an admin token of the tap; `TAP=owner/homebrew-tap`):
+
+```sh
+# Find the ruleset of the default branch (or create one below).
+gh api "repos/$TAP/rulesets" --jq '.[] | {id, name, target, enforcement}'
+
+# Create it: required check, strict, no bypass.
+gh api -X POST "repos/$TAP/rulesets" --input - <<'JSON'
+{
+  "name": "default branch",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+  "bypass_actors": [],
+  "rules": [
+    {"type": "required_status_checks", "parameters": {
+      "strict_required_status_checks_policy": true,
+      "required_status_checks": [{"context": "version-guard", "integration_id": 15368}]
+    }}
+  ]
+}
+JSON
+```
+
+`integration_id` 15368 is GitHub Actions; omit it to accept the check from
+any source. To use a merge queue instead of (or with) strict checks, add
+this rule to `rules` (and update an existing ruleset with
+`gh api -X PUT "repos/$TAP/rulesets/<id>" --input <file>`, sending the
+whole ruleset):
+
+```json
+{"type": "merge_queue", "parameters": {
+  "merge_method": "MERGE", "grouping_strategy": "ALLGREEN",
+  "max_entries_to_build": 5, "min_entries_to_merge": 1, "max_entries_to_merge": 5,
+  "min_entries_to_merge_wait_minutes": 0, "check_response_timeout_minutes": 60
+}}
+```
+
+Check the result: `gh api "repos/$TAP/rules/branches/main"` lists the
+active rules of the branch.
+
+### Re-checking right before a merge
+
+Hephaestus scans the open pull requests when it proposes a formula and again
+after opening its pull request, but it never merges. Whoever merges can
+re-check a formula pull request against the current base without a merge
+commit:
+
+```sh
+git -C <tap> fetch origin main "pull/<number>/head"
+go run github.com/magicdrive/hephaestus/cmd/tap-version-guard@<commit> \
+  -C <tap> -against origin/main -head FETCH_HEAD
+```
+
+or run the workflow manually (`gh workflow run "Formula version guard" -R
+$TAP`), whose `after-merge` job re-checks every open pull request against
+the default branch and opens an issue for those that would lower a formula.
 
 ## Intentional rollback
 

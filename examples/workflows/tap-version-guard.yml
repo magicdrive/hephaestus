@@ -1,40 +1,203 @@
 # Homebrew tap CI (goes in the tap repository, not in the project): fails a
-# pull request that lowers a formula's version, e.g. the older of two
-# release pull requests merged last. Make "version-guard" a required status
-# check with "require branches to be up to date before merging" (or a merge
-# queue): the check is only as fresh as the base it was run against.
+# change that lowers a formula's version, e.g. the older of two release pull
+# requests merged last. See docs/tap-version-guard.md.
+#
+# - version-guard (pull_request, merge_group): make it a required status
+#   check, with "require branches to be up to date before merging" or a
+#   merge queue: a pull_request check is only as fresh as the base it ran
+#   against, and re-running it checks the same old merge again.
+# - after-merge (push to the default branch, workflow_dispatch): detects a
+#   downgrade that landed anyway (no strict rule, an admin bypass, a direct
+#   push) and open pull requests that the new base turned into downgrades,
+#   and opens or updates an issue. It cannot block: it alerts.
+#
 # A pull request labelled "formula-rollback" may lower the version on
-# purpose. See docs/tap-version-guard.md.
+# purpose.
 name: Formula version guard
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # edited: the base branch was changed.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
   merge_group:
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  # The Hephaestus commit you have reviewed (first release with
+  # cmd/tap-version-guard -against/-each, or later).
+  GUARD: github.com/magicdrive/hephaestus/cmd/tap-version-guard@<full-commit-sha>
+
 jobs:
   version-guard:
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # the rollback label of a merge queue entry
     steps:
       # pull_request checks out the merge of the pull request into the
-      # current base (HEAD^1 is the base); merge_group checks out the group.
+      # current base (HEAD^1 is the base); merge_group checks out the
+      # queue entry, stacked on the entries ahead of it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 2
+          fetch-depth: ${{ github.event_name == 'merge_group' && '0' || '2' }}
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
       - name: Refuse formula downgrades
         env:
-          # The Hephaestus commit you have reviewed (first release with
-          # cmd/tap-version-guard or later).
-          GUARD_VERSION: <full-commit-sha>
-          ROLLBACK: ${{ contains(github.event.pull_request.labels.*.name, 'formula-rollback') }}
+          EVENT: ${{ github.event_name }}
+          PR_ROLLBACK: ${{ contains(github.event.pull_request.labels.*.name, 'formula-rollback') }}
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           flags=()
-          if [ "$ROLLBACK" = true ]; then flags+=(-allow-downgrade); fi
-          go run "github.com/magicdrive/hephaestus/cmd/tap-version-guard@${GUARD_VERSION}" "${flags[@]}"
+          if [ "$EVENT" = merge_group ]; then
+            # gh-readonly-queue/<base>/pr-<number>-<sha>: the entry's pull request.
+            pr="$(sed -n 's|.*/pr-\([0-9][0-9]*\)-[0-9a-f]*$|\1|p' <<<"$QUEUE_REF")"
+            if [ -n "$pr" ] && gh api "repos/$REPO/issues/$pr/labels" --jq '.[].name' | grep -qx formula-rollback; then
+              flags+=(-allow-downgrade)
+            fi
+            # Every step from the base branch to this entry, against its
+            # first parent: an older release queued behind a newer one fails
+            # even when the group's net change goes up.
+            go run "$GUARD" -base "$QUEUE_BASE" -each "${flags[@]}"
+          else
+            if [ "$PR_ROLLBACK" = true ]; then flags+=(-allow-downgrade); fi
+            go run "$GUARD" "${flags[@]}"
+          fi
+
+  after-merge:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: formula-version-guard-after-merge
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Check what landed and the open pull requests
+        id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install "$GUARD"
+          guard="$RUNNER_TEMP/bin/tap-version-guard"
+          report="$RUNNER_TEMP/report.md"
+          : > "$report"
+          bad=0
+          # 1. The push itself, step by step (a merge queue group or several
+          #    merges at once). A new branch or a forced push has no usable
+          #    "before": check the last commit only.
+          if [ "$EVENT" = push ]; then
+            if [ "$BEFORE" != 0000000000000000000000000000000000000000 ] && git merge-base --is-ancestor "$BEFORE" "$AFTER" 2>/dev/null; then
+              range=(-base "$BEFORE" -head "$AFTER" -each)
+            else
+              echo "::warning::no fast-forward from $BEFORE: checking $AFTER against its first parent only"
+              range=(-base "$AFTER^1" -head "$AFTER")
+            fi
+            if ! out="$("$guard" "${range[@]}")"; then
+              bad=1
+              printf '%s\n' "$out"
+              {
+                echo "### A formula went down on \`$BRANCH\` ($AFTER)"
+                echo
+                echo '```'
+                grep '::error' <<<"$out" | sed 's/^::error file=[^:]*:://'
+                echo '```'
+                echo
+                echo "Restore the newer formula with a pull request (never force-push \`$BRANCH\`):"
+                echo
+                echo '```sh'
+                echo "git switch -c restore-formula origin/$BRANCH"
+                echo "git checkout $BEFORE -- <the formula path above>"
+                echo "git commit -m 'Restore <formula> to <newer version>'"
+                echo '```'
+                echo
+                echo "or revert the merge that lowered it (\`git revert -m 1 <merge commit>\`)."
+                echo "If the downgrade was an intentional rollback (label \`formula-rollback\`), close this issue."
+                echo
+              } >> "$report"
+            fi
+          fi
+          # 2. Open pull requests against the branch, re-checked against its
+          #    current tip: their green pull_request checks may predate it.
+          tip="$(git rev-parse HEAD)"
+          gh pr list --repo "$REPO" --base "$BRANCH" --state open --limit 200 \
+            --json number,headRefOid,labels \
+            --jq '.[] | "\(.number) \(.headRefOid) \([.labels[].name] | index("formula-rollback") != null)"' |
+          while read -r number sha rollback; do
+            git fetch --quiet --no-tags origin "+refs/pull/$number/head:refs/remotes/pr/$number" || {
+              echo "::warning::cannot fetch pull request #$number"; continue; }
+            if [ "$(git rev-parse "refs/remotes/pr/$number")" != "$sha" ]; then
+              echo "::warning::pull request #$number moved while it was fetched; it is checked by its own run"
+              continue
+            fi
+            flags=()
+            if [ "$rollback" = true ]; then flags+=(-allow-downgrade); fi
+            rc=0
+            out="$("$guard" -against "$tip" -head "$sha" "${flags[@]}")" || rc=$?
+            if [ "$rc" = 2 ]; then
+              echo "::error::cannot check pull request #$number"
+              echo error >> "$RUNNER_TEMP/stale"
+            elif [ "$rc" != 0 ]; then
+              printf '%s\n' "$out"
+              {
+                echo "### #$number would lower a formula if merged now"
+                echo
+                echo '```'
+                grep '::error' <<<"$out" | sed 's/^::error file=[^:]*:://'
+                echo '```'
+                echo
+                echo "Close it (a newer release is on \`$BRANCH\`). Its green check ran against an older base; re-running that check does not help."
+                echo
+              } >> "$report"
+              echo stale >> "$RUNNER_TEMP/stale"
+            fi
+          done
+          if [ -s "$RUNNER_TEMP/stale" ]; then bad=1; fi
+          if [ "$bad" = 1 ]; then
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+            echo "report=$report" >> "$GITHUB_OUTPUT"
+          fi
+          echo "bad=$bad" >> "$GITHUB_OUTPUT"
+      - name: Open or update the issue
+        if: steps.check.outputs.bad == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REPORT: ${{ steps.check.outputs.report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Formula version guard: downgrade on the default branch or in open pull requests"
+          body="$(cat "$REPORT"; echo; echo "Run: $RUN_URL")"
+          number="$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" --json number,title |
+            jq -r --arg t "$title" '[.[] | select(.title == $t) | .number][0] // empty')"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$REPO" --body "$body"
+          else
+            gh issue create --repo "$REPO" --title "$title" --body "$body"
+          fi
+          exit 1
