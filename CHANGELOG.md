@@ -5,6 +5,25 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
 ## Unreleased
 
+- The tap stage (pull request mode) reads the other open pull requests
+  against the tap's base branch before proposing a formula. When one
+  proposes a newer version (by SemVer precedence), nothing is written and
+  the formula is skipped, as for a newer base branch: merging the older
+  pull request last would have downgraded the formula. Older ones are named
+  in a warning and in the new pull request's body, which now states the
+  merge order; the scan is repeated after opening, so racing releases
+  report each other. `brews[].allow_downgrade` turns the skip into a
+  warning. New `cmd/tap-version-guard` and
+  `examples/workflows/tap-version-guard.yml` let a tap's CI fail a change
+  that lowers a formula's version (docs/tap-version-guard.md).
+- The publish lock is an operating system file lock (flock on Unix,
+  LockFileEx on Windows) instead of a file created with `O_EXCL`. A publish
+  killed with `SIGKILL` (or crashed) left `hephaestus-publish.lock` behind
+  and every later publish failed until the file was removed by hand; the
+  system now releases the lock with the process, a leftover file (also one
+  from an older version) is locked again, and a live publish's lock is
+  still refused, naming its pid, host and start time. Publish refuses to
+  run on a file system that cannot lock.
 - The tap stage verifies a pull request head branch that someone else
   created between its check that the branch is missing and its create (a
   422 "Reference already exists"), as it verifies any existing branch: it

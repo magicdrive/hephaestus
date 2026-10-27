@@ -56,10 +56,11 @@ vet:
 	@$(GO) vet ./...
 	@GOOS=windows $(GO) vet ./...
 
-# Check formatting
+# Check formatting (gofmt's own status counts: when it fails it prints nothing)
 .PHONY: fmt-check
 fmt-check:
-	@test -z "$$(gofmt -l .)" || (gofmt -l .; echo "run gofmt -w"; exit 1)
+	@out="$$(gofmt -l .)" || { echo "fmt-check: gofmt failed"; exit 1; }; \
+	test -z "$$out" || { echo "$$out"; echo "run gofmt -w"; exit 1; }
 
 # Run golangci-lint as CI does
 .PHONY: golangci-lint

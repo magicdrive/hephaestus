@@ -393,7 +393,7 @@ values substituted into them must consist of `A-Z a-z 0-9 . _ + - / @ : ~ = ,
 | `commit_author.signing` | — | — | Rejected: commits are created through the GitHub API. |
 | `skip_upload` | `true` \| `false` \| `auto` | `false` | `true`: generate but never publish. `auto`: skip prereleases. |
 | `completions` | mapping | — | Shell completions installed with the formula; see [below](#formula-completions). Unset: the formula is unchanged. |
-| `allow_downgrade` | bool | `false` | Before writing, the version of the formula already in the tap (its `version` line, else a semantic version in its URL path; in pull request mode, on the base branch) is compared with the one being published. When the tap's is newer (for example an older tag's workflow was re-run), nothing is written and the formula is reported as skipped, unless this is `true`. Versions that are not semantic versions cannot be compared: the formula is updated with a warning. |
+| `allow_downgrade` | bool | `false` | Before writing, the version of the formula already in the tap (its `version` line, else a semantic version in its URL path; in pull request mode, on the base branch) is compared with the one being published. When the tap's is newer (for example an older tag's workflow was re-run), nothing is written and the formula is reported as skipped, unless this is `true`. Versions that are not semantic versions cannot be compared: the formula is updated with a warning. In pull request mode a newer version in another open pull request against the base branch is a downgrade too, and older ones are named in warnings and in the pull request body ([tap-version-guard.md](tap-version-guard.md)). |
 
 
 ### Formula completions

@@ -49,7 +49,9 @@ type fakePull struct {
 	HeadRef   string
 	Base      string
 	Title     string
+	Body      string
 	Draft     bool
+	Closed    bool // merged
 }
 
 func newFake(t *testing.T, tokens ...string) *fakeGitHub {
@@ -254,6 +256,9 @@ func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) 
 				ref = repo.defaultBranch
 			}
 			sha, ok := repo.branches[ref]
+			if _, isCommit := f.commits[ref]; !ok && isCommit {
+				sha, ok = ref, true // a commit SHA (objects are shared with forks)
+			}
 			if !ok {
 				reply(w, 404, map[string]any{"message": "No commit found for the ref " + ref})
 				return
@@ -372,7 +377,7 @@ func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) 
 		}
 		out := []any{}
 		for _, p := range f.pulls {
-			if p.BaseRepo == full && (q.Get("head") == "" || q.Get("head") == p.HeadLabel) && (q.Get("base") == "" || q.Get("base") == p.Base) {
+			if !p.Closed && p.BaseRepo == full && (q.Get("head") == "" || q.Get("head") == p.HeadLabel) && (q.Get("base") == "" || q.Get("base") == p.Base) {
 				out = append(out, f.pullJSON(p))
 			}
 		}
@@ -396,12 +401,12 @@ func (f *fakeGitHub) route(w http.ResponseWriter, r *http.Request, body []byte) 
 			}
 		}
 		for _, p := range f.pulls {
-			if p.BaseRepo == full && p.HeadLabel == label && p.Base == req.Base {
+			if !p.Closed && p.BaseRepo == full && p.HeadLabel == label && p.Base == req.Base {
 				reply(w, 422, map[string]any{"message": "Validation Failed", "errors": []any{map[string]any{"resource": "PullRequest", "code": "custom", "message": "A pull request already exists for " + label + "."}}})
 				return
 			}
 		}
-		p := &fakePull{Number: len(f.pulls) + 1, BaseRepo: full, HeadLabel: label, HeadRef: headRef, Base: req.Base, Title: req.Title, Draft: req.Draft}
+		p := &fakePull{Number: len(f.pulls) + 1, BaseRepo: full, HeadLabel: label, HeadRef: headRef, Base: req.Base, Title: req.Title, Body: req.Body, Draft: req.Draft}
 		f.pulls = append(f.pulls, p)
 		reply(w, 201, f.pullJSON(p))
 
@@ -440,10 +445,19 @@ func dirListing(files map[string]string, dir string) []any {
 }
 
 func (f *fakeGitHub) pullJSON(p *fakePull) map[string]any {
+	// The head commit is the head branch's current commit, in the base
+	// repository or the fork the label names.
+	headSHA := ""
+	if owner, _, ok := strings.Cut(p.HeadLabel, ":"); ok {
+		_, name, _ := strings.Cut(p.BaseRepo, "/")
+		if hr := f.repos[owner+"/"+name]; hr != nil {
+			headSHA = hr.branches[p.HeadRef]
+		}
+	}
 	return map[string]any{
-		"number": p.Number, "state": "open", "title": p.Title,
+		"number": p.Number, "state": "open", "title": p.Title, "body": p.Body,
 		"html_url": fmt.Sprintf("https://github.example/%s/pull/%d", p.BaseRepo, p.Number),
-		"head":     map[string]any{"ref": p.HeadRef, "label": p.HeadLabel},
+		"head":     map[string]any{"ref": p.HeadRef, "label": p.HeadLabel, "sha": headSHA},
 		"base":     map[string]any{"ref": p.Base},
 	}
 }
@@ -502,4 +516,42 @@ func (f *fakeGitHub) compareLocked(w http.ResponseWriter, baseSHA, headSHA strin
 		}
 	}
 	reply(w, 200, map[string]any{"status": status, "ahead_by": ahead, "behind_by": behind, "total_commits": ahead, "files": files})
+}
+
+// openRivalPull creates branch from base's HEAD with content at path and
+// opens a pull request for it, as another release would.
+func (f *fakeGitHub) openRivalPull(full, base, branch, path, content string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	repo := f.repos[full]
+	repo.branches[branch] = repo.branches[base]
+	f.setFileLocked(full, branch, path, content)
+	owner, _, _ := strings.Cut(full, "/")
+	f.addPullLocked(full, owner+":"+branch, branch, base)
+	return len(f.pulls)
+}
+
+// mergeBranch fast-forwards (or overwrites) base with branch's commit, as
+// merging a pull request does; the pull request is closed.
+func (f *fakeGitHub) mergeBranch(full, base, branch string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	repo := f.repos[full]
+	snap := map[string]string{}
+	for k, v := range f.commits[repo.branches[base]] {
+		snap[k] = v
+	}
+	for k, v := range f.commits[repo.branches[branch]] {
+		snap[k] = v
+	}
+	sha := f.nextSHA("merge")
+	f.commits[sha] = snap
+	f.parents[sha] = repo.branches[base]
+	repo.branches[base] = sha
+	owner, _, _ := strings.Cut(full, "/")
+	for _, p := range f.pulls {
+		if p.BaseRepo == full && p.HeadLabel == owner+":"+branch {
+			p.Closed = true
+		}
+	}
 }

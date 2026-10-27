@@ -1,0 +1,40 @@
+# Homebrew tap CI (goes in the tap repository, not in the project): fails a
+# pull request that lowers a formula's version, e.g. the older of two
+# release pull requests merged last. Make "version-guard" a required status
+# check with "require branches to be up to date before merging" (or a merge
+# queue): the check is only as fresh as the base it was run against.
+# A pull request labelled "formula-rollback" may lower the version on
+# purpose. See docs/tap-version-guard.md.
+name: Formula version guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  version-guard:
+    runs-on: ubuntu-latest
+    steps:
+      # pull_request checks out the merge of the pull request into the
+      # current base (HEAD^1 is the base); merge_group checks out the group.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Refuse formula downgrades
+        env:
+          # The Hephaestus commit you have reviewed (first release with
+          # cmd/tap-version-guard or later).
+          GUARD_VERSION: <full-commit-sha>
+          ROLLBACK: ${{ contains(github.event.pull_request.labels.*.name, 'formula-rollback') }}
+        run: |
+          flags=()
+          if [ "$ROLLBACK" = true ]; then flags+=(-allow-downgrade); fi
+          go run "github.com/magicdrive/hephaestus/cmd/tap-version-guard@${GUARD_VERSION}" "${flags[@]}"
