@@ -3,7 +3,14 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
-## Unreleased
+## v1.4.0
+
+`hephaestus preflight`, and so `hephaestus publish`, checks the release
+workflow's conventions before the tag push; the tap stage guards against
+formula downgrades through the merge order of open pull requests and against
+the same version with other checksums; `cmd/tap-version-guard` and
+`cmd/pr-gate` guard the tap's merges; the publish lock is an operating system
+file lock. The full notes are in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 - **`cmd/tap-version-guard -strict`**, for the tap's required check: besides
   a downgrade it fails a changed or added formula without a version or with
@@ -14,22 +21,40 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   formula, a formula that is not a regular file (symlink, submodule), an
   unsafe path and a `Formula` entry that is not a directory. It checks only
   the formulae Homebrew loads (`Formula/**`, else `HomebrewFormula/**`, else
-  root `*.rb`) and reads them from git objects only. `-allow-downgrade` (the
-  `formula-rollback` label) lowers the version and artifact findings to
-  warnings, never those about a formula the guard cannot read. Without
-  `-strict` the guard behaves as before, except that a missing git object is
-  now an error (exit 2) instead of an absent file, and annotations escape
-  paths and versions (a crafted file name cannot start a workflow command).
-  The example tap workflow runs `-strict`; reads the rollback label so that
-  a failed read means no label; runs every script with `bash -euo
-  pipefail`; pins Go (`GOTOOLCHAIN=local`, no cache); grants no default
-  permissions; honours the label of each merged pull request after the
-  merge; opens the after-merge issue only for findings (a check that could
-  not run fails the job instead, and a pull request that fails on its own is
-  not reported), from a separate job that alone may write issues and runs no
-  code. docs/tap-version-guard.md tabulates the outcome of every case and
-  the race of two release pull requests (`TestTOCTOU`); `pr-gate` gains a
-  test that a head behind its base never passes nor merges.
+  root `*.rb`) and reads them from git objects only. `-allow-downgrade`
+  lowers the version and artifact findings to warnings, never those about
+  a formula the guard cannot read. Without `-strict` the guard behaves as
+  before, except that a missing git object is now an error (exit 2) instead
+  of an absent file, and annotations escape paths and versions (a crafted
+  file name cannot start a workflow command).
+  The example tap workflow runs `-strict`; runs every script with `bash
+  -euo pipefail`; pins Go (`GOTOOLCHAIN=local`, no cache); grants no default
+  permissions; checks each merged pull request after the merge with its own
+  rollback authorization; opens the after-merge issue only for findings (a
+  check that could not run fails the job instead, and a pull request that
+  fails on its own is not reported), from a separate job that alone may
+  write issues and runs no code. docs/tap-version-guard.md tabulates the
+  outcome of every case and the race of two release pull requests
+  (`TestTOCTOU`); `pr-gate` gains a test that a head behind its base never
+  passes nor merges. (#46)
+- **Tap rollback authorization**: a rollback is authorized for exactly one
+  downgrade, `PATH=FROM->TO`, by `cmd/tap-version-guard -strict -rollback`
+  or by an approval comment (`-approvals`, `-permissions`,
+  `-approval-head`, `-approval-before`): first line `/formula-rollback`,
+  one `head:`, one or more `formula:`, one non-empty `reason:`, posted by a
+  user with the admin role on the tap, never edited, naming the pull
+  request head. Only the authorized downgrade becomes a warning; every
+  other finding, a removal included, stays an error, and an authorization
+  the change does not use fails. `-summary` records the authorized
+  rollbacks. `-allow-downgrade` stays for compatibility. The example tap
+  workflow no longer lets the `formula-rollback` label alone allow any
+  downgrade: it runs the required check on `pull_request_target` (the
+  default branch's workflow), fetches the pull request as objects only,
+  needs the label and an admin's approval, posts the commit status
+  `version-guard` as well (a check of the same name from a pull request's
+  own workflow cannot stand in for it), serializes the runs of a pull
+  request and validates merged pull requests' approvals after the merge.
+  (#52)
 - **Tap: same version, other checksums**: the tap stage fails, before
   writing anything and in a dry run too, when the tap's base branch, the
   pull request branch or an open pull request from the tap already has the
@@ -39,14 +64,14 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   such a release before it is published. Other changes at the same version
   (desc, caveats, a new platform) are proposed as before; allow_downgrade
   does not apply. `tap.ChecksumChanges` is the rule, for the tap's CI to
-  reuse.
-- **Tap: forks no longer block publishing**: an open pull request from
+  reuse. (#44)
+- **Tap: forks do not block publishing**: an open pull request from
   someone else's fork that proposes a newer version (or this version with
   other checksums) is reported as a warning instead of skipping the tap
   stage; anyone can open one on a public tap, so it could stop every later
   release from updating the formula while the release workflow stayed
   green. Pull requests from a branch of the tap (or of the configured head
-  repository) still skip as before.
+  repository) skip. (#44)
 - **Merge gate**: new `cmd/pr-gate` decides whether a pull request may be
   merged and, only with `-merge`, merges it pinned to the reviewed head
   (`PUT pulls/{n}/merge` with `sha`, sent once) and verifies the merge
@@ -56,7 +81,9 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   branch protection (or named with `-require`), every check, status and
   workflow run completed, the latest attempt of each check decides, and a
   required check is satisfied only by `success` (not `skipped` or
-  `neutral`). Without `-merge` it only reads (docs/pr-gate.md).
+  `neutral`). Without `-merge` it only reads (docs/pr-gate.md). Merges
+  into one base on one machine are serialized by a lock file created with
+  `O_EXCL` in the temporary directory. (#40)
 - **Release workflow checks**: `hephaestus preflight` reads the release
   workflow (`preflight.workflow`, default `.github/workflows/release.yml`)
   and the CI workflow it runs from the work tree, and checks the
@@ -75,7 +102,7 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   `hephaestus publish` now stops before pushing the tag instead of after
   publishing; `preflight.skip` turns one off. `hephaestus check
   --workflows` runs the same checks without a tag (for pull request CI) and
-  exits 1 on a violation.
+  exits 1 on a violation. (#37)
 - `cmd/tap-version-guard` has two more modes. `-against <tip>` checks an
   unmerged pull request head against the base branch's current tip (the
   formulae it changed since the merge base), so open pull requests can be
@@ -85,13 +112,13 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   entry or a push that lands several merges fails on a downgrade inside it
   even when the net change goes up. The example tap workflow runs on
   `edited` (base changed), checks merge queue entries with `-each` from
-  `base_sha` (and the entry's `formula-rollback` label), and adds an
+  `base_sha`, and adds an
   `after-merge` job (push to the default branch, `workflow_dispatch`) that
   opens an issue with restore steps when a downgrade landed and names the
   open pull requests the new base turned into downgrades.
   docs/tap-version-guard.md compares the options (required check, strict,
   merge queue, post-merge detection, update branch, GitHub App) and gives
-  the ruleset settings in the UI and through the API.
+  the ruleset settings in the UI and through the API. (#42)
 - The tap stage (pull request mode) reads the other open pull requests
   against the tap's base branch before proposing a formula. When one
   proposes a newer version (by SemVer precedence), nothing is written and
@@ -102,7 +129,7 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   report each other. `brews[].allow_downgrade` turns the skip into a
   warning. New `cmd/tap-version-guard` and
   `examples/workflows/tap-version-guard.yml` let a tap's CI fail a change
-  that lowers a formula's version (docs/tap-version-guard.md).
+  that lowers a formula's version (docs/tap-version-guard.md). (#36)
 - The publish lock also excludes older versions that locked with
   `O_EXCL` on the same file: they find the file and refuse, and a file one
   of them wrote (`pid N`) is now refused instead of taken over, since its
@@ -111,15 +138,15 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   refused too. Publish refuses a clone on a network or user-space file
   system (NFS, SMB, WebDAV, FUSE, 9p, a network drive), where a lock that
   succeeds may hold only on this host, and checks right before creating and
-  pushing the tag that the lock file is still the one it locked.
+  pushing the tag that the lock file is still the one it locked. (#39)
 - The publish lock is an operating system file lock (flock on Unix,
   LockFileEx on Windows) instead of a file created with `O_EXCL`. A publish
   killed with `SIGKILL` (or crashed) left `hephaestus-publish.lock` behind
   and every later publish failed until the file was removed by hand; the
-  system now releases the lock with the process, a leftover file (also one
-  from an older version) is locked again, and a live publish's lock is
-  still refused, naming its pid, host and start time. Publish refuses to
-  run on a file system that cannot lock.
+  system now releases the lock with the process, a leftover file is locked
+  again (except one an older version wrote, above), and a live publish's
+  lock is still refused, naming its pid, host and start time. Publish
+  refuses to run on a file system that cannot lock. (#34)
 - The tap stage verifies a pull request head branch that someone else
   created between its check that the branch is missing and its create (a
   422 "Reference already exists"), as it verifies any existing branch: it
@@ -127,28 +154,48 @@ from `RELEASE_NOTES.md` (`release.github.notes_file`).
   changes under the formula update's title. A create whose response was
   lost (5xx, timeout) is followed by a read of the branch, so a branch that
   was created is used (after the same verification when it is not at the
-  commit sent) instead of failing the tap step.
+  commit sent) instead of failing the tap step. (#33)
 - The release stage stops before it creates, uploads or publishes anything
   when the commit being released is known (`--commit`, `$GITHUB_SHA`) but
   the tag cannot be read (an API error other than 404: missing permission,
   an outage that outlasts the retries). It only warned and went on, and since
   GitHub ignores `target_commitish` for an existing tag, the build could have
-  been published under a tag of another commit.
+  been published under a tag of another commit. (#30)
 - `scripts/fuzz.sh` fails when `go list` or `go test -list` fails, instead of
   fuzzing nothing and passing; `scripts/go-env-snapshot.sh` fails when `go
   version` or `go env` fails instead of printing an empty value, and runs
   both outside any module: from the repository root, `go.mod`'s toolchain
   line made a runner's older Go download that toolchain, so CI's
   action-isolation, action-install and action-release jobs depended on
-  the Go download servers.
+  the Go download servers. (#30, #31)
+- `make fmt-check` (and `make lint`) fails when `gofmt` itself fails (a
+  file it cannot parse, no `gofmt` on `PATH`) instead of reading its empty
+  output as formatted. (#35)
 - Tests: every check `hephaestus publish` makes between creating the tag and
   pushing it (the re-fetch, the release branch's head on GitHub, the tag on
   origin) stops the publish when it fails or cannot be made, and `make
-  publish*` exits non-zero whenever the publish tool does.
+  publish*` exits non-zero whenever the publish tool does. (#30)
 - `hephaestus publish` says to delete the local tag when another clone or
   machine pushed the same tag at another commit first; tests pin that such a
   race never replaces origin's tag, and that a tag pushed elsewhere at the
-  checked commit is followed as this release.
+  checked commit is followed as this release. (#32)
+- Hephaestus's own release workflow: a new `provenance` job, which the
+  build and release jobs need, releases only a tag whose commit is in the
+  history of `main` (`.github/release/verify-tag-provenance.sh`: it fetches
+  the tag and the branch afresh, requires the tag to name the run's commit
+  and fails closed on anything it cannot establish) (#50); the release
+  jobs run on `ubuntu-24.04` instead of `ubuntu-latest` (#48).
+- Tests and CI: failure injection for every GitHub write of a release
+  (`TestPipelineFailureInjection`, `TestPipelineTagCollision`) (#45); the
+  read-only preflight test disables background git maintenance in its
+  repositories (#47); `go test` runs without network in CI
+  (`scripts/test-offline.sh`, `make test-offline`) and the published-release
+  end-to-end test of the action is a job of its own (#38); `renovate.json`
+  is validated with a lockfile-pinned Renovate (`make renovate-check`) and
+  the dev tools are pinned (#41).
+- Docs: docs/release-protection.md, the release protection reference
+  (required checks, rulesets, rollback, recovery, owner checklist) (#43,
+  #49).
 
 ## v1.3.0
 
