@@ -144,11 +144,7 @@ GITHUB_TOKEN=... HOMEBREW_TAP_GITHUB_TOKEN=... hephaestus run --tag v1.2.3
 
 ## インストール
 
-```sh
-go install github.com/magicdrive/hephaestus@latest   # Go 1.26 以降
-```
-
-Homebrew でもインストールできます。入るのは、[magicdrive/homebrew-tap](https://github.com/magicdrive/homebrew-tap) への Formula の pull request がマージ済みの、最新の安定版です（プレリリースは Tap に入りません）。
+Homebrew でインストールできます。入るのは、[magicdrive/homebrew-tap](https://github.com/magicdrive/homebrew-tap) への Formula の pull request がマージ済みの、最新の安定版です（プレリリースは Tap に入りません）。
 
 ```sh
 brew install magicdrive/tap/hephaestus
@@ -161,6 +157,19 @@ GitHub Actions では Action を使います（固定したコミットから He
 ```yaml
 - uses: magicdrive/hephaestus@<full-commit-sha>
 ```
+
+macOS と Linux（amd64、arm64）では、インストールスクリプトも使えます。ダウンロードして、必要なら中身を確認してから `sh` で実行します。
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/magicdrive/hephaestus/main/install.sh
+sh install.sh                                  # 最新の安定版を ~/.local/bin に
+sh install.sh --version v1.3.0                 # 版を指定（古い版やプレリリースも可）
+sh install.sh --upgrade                        # 最新の安定版に更新
+```
+
+アーカイブはリリースの `hephaestus_checksums.txt` の SHA-256 で検証してから展開し、取り出すのは `hephaestus` だけです。`sudo` は使わず、`PATH` も変更しません。Homebrew の管理するディレクトリには入れません（Homebrew の hephaestus は `brew upgrade hephaestus` で更新してください）。Windows では動きません（WSL の中では Linux と同じ手順）。オプション、検証、注意点の詳細は [README の Installation](README.md#installation)（英語）を参照してください。
+
+ソースから（Go 1.26 以降）：`git clone https://github.com/magicdrive/hephaestus.git && cd hephaestus && make build`（バイナリは `build/hephaestus`）
 
 ## 使い方
 
