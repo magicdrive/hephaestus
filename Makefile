@@ -94,6 +94,12 @@ snapshot: build
 	@$(BUILD_DIR)/$(BINARY_NAME) run --snapshot --fresh --stages build,archive,checksum
 	@scripts/verify-dist.sh dist
 
+# Check install.sh (shellcheck must be installed)
+.PHONY: shellcheck
+shellcheck:
+	@sh -n install.sh
+	@shellcheck -s sh install.sh
+
 # Remove build artifacts
 .PHONY: clean
 clean:
@@ -195,6 +201,7 @@ publish-help:
 help:
 	@echo "Makefile commands:"
 	@echo "  make build          - Build ./build/hephaestus"
+	@echo "  make shellcheck     - Check install.sh with shellcheck"
 	@echo "  make install        - go install with version information"
 	@echo "  make test           - Run tests"
 	@echo "  make test-verbose   - Run tests verbosely with a clean cache"

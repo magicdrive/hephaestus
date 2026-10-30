@@ -47,6 +47,10 @@ jobs:
         run: |
           shellcheck .github/release/verify-tag-provenance.sh .github/release/verify-tag-provenance_test.sh
           .github/release/verify-tag-provenance_test.sh
+      - name: shellcheck install.sh
+        run: |
+          shellcheck --version | head -2
+          make shellcheck
 
   renovate-check:
     # renovate.json with renovate-config-validator --strict of the Renovate
@@ -88,6 +92,26 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # The install.sh tests (internal/installer) run the script with each shell
+      # and downloader named here, and with the BusyBox tools on Linux; one that
+      # is missing fails them instead of skipping it. Not on Windows.
+      - name: Install busybox and wget for the installer tests
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q busybox wget
+            {
+              # /bin/sh is dash on Ubuntu
+              echo "HEPHAESTUS_INSTALLER_SHELLS=sh bash bash-nonposix busybox"
+              echo "HEPHAESTUS_INSTALLER_BUSYBOX=required"
+            } >> "$GITHUB_ENV"
+          else
+            command -v wget >/dev/null || brew install wget
+            echo "HEPHAESTUS_INSTALLER_SHELLS=sh dash bash bash-nonposix ksh" >> "$GITHUB_ENV"
+          fi
+          echo "HEPHAESTUS_INSTALLER_DOWNLOADERS=curl wget" >> "$GITHUB_ENV"
+          curl --version | head -1; wget --version | head -1
       - name: Unit, golden and integration tests
         shell: bash
         run: go test -count=1 -coverprofile=coverage.out ./...
@@ -157,10 +181,14 @@ jobs:
         with:
           go-version-file: ${{ matrix.go == 'go.mod' && 'go.mod' || '' }}
           go-version: ${{ matrix.go == 'stable' && 'stable' || '' }}
+      # The install.sh tests run with every shell and downloader in `test`;
+      # -race checks only their Go side, so one shell and curl are enough here.
       - name: Race detector
         env:
           CGO_ENABLED: "1"
           GOTOOLCHAIN: local
+          HEPHAESTUS_INSTALLER_SHELLS: sh
+          HEPHAESTUS_INSTALLER_DOWNLOADERS: curl
         run: go test -race -count=1 ./...
 
   fuzz-smoke:
@@ -197,6 +225,14 @@ jobs:
         # release.yml runs this CI on a tag push, where the runner sets
         # GITHUB_REF_TYPE=tag for every step; --snapshot must ignore it.
         run: GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.0.0-ci.1 GITHUB_REF=refs/tags/v0.0.0-ci.1 make snapshot
+      # install.sh installs this machine's archive from the snapshot, served
+      # as one release by a fake github.com (docs/installer.md)
+      - name: install.sh with the snapshot archives
+        env:
+          HEPHAESTUS_INSTALLER_DIST: ${{ github.workspace }}/dist
+          HEPHAESTUS_INSTALLER_SHELLS: sh
+          HEPHAESTUS_INSTALLER_DOWNLOADERS: curl
+        run: go test -count=1 -v -run '^TestDistArchives$' ./internal/installer/
 
   homebrew-e2e:
     strategy:
