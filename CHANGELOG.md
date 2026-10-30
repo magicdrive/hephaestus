@@ -3,6 +3,24 @@
 All notable changes to Hephaestus. The notes of each release are published
 from `RELEASE_NOTES.md` (`release.github.notes_file`).
 
+## v1.5.0
+
+`install.sh` installs Hephaestus from GitHub Releases on macOS and Linux (amd64, arm64), without
+Homebrew or Go. The full notes are in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+
+- **`install.sh`**: the latest stable release or `--version vX.Y.Z` (older releases and
+  pre-releases too), into `~/.local/bin` or `--dir DIR`; the archive is checked against
+  `hephaestus_checksums.txt` and its entries before only the binary is taken out, and it replaces
+  the installed one with a single rename after it ran and reported the version. No `sudo`, no
+  `PATH` changes, Homebrew's directories and symbolic links are left alone. It is Enma's
+  installer with one more configuration line, `VERSION_PREFIX` (`hephaestus --version` prints
+  `hephaestus vX.Y.Z`, unchanged). Every release from v0.1.0 on can be installed.
+- **Tests and CI**: `internal/installer` runs the script against a fake github.com with sh, dash,
+  bash, ksh and BusyBox, curl and GNU Wget, including the README's commands; CI installs the
+  snapshot archives with it.
+- **README**: the Installation section shows Homebrew, the install script, the archives, the
+  action and building from source; `go install` is no longer documented.
+
 ## v1.4.0
 
 `hephaestus preflight`, and so `hephaestus publish`, checks the release
