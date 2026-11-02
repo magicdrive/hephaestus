@@ -23,6 +23,7 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,6 +89,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -147,6 +149,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -176,6 +179,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         go: [go.mod, stable]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -196,6 +200,7 @@ jobs:
 
   fuzz-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -216,6 +221,7 @@ jobs:
     # Hephaestus packages itself: build all targets, archive, checksum, and
     # verify the dist layout, exactly as the release workflow does.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -243,6 +249,7 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -420,6 +427,7 @@ jobs:
     defaults:
       run:
         shell: bash
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -560,6 +568,7 @@ jobs:
       GITHUB_TOKEN: heph-boundary-sentinel-job-github-token
       GH_TOKEN: heph-boundary-sentinel-job-gh-token
       HOMEBREW_TAP_GITHUB_TOKEN: heph-boundary-sentinel-job-tap-token
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -729,6 +738,7 @@ jobs:
     if: always()
     needs: [lint, renovate-check, test, test-offline, completion, race, fuzz-smoke, snapshot, homebrew-e2e, action-binary, action-install, e2e-action-install, action-release, action-smoke, action-boundary, action-isolation, action-isolation-detects-v1-1-0]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Every job succeeded
         env:
