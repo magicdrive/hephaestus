@@ -18,6 +18,7 @@ env:
   CGO_ENABLED: "0"
   GOLANGCI_LINT_VERSION: v2.15.0
   GOVULNCHECK_VERSION: v1.9.0
+  ACTIONLINT_VERSION: v1.7.12
 
 jobs:
   lint:
@@ -39,6 +40,8 @@ jobs:
         run: go run "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}" run ./...
       - name: govulncheck
         run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+      - name: actionlint
+        run: go run "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
       - name: shellcheck
         run: shellcheck -x scripts/*.sh action/*.sh testdata/e2e/boundary/probe.sh testdata/e2e/completions/heph-comp cmd/hephaestus/completions/hephaestus.bash cmd/hephaestus/testdata/completion/complete.bash
       # The release workflow's tag provenance check (release.yml, job
