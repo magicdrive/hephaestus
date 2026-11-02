@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs the hephaestus binary for the composite action (action.yml): the
-# release binary of the version in action/VERSION, downloaded from that
+# binary of the release the action is referenced by, downloaded from that
 # GitHub Release and verified before it runs. Nothing is compiled, no Go
 # toolchain is downloaded, and nothing is written to $GITHUB_PATH or
 # $GITHUB_ENV: the caller's Go, Rust, shell, PATH and environment stay as
@@ -8,15 +8,17 @@
 #
 # Binding between the action's source and the binary:
 #
-#   - action/VERSION names the release (vX.Y.Z or vX.Y.Z-rc.N). The release
-#     workflow refuses to publish a tag that differs from it, so the commit a
-#     release tag points to always names that release.
-#   - The action must be referenced by that tag or by a full commit SHA. A
-#     SHA must be the commit the release was built from: the provenance
-#     attestation of the archive records the source commit, the tag ref and
-#     the workflow that built it (magicdrive/hephaestus release.yml on a
-#     GitHub-hosted runner), and gh attestation verify checks all of them.
-#     Branch references fail.
+#   - The action must be referenced by a release tag (vX.Y.Z or
+#     vX.Y.Z-rc.N) or by the full SHA of a commit a release tag points to.
+#     For a SHA, the release is the tag of $repo that points to it (read
+#     with the GitHub API; a stable tag before a pre-release, then the
+#     highest). Branch references, and commits no release tag points to,
+#     fail.
+#   - The provenance attestation of the archive records the source commit,
+#     the tag ref and the workflow that built it (magicdrive/hephaestus
+#     release.yml on a GitHub-hosted runner), and gh attestation verify
+#     checks all of them: the binary was built from that tag, and from the
+#     pinned commit when the action is pinned by SHA.
 #   - The archive's SHA-256 must match the release's checksum file, only the
 #     regular file hephaestus[.exe] is extracted from it, and the extracted
 #     binary must report the expected version.
@@ -50,24 +52,58 @@ sha256() {
   fi
 }
 
-# source_digest REF VERSION SRC: prints the commit SHA the release binary
-# must have been built from (empty when the action is referenced by the
-# release tag itself), or fails for any other reference.
-source_digest() {
-  local ref=$1 version=$2 src=$3
+readonly tag_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'
+
+# action_ref REF SRC: prints the reference the action is used by: REF
+# (github.action_ref) or, when it is empty, the directory the runner checked
+# the action out to.
+action_ref() {
+  local ref=$1 src=$2
   if [[ -z "$ref" ]]; then
     # github.action_ref is empty inside some composite actions; the runner
     # checks the action out under _actions/<owner>/<repo>/<ref>.
     ref="$(basename "$src")"
     case "$(basename "$(dirname "$src")")/$(basename "$(dirname "$(dirname "$src")")")" in
       hephaestus/magicdrive) ;;
-      *) fail "cannot tell which commit of $repo this action is (path $src); reference it as $repo@<full commit SHA> or @$version" ;;
+      *) fail "cannot tell which commit of $repo this action is (path $src); reference it as $repo@<full commit SHA of a release> or @vX.Y.Z" ;;
     esac
   fi
-  if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "$ref"
+}
+
+# release_tags: prints "<tag> <commit SHA>" for every tag of $repo (the
+# commit an annotated tag points to). Replaced by the tests.
+release_tags() {
+  gh api --paginate "repos/$repo/tags?per_page=100" --jq '.[] | "\(.name) \(.commit.sha)"'
+}
+
+# pick_tag: of the release tags on stdin, one per line, prints the stable
+# one (else the pre-release) with the highest MAJOR.MINOR.PATCH.
+pick_tag() {
+  local t key best="" best_key=""
+  while read -r t; do
+    [[ "$t" =~ $tag_re ]] || continue
+    key="$([[ -z "${BASH_REMATCH[4]}" ]] && echo 1 || echo 0)$(printf ' %012d' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")"
+    if [[ -z "$best" || "$key" > "$best_key" ]]; then best=$t best_key=$key; fi
+  done
+  echo "$best"
+}
+
+# resolve REF: prints "<version> <commit SHA>" of the release the action is
+# referenced by: a release tag (no commit: the attestation binds the tag),
+# or a full commit SHA and the release tag that points to it. Anything else
+# fails.
+resolve() {
+  local ref=$1 tags version
+  if [[ "$ref" =~ $tag_re ]]; then
     echo "$ref"
-  elif [[ "$ref" != "$version" ]]; then
-    fail "the action is referenced as @$ref; reference the release it belongs to: $repo@<full commit SHA of $version> (recommended) or @$version"
+  elif [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+    tags="$(release_tags)" || fail "cannot read the tags of $repo to find the release of commit $ref"
+    version="$(tr -d '\r' <<<"$tags" | awk -v c="$ref" '$2 == c { print $1 }' | pick_tag)"
+    [[ -n "$version" ]] || fail "no release tag of $repo points to commit $ref; pin the action to the full commit SHA of a release (or reference it as @vX.Y.Z)"
+    echo "$version $ref"
+  else
+    fail "the action is referenced as @$ref; reference a release: $repo@<full commit SHA of a release> (recommended) or @vX.Y.Z"
   fi
 }
 
@@ -135,11 +171,6 @@ main() {
     ZIP_TAR="$(cygpath -u "$SYSTEMROOT")/System32/tar.exe"
   fi
 
-  local version
-  version="$(tr -d '\r\n' <"$src/action/VERSION")"
-  [[ "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]] ||
-    fail "action/VERSION is not a release tag: $version"
-
   local bin_dir="$tmp/hephaestus-bin"
   local bin="$bin_dir/hephaestus$bin_ext"
   mkdir -p "$bin_dir"
@@ -148,7 +179,7 @@ main() {
   # Hephaestus's own checkout (uses: ./).
   if [[ -n "$workspace" && "$(canonical "$src")" == "$(canonical "$workspace")" ]]; then
     local dev="${HEPHAESTUS_ACTION_BINARY:-}"
-    [[ -n "$dev" ]] || fail "the action runs from this checkout (uses: ./), whose $version is not released: build hephaestus first and set HEPHAESTUS_ACTION_BINARY to it"
+    [[ -n "$dev" ]] || fail "the action runs from this checkout (uses: ./), which is not a release: build hephaestus first and set HEPHAESTUS_ACTION_BINARY to it"
     [[ -f "$dev" && ! -L "$dev" ]] || fail "HEPHAESTUS_ACTION_BINARY is not a regular file: $dev"
     echo "::notice::hephaestus action: running from this checkout with HEPHAESTUS_ACTION_BINARY (development of Hephaestus itself); no release binary is used"
     cp "$dev" "$bin"
@@ -160,11 +191,13 @@ main() {
 
   # The release binary.
   # A failure inside $(...) exits only the subshell: check each status.
-  local digest target plat ext
-  digest="$(source_digest "${ACTION_REF:-}" "$version" "$src")" || exit 1
+  local ref resolved version digest target plat ext
+  ref="$(action_ref "${ACTION_REF:-}" "$src")" || exit 1
+  command -v gh >/dev/null || fail "the GitHub CLI (gh) is required to verify the release binary's attestation; it is preinstalled on GitHub-hosted runners"
+  resolved="$(resolve "$ref")" || exit 1
+  read -r version digest <<<"$resolved"
   target="$(platform "${RUNNER_OS:-}" "${RUNNER_ARCH:-}")" || exit 1
   read -r plat ext <<<"$target"
-  command -v gh >/dev/null || fail "the GitHub CLI (gh) is required to verify the release binary's attestation; it is preinstalled on GitHub-hosted runners"
 
   local asset="hephaestus_${version#v}_$plat.$ext" sums="hephaestus_checksums.txt"
   local base="https://github.com/$repo/releases/download/$version" work

@@ -1,12 +1,23 @@
 # Changelog
 
-All notable changes to Hephaestus. The notes of each release are published
-from `RELEASE_NOTES.md` (`release.github.notes_file`).
+All notable changes to Hephaestus. The notes of each release are GitHub's
+generated notes (`release.github.generate_notes`); this file is not
+required to name a version before it is tagged.
+
+## Unreleased
+
+- **The release needs no preparation.** `action/VERSION` is gone: the GitHub
+  Action finds its release from the reference it is used by (the tag, or the
+  release tag pointing to the pinned commit, through the GitHub API) and
+  still verifies the provenance attestation for that tag and commit. A
+  commit no release tag points to fails, as a branch does. The release
+  notes are GitHub's generated notes; `RELEASE_NOTES.md` and the
+  `CHANGELOG.md` preflight requirement are removed.
 
 ## v1.5.0
 
 `install.sh` installs Hephaestus from GitHub Releases on macOS and Linux (amd64, arm64), without
-Homebrew or Go. The full notes are in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+Homebrew or Go. The full notes are in [the v1.5.0 release](https://github.com/magicdrive/hephaestus/releases/tag/v1.5.0).
 
 - **`install.sh`**: the latest stable release or `--version vX.Y.Z` (older releases and
   pre-releases too), into `~/.local/bin` or `--dir DIR`; the archive is checked against
@@ -28,7 +39,7 @@ workflow's conventions before the tag push; the tap stage guards against
 formula downgrades through the merge order of open pull requests and against
 the same version with other checksums; `cmd/tap-version-guard` and
 `cmd/pr-gate` guard the tap's merges; the publish lock is an operating system
-file lock. The full notes are in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+file lock. The full notes are in [the v1.4.0 release](https://github.com/magicdrive/hephaestus/releases/tag/v1.4.0).
 
 - **`cmd/tap-version-guard -strict`**, for the tap's required check: besides
   a downgrade it fails a changed or added formula without a version or with
@@ -220,7 +231,7 @@ file lock. The full notes are in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 `hephaestus publish` tells the repository's default branch from the release
 branch (`-branch`, `preflight.branch`, else the default branch) and checks
 everything that guards a release on the release branch. The full notes are
-in [RELEASE_NOTES.md](RELEASE_NOTES.md); the changes are listed under
+in [the v1.3.0 release](https://github.com/magicdrive/hephaestus/releases/tag/v1.3.0); the changes are listed under
 v1.3.0-rc.1 below.
 
 - Since v1.3.0-rc.1: `action/VERSION` names v1.3.0. v1.3.0-rc.1 was released
@@ -230,7 +241,7 @@ v1.3.0-rc.1 below.
 ## v1.3.0-rc.1
 
 First release candidate of 1.3; full notes in
-[RELEASE_NOTES.md](RELEASE_NOTES.md).
+[the v1.3.0-rc.1 release](https://github.com/magicdrive/hephaestus/releases/tag/v1.3.0-rc.1).
 
 - `hephaestus publish` separates the release repository's **default branch**
   on GitHub from the **release branch** releases are cut from. The release
@@ -261,7 +272,7 @@ First release candidate of 1.3; full notes in
 The GitHub Action runs the verified release binary instead of compiling
 Hephaestus, `hephaestus publish` releases any project, and the fixes prepared
 for v1.1.1 (never released) are included. The full notes are in
-[RELEASE_NOTES.md](RELEASE_NOTES.md); the changes are listed under
+[the v1.2.0 release](https://github.com/magicdrive/hephaestus/releases/tag/v1.2.0); the changes are listed under
 v1.2.0-rc.1 below.
 
 - Since v1.2.0-rc.1: `action/VERSION` names v1.2.0. CI runs the action of
@@ -271,7 +282,7 @@ v1.2.0-rc.1 below.
 ## v1.2.0-rc.1
 
 First release candidate of 1.2; full notes in
-[RELEASE_NOTES.md](RELEASE_NOTES.md). It includes the fixes prepared for
+[the v1.2.0-rc.1 release](https://github.com/magicdrive/hephaestus/releases/tag/v1.2.0-rc.1). It includes the fixes prepared for
 v1.1.1, which was never released.
 
 ### Changed
@@ -338,7 +349,7 @@ v1.1.1, which was never released.
 
 ## v1.1.0
 
-Shell completion; full notes in [RELEASE_NOTES.md](RELEASE_NOTES.md). A
+Shell completion; full notes in [the v1.1.0 release](https://github.com/magicdrive/hephaestus/releases/tag/v1.1.0). A
 minor release: it adds a command and a configuration key
 ([compatibility policy](docs/compatibility/policy.md)).
 
@@ -379,7 +390,7 @@ minor release: it adds a command and a configuration key
 ## v1.0.0
 
 First stable release of 1.0; full notes in
-[RELEASE_NOTES.md](RELEASE_NOTES.md). This section summarizes the changes
+[the v1.0.0 release](https://github.com/magicdrive/hephaestus/releases/tag/v1.0.0). This section summarizes the changes
 since v0.2.0; the release candidates below record each step. From 1.0.0,
 Hephaestus follows the [compatibility policy](docs/compatibility/policy.md).
 
@@ -518,7 +529,7 @@ Hephaestus follows the [compatibility policy](docs/compatibility/policy.md).
 ## v1.0.0-rc.1
 
 First release candidate of 1.0; full notes in
-[RELEASE_NOTES.md](RELEASE_NOTES.md).
+[the v1.0.0-rc.1 release](https://github.com/magicdrive/hephaestus/releases/tag/v1.0.0-rc.1).
 
 ### Added
 
@@ -567,7 +578,7 @@ First release candidate of 1.0; full notes in
 
 ## v0.2.0
 
-See [RELEASE_NOTES.md](RELEASE_NOTES.md) (the notes of this release):
+See [the v0.2.0 release](https://github.com/magicdrive/hephaestus/releases/tag/v0.2.0) (the notes of this release):
 `hephaestus preflight`, deterministic check-run evaluation, read-only GitHub
 API additions, shared archive and tap rules.
 

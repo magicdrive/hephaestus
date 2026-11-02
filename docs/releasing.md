@@ -11,10 +11,8 @@ uploads or writes to GitHub itself.
 `make publish` runs `go run ./internal/cmd/publish`: the same code as
 `hephaestus publish` ([publish.md](publish.md), which other projects use for
 their own `make publish`), built from the source being released, with this
-repository's help text. It adds one check of its own to `publish` and `check`:
-`action/VERSION` (the release whose binary the GitHub Action downloads), when
-present, must name the version being released; otherwise it stops with
-`action/VERSION is <x>, not <tag>: set it to <tag> in a pull request first`.
+repository's help text. It runs the same checks as `hephaestus publish`, no
+more: nothing in the repository has to name the version before it is tagged.
 
 ## One-time setup
 
@@ -33,26 +31,20 @@ values). The generic, read-only `hephaestus preflight --tag vX.Y.Z`
 ([preflight.md](preflight.md)) runs the same kind of checks for any
 repository that releases with Hephaestus. `make publish-check` and
 `make publish` keep their own checks and also require that generic
-preflight to pass in strict mode (with the `gh` token), so a
-`RELEASE_NOTES.md` or `CHANGELOG.md` that does not name the tag stops the
-release before anything is tagged.
+preflight to pass in strict mode (with the `gh` token).
 
 ## Cutting a release
 
-Before tagging, make these changes through a pull request:
+Nothing has to be prepared in a pull request: tag the commit of `main` that
+CI passed. The release notes are GitHub's generated notes
+(`release.github.generate_notes`, as in the sibling projects); edit them on
+GitHub after the release if needed.
 
-- Describe the version in `RELEASE_NOTES.md`. It is published as the release
-  body through `release.github.notes_file`, and its heading names the
-  version.
-- Add the version to `CHANGELOG.md`.
-- Set `action/VERSION` to the tag.
-
-The GitHub Action at a release commit installs the binaries of the release
-that `action/VERSION` names ([github-action.md](github-action.md#pinning-and-the-release-binary)).
-The release workflow therefore refuses to build a tag that the file does not
-name, and so do `make publish` and `make publish-check`. A release candidate
-and its stable release are two commits: `v1.2.0-rc.1` is followed by a pull
-request that changes `action/VERSION` (and the notes) to `v1.2.0`.
+The GitHub Action finds its release from the reference it is used by: the
+tag, or the release tag that points to the pinned commit
+([github-action.md](github-action.md#pinning-and-the-release-binary)). A
+release candidate and its stable release may therefore be the same commit
+(the Action pinned to it installs the stable release).
 
 ```sh
 make publish-check v0.1.0-rc.1    # optional: the preflight alone
@@ -192,7 +184,7 @@ completed.
    - `actions/attest-build-provenance` — provenance for the archives and
      the checksum file (recorded in the public Sigstore transparency log);
    - `hephaestus run --stages release` with `GITHUB_TOKEN` — draft,
-     upload, verify, publish, with `RELEASE_NOTES.md` as the notes;
+     upload, verify, publish, with GitHub's generated notes;
    - when `tap=publish`: `hephaestus run --stages formula,tap` with
      `HOMEBREW_TAP_GITHUB_TOKEN` — the formula and a pull request on
      `magicdrive/homebrew-tap`;

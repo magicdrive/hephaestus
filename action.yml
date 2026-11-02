@@ -93,8 +93,9 @@ outputs:
 runs:
   using: composite
   steps:
-    # The release binary of the version in action/VERSION, downloaded from
-    # that GitHub Release and verified (action/install-hephaestus.sh): the
+    # The binary of the release the action is referenced by (the tag, or the
+    # release tag of the pinned commit), downloaded from that GitHub Release
+    # and verified (action/install-hephaestus.sh): the
     # release checksum, the provenance attestation binding it to this
     # action's commit and tag, and the version it reports. Nothing is
     # compiled and no toolchain is installed, so the job's PATH, Go and other

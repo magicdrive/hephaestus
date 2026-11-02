@@ -50,8 +50,10 @@ release:
   github:
     owner: magicdrive
     name: hephaestus
-    # The notes of the version being released; update it before tagging.
-    notes_file: RELEASE_NOTES.md
+    # GitHub's generated notes, as the sibling projects (Ark): edit them on
+    # GitHub after the release if needed. Nothing has to be written before
+    # tagging.
+    generate_notes: true
 
 brews:
   - name: hephaestus
@@ -82,4 +84,3 @@ brews:
 preflight:
   workflow: release.yml
   environment: release
-  changelog: CHANGELOG.md

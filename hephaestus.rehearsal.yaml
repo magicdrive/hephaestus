@@ -53,8 +53,8 @@ release:
   github:
     owner: magicdrive
     name: hephaestus
-    # The notes of the version being released; update it before tagging.
-    notes_file: RELEASE_NOTES.md
+    # GitHub's generated notes, as hephaestus.yaml.
+    generate_notes: true
     draft: true
 
 brews:
@@ -83,4 +83,3 @@ brews:
 preflight:
   workflow: release.yml
   environment: release
-  changelog: CHANGELOG.md

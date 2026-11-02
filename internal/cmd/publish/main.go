@@ -19,17 +19,11 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"syscall"
 
-	"github.com/magicdrive/hephaestus/internal/publish"
 	"github.com/magicdrive/hephaestus/internal/publish/cli"
 )
 
@@ -97,27 +91,5 @@ where it stands. Details: docs/releasing.md.
 `
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return cli.Run(ctx, args, stdout, stderr, cli.Config{Name: "publish", Usage: usage, Help: help, Gate: actionVersionMatches})
-}
-
-// actionVersionFile names the release whose binary the GitHub Action
-// downloads, relative to the repository root. Hephaestus must not release
-// another tag: the release workflow enforces it, and publish and check stop
-// early, before anything is tagged.
-const actionVersionFile = "action/VERSION"
-
-// actionVersionMatches requires action/VERSION, when the repository root
-// (the directory of the configuration) has one, to name tag v.
-func actionVersionMatches(configPath string, v publish.Version) error {
-	b, err := os.ReadFile(filepath.Join(filepath.Dir(configPath), filepath.FromSlash(actionVersionFile)))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if got := strings.NewReplacer("\r", "", "\n", "").Replace(string(b)); got != v.Tag {
-		return fmt.Errorf("%s is %s, not %s: set it to %s in a pull request first", actionVersionFile, got, v.Tag, v.Tag)
-	}
-	return nil
+	return cli.Run(ctx, args, stdout, stderr, cli.Config{Name: "publish", Usage: usage, Help: help})
 }

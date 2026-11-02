@@ -46,7 +46,7 @@ then review the diff. Fuzz targets: `make fuzz`.
 | `cmd/hephaestus/init.go` | `hephaestus init`: starting configurations (go, rust, script, prebuilt) |
 | `internal/status` | `hephaestus status`: read-only release state and next safe action |
 | `internal/publish`, `internal/publish/cli` | `hephaestus publish` (preflight, tag push, run monitoring, verification) for any project following docs/publish.md |
-| `internal/cmd/publish` | This repository's release tool behind `make publish`: `internal/publish/cli` with Hephaestus's own help, built from the tagged source, plus the `action/VERSION` check |
+| `internal/cmd/publish` | This repository's release tool behind `make publish`: `internal/publish/cli` with Hephaestus's own help, built from the tagged source |
 | `repo_test.go` | Workflows, Makefile, action and documentation consistency |
 | `action.yml` | Composite GitHub Action |
 | `testdata/e2e/fixture` | Fixture CLI for `scripts/homebrew-e2e.sh` |

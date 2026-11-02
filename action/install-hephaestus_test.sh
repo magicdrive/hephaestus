@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests of action/install-hephaestus.sh that need no network: the reference
-# and platform rules, the checksum check and the extraction of the binary
+# rules (release_tags replaced), the platform rules, the checksum check and the extraction of the binary
 # from crafted archives (links, traversal, duplicates, directories).
 # The download and attestation path is tested against a real release by
 # the action-install job in ci.yml.
@@ -44,16 +44,31 @@ expect_eq() {
 sha=0123456789abcdef0123456789abcdef01234567
 actions="$work/_actions/magicdrive/hephaestus"
 
-# References.
-expect_eq "full SHA from github.action_ref" "$(source_digest "$sha" v1.2.0 /x)" "$sha"
-expect_eq "release tag" "$(source_digest v1.2.0 v1.2.0 /x)" ""
-expect_eq "SHA from the action path" "$(source_digest "" v1.2.0 "$actions/$sha")" "$sha"
-expect_eq "tag from the action path" "$(source_digest "" v1.2.0 "$actions/v1.2.0")" ""
-expect_fail "branch reference" source_digest main v1.2.0 /x
-expect_fail "another release's tag" source_digest v1.1.0 v1.2.0 /x
-expect_fail "short SHA" source_digest 0123456 v1.2.0 /x
-expect_fail "upper-case SHA" source_digest "$(tr a-f A-F <<<"$sha")" v1.2.0 /x
-expect_fail "another repository's path" source_digest "" v1.2.0 "$work/_actions/someone/hephaestus/$sha"
+# References. release_tags is replaced by a fixed tag list (the real one
+# reads the GitHub API).
+other=89abcdef0123456789abcdef0123456789abcdef
+both=fedcba9876543210fedcba9876543210fedcba98
+release_tags() {
+  printf '%s %s\r\n' v1.2.0 "$sha" v1.2.0-rc.1 "$other" v0.9.0-rc.2 "$both" v0.9.0 "$both" v0.10.0-rc.1 "$both" latest "$both"
+}
+expect_eq "reference from github.action_ref" "$(action_ref "$sha" /x)" "$sha"
+expect_eq "SHA from the action path" "$(action_ref "" "$actions/$sha")" "$sha"
+expect_eq "tag from the action path" "$(action_ref "" "$actions/v1.2.0")" v1.2.0
+expect_fail "another repository's path" action_ref "" "$work/_actions/someone/hephaestus/$sha"
+expect_eq "release tag" "$(resolve v1.2.0)" v1.2.0
+expect_eq "pre-release tag" "$(resolve v1.2.0-rc.1)" v1.2.0-rc.1
+expect_eq "full SHA of a release" "$(resolve "$sha")" "v1.2.0 $sha"
+expect_eq "full SHA of a pre-release" "$(resolve "$other")" "v1.2.0-rc.1 $other"
+expect_eq "several tags: the stable one, highest first" "$(resolve "$both")" "v0.9.0 $both"
+expect_fail "a commit no release tag points to" resolve 0000000000000000000000000000000000000000
+expect_fail "branch reference" resolve main
+expect_fail "not a release tag" resolve v1.2
+expect_fail "short SHA" resolve 0123456
+expect_fail "upper-case SHA" resolve "$(tr a-f A-F <<<"$sha")"
+expect_eq "pick_tag ignores other tags" "$(printf 'latest\nv2\nv1.10.0-rc.1\nv1.9.0-rc.3\n' | pick_tag)" v1.10.0-rc.1
+expect_eq "pick_tag compares numbers" "$(printf 'v1.9.0\nv1.10.0\nv1.2.0\n' | pick_tag)" v1.10.0
+release_tags() { return 1; }
+expect_fail "the tags cannot be read" resolve "$sha"
 
 # Platforms.
 expect_eq "Linux X64" "$(platform Linux X64)" "linux_amd64 tar.gz"

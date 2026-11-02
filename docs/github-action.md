@@ -23,9 +23,11 @@ action does not compile anything. Its first step
 ([action/install-hephaestus.sh](../action/install-hephaestus.sh)) runs before
 any of your build code, and does the following:
 
-1. Reads the release named in `action/VERSION` of the pinned commit. The
-   release workflow refuses to publish a tag that this file does not name,
-   so a release commit always names its own release.
+1. Finds the release: the tag the action is referenced by, or, when it is
+   pinned by SHA, the release tag of `magicdrive/hephaestus` that points to
+   that commit (read with the GitHub API; a stable release before a
+   pre-release on the same commit). A commit that no release tag points to
+   fails.
 2. Downloads `hephaestus_<version>_<os>_<arch>.tar.gz` (Windows: `.zip`) and
    `hephaestus_checksums.txt`, from
    `https://github.com/magicdrive/hephaestus/releases/download/<tag>/` only
@@ -43,12 +45,13 @@ any of your build code, and does the following:
    `hephaestus <tag>`.
 
 Any failure stops the action. There is no fallback, and no other version is
-tried. A branch reference (`@main`) or the tag of another release fails,
-because the action could not tell which binary belongs to it.
+tried. A branch reference (`@main`) or a commit that is not a release
+fails, because the action could not tell which binary belongs to it.
 
 Requirements: a GitHub-hosted runner, or another runner with `bash`,
 `curl`, `tar` and `gh`, on Linux, macOS or Windows, x64 or ARM64. The step
-uses the job's `github.token` for the read-only attestation lookup. No step
+uses the job's `github.token` for the read-only tag and attestation
+lookups. No step
 that runs your code sees that token, and it does not depend on the
 `github-token` input.
 
@@ -74,8 +77,7 @@ Go, as the examples always did.
 ### Hephaestus's own checkout
 
 When a workflow runs the action from its own checkout of this repository
-(`uses: ./`), the version in `action/VERSION` is usually not released yet.
-Only in that case does the action use the binary named by the
+(`uses: ./`), the commit is usually not a release. Only in that case does the action use the binary named by the
 `HEPHAESTUS_ACTION_BINARY` environment variable. Hephaestus's CI sets it to
 a binary built from the same commit (the `action-binary` job). Every other
 caller ignores the variable.

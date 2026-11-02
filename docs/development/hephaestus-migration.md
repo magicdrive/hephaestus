@@ -68,7 +68,8 @@ Go (or Rust, Node, ...) your workflow set up. See
 [github-action.md](../github-action.md#pinning-and-the-release-binary). Its
 first step does the following:
 
-1. reads `action/VERSION` of the pinned commit;
+1. finds the release of the pinned commit (up to 1.5.0 from `action/VERSION`
+   of that commit; later from the release tag that points to it);
 2. downloads that release's archive for the runner, and the checksum file;
 3. checks the SHA-256;
 4. verifies the provenance attestation with `gh attestation verify`. The

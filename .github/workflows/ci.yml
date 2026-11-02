@@ -292,7 +292,7 @@ jobs:
           go-version-file: go.mod
       - name: Cross-build
         run: |
-          v="$(tr -d '\r\n' < action/VERSION)-dev"
+          v="v0.0.0-dev"
           for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             os="${t%/*}" arch="${t#*/}" ext=""
             [[ "$os" == windows ]] && ext=.exe
@@ -331,9 +331,9 @@ jobs:
     # E2E against public GitHub (release downloads, attestation API): the
     # action's release path with the published v1.1.0 and v1.2.0-rc.1
     # releases laid out as the runner checks out an action pinned to their
-    # commits: download, release checksum, provenance attestation bound to
-    # the commit and tag, version. Another commit and a branch reference
-    # must fail. The job's PATH and Go environment must be unchanged
+    # commits: the release tag of the commit (tags API), download, release
+    # checksum, provenance attestation bound to the commit and tag, version.
+    # A commit no release tag points to and a branch reference must fail. The job's PATH and Go environment must be unchanged
     # afterwards.
     strategy:
       fail-fast: false
@@ -353,11 +353,11 @@ jobs:
       - name: Install the published v1.1.0 through the release path
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/action-install-e2e.sh v1.1.0 550d48f64917749742574b5c2ff1b292940ff71a b2ea250f3eaf2323735a96a787be517c26a248c1
+        run: scripts/action-install-e2e.sh v1.1.0 550d48f64917749742574b5c2ff1b292940ff71a c6f0034846e47ef55e6ba0beaa77624fc5f9ab8f
       - name: Install the published v1.2.0-rc.1 through the release path
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/action-install-e2e.sh v1.2.0-rc.1 bae0e2b3cbf41ad27299e0cfc3517a6affc7e15e 550d48f64917749742574b5c2ff1b292940ff71a
+        run: scripts/action-install-e2e.sh v1.2.0-rc.1 bae0e2b3cbf41ad27299e0cfc3517a6affc7e15e c6f0034846e47ef55e6ba0beaa77624fc5f9ab8f
       - name: The environment is unchanged
         run: |
           scripts/go-env-snapshot.sh > "$RUNNER_TEMP/env-after"
