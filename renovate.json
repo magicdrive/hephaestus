@@ -25,6 +25,7 @@
     {
       "description": "The Hephaestus actions ci.yml runs are published releases kept on purpose (v1.1.0, v1.2.0-rc.1: the e2e of a released action and the isolation check that must detect v1.1.0): never updated",
       "matchManagers": ["github-actions"],
+      "matchFileNames": [".github/workflows/ci.yml"],
       "matchPackageNames": ["magicdrive/hephaestus"],
       "enabled": false
     },

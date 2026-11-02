@@ -43,6 +43,8 @@ jobs:
   fuzz:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-extended')
     runs-on: ubuntu-latest
+    # scripts/fuzz.sh runs each target for 60s: 30 minutes is about three
+    # times the run of today's targets (9.8m); raise it with their number.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
