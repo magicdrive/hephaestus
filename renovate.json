@@ -23,6 +23,13 @@
       "automerge": false
     },
     {
+      "description": "The Hephaestus actions ci.yml runs are published releases kept on purpose (v1.1.0, v1.2.0-rc.1: the e2e of a released action and the isolation check that must detect v1.1.0): never updated",
+      "matchManagers": ["github-actions"],
+      "matchFileNames": [".github/workflows/ci.yml"],
+      "matchPackageNames": ["magicdrive/hephaestus"],
+      "enabled": false
+    },
+    {
       "description": "Go major updates monthly",
       "matchDatasources": ["go"],
       "matchUpdateTypes": ["major"],
@@ -34,6 +41,12 @@
       "matchFileNames": [".github/renovate-check/**"],
       "groupName": "Renovate validator",
       "automerge": false
+    },
+    {
+      "description": "The Node.js of make renovate-check must satisfy the engines of the pinned Renovate (test_run.py checks it; Renovate 44 requires ^24.11.0): a major is raised from the Dependency Dashboard, when a Renovate that supports it is pinned, not as a PR of its own that cannot pass",
+      "matchFileNames": [".github/renovate-check/.node-version"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
     },
     {
       "description": "Go tools pinned in the Makefile and ci.yml (TestMakefile_ToolVersionsMatchCI keeps them equal): one branch updates both files",
@@ -86,6 +99,19 @@
         "GOREG_VERSION\\s*[=:]\\s*(?<currentValue>v[0-9][^\\s]*)"
       ],
       "depNameTemplate": "github.com/magicdrive/goreg",
+      "datasourceTemplate": "go"
+    },
+    {
+      "customType": "regex",
+      "description": "ACTIONLINT_VERSION (go run github.com/rhysd/actionlint@version)",
+      "managerFilePatterns": [
+        "/^Makefile$/",
+        "/^\\.github/workflows/ci\\.yml$/"
+      ],
+      "matchStrings": [
+        "ACTIONLINT_VERSION\\s*[=:]\\s*(?<currentValue>v[0-9][^\\s]*)"
+      ],
+      "depNameTemplate": "github.com/rhysd/actionlint",
       "datasourceTemplate": "go"
     }
   ],

@@ -13,6 +13,7 @@ GO := CGO_ENABLED=0 go
 
 GOLANGCI_LINT_VERSION = v2.15.0
 GOVULNCHECK_VERSION = v1.9.0
+ACTIONLINT_VERSION = v1.7.12
 GOREG_VERSION = v1.3.11
 FUZZTIME = 10s
 
@@ -73,9 +74,15 @@ golangci-lint:
 vuln:
 	@go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
+# Lint the GitHub Actions workflows as CI does (the shell of their run steps
+# too, when shellcheck is installed)
+.PHONY: actionlint
+actionlint:
+	@go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
+
 # Run all local quality gates
 .PHONY: lint
-lint: fmt-check vet golangci-lint test race vuln
+lint: fmt-check vet golangci-lint actionlint test race vuln
 
 # Run every fuzz target briefly (FUZZTIME=30s make fuzz for longer)
 .PHONY: fuzz
@@ -210,6 +217,7 @@ help:
 	@echo "  make fmt-check      - Check gofmt"
 	@echo "  make golangci-lint  - Run golangci-lint $(GOLANGCI_LINT_VERSION)"
 	@echo "  make vuln           - Run govulncheck $(GOVULNCHECK_VERSION)"
+	@echo "  make actionlint     - Lint the workflows with actionlint $(ACTIONLINT_VERSION)"
 	@echo "  make lint           - Run all local quality gates"
 	@echo "  make fuzz           - Run every fuzz target (FUZZTIME=$(FUZZTIME))"
 	@echo "  make e2e-homebrew   - Real Homebrew end-to-end test"

@@ -304,7 +304,7 @@ func TestMakefile_ToolVersionsMatchCI(t *testing.T) {
 		t.Fatal(err)
 	}
 	ci := readWorkflow(t, ".github/workflows/ci.yml")
-	for _, name := range []string{"GOLANGCI_LINT_VERSION", "GOVULNCHECK_VERSION"} {
+	for _, name := range []string{"GOLANGCI_LINT_VERSION", "GOVULNCHECK_VERSION", "ACTIONLINT_VERSION"} {
 		m := regexp.MustCompile(`(?m)^` + name + `\s*=\s*(\S+)`).FindSubmatch(mk)
 		if m == nil {
 			t.Errorf("Makefile does not set %s", name)
